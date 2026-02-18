@@ -1,7 +1,7 @@
 # Echem GUI — Project Memory
 
 ## Project Overview
-Electrochemistry Analysis GUI built with Python/tkinter + matplotlib.
+Electrochemistry GUI built with Python/tkinter + matplotlib.
 **Location:** `C:\Users\Mefford\PycharmProjects\echem_gui\echem-gui\`
 **Launch:** `python run_echem.py` or `python -m echem_gui`
 
@@ -38,11 +38,16 @@ Each panel is fully **independent**: its own `files` dict, `active_file`, figure
 
 ### ECSAPanel (ECSA Calc)
 - Inherits: `FileManagerMixin, CorrectionMixin, ttk.Frame`
-- Left panel: scrollable canvas (files, axis+unit selectors, IR correction, cycles, scan-rate table, ECSA params, buttons, legend-frame toggle, log)
+- Left panel: scrollable canvas (files, axis+unit selectors, reference electrode, IR correction, cycles, scan-rate table, ECSA params, buttons, legend-frame toggle, result label, log)
 - Right panel: **two independent figures** stacked vertically, each with its own `NavigationToolbar2Tk`:
   - `fig_cv / ax_cv / canvas_cv` — CV curves (upper)
   - `fig_cdl / ax_cdl / canvas_cdl` — Cdl extraction scatter + linear fit (lower)
 - Interactions (zoom/pan/annotate/legend drag) registered on **both** canvases; `_get_canvas(ax)` routes draw calls to the correct one
+- **Overrides** from mixins:
+  - `_switch_active_file` — smarter column auto-detection (searches for "ewe"/"i/ma" keywords), clears Cdl plot + `result_label` on every file switch
+  - `_auto_replot` — delegates to `_plot_cv()` only (no full `_plot()`)
+  - `_plot` — also delegates to `_plot_cv()`
+  - `_edit_legend_labels` — **no-op** (`pass`); legend editor dialog not wired up in ECSAPanel
 
 ### EchemGUI (main window)
 - Inherits only `tk.Tk`
@@ -57,12 +62,17 @@ Each panel is fully **independent**: its own `files` dict, `active_file`, figure
 - `self._suppress_replot`: prevents cascading auto-replots during bulk UI updates
 - `self._loading_files`: blocks `<<ListboxSelect>>` during programmatic `selection_set()`
 
+**ECSAPanel additional state:**
+- `self._sr_vars = {cycle_num: StringVar}` — scan rate entry per cycle; persists across table rebuilds
+- `self._sr_traces = {cycle_num: (var, trace_id)}` — trace IDs saved so they can be removed before rebuild
+- `self._cv_redraw_id` — `after()` ID for debounced CV replot (300 ms); cancelled and rescheduled on each keystroke in scan-rate table
+
 ## Key Features
 
 ### General E.Chem tab
 1. **Multi-file support** — load multiple `.txt` files, manage in listbox, overlay on plot
 2. **Axis selectors + unit dropdowns** — X and Y each have a column selector and a unit combobox with dimension-aware filtering (I/E/t families)
-3. **Unit conversion** — `_get_axis_unit_scale(col, target)` returns `(scale_factor, display_label)`; scale applied to data before plotting
+3. **Unit conversion** — `_get_axis_unit_scale(col, target)` (PlottingMixin) returns `(scale_factor, display_label)`; scale applied to data before plotting
 4. **IR correction** — `E_corrected = E_raw − (I_mA / 1000) × R_sol`
 5. **RHE conversion** — `E_RHE = E_measured + E_ref_vs_RHE`
 6. **Reference electrode selector** — appended to x-axis label as `(vs Ag/AgCl)` etc.
@@ -81,7 +91,7 @@ Each panel is fully **independent**: its own `files` dict, `active_file`, figure
 
 ### ECSA Calc tab
 1. **Independent file state** — loads its own files, does not share with General tab
-2. **Axis selectors + unit dropdowns** — same dimension-aware unit filtering as General tab; units applied for display only (extraction uses raw column values)
+2. **Axis selectors + unit dropdowns** — same dimension-aware unit filtering as General tab; units applied for display only (extraction uses raw column values); unit scale via `_get_unit_scale()` (ECSAPanel standalone method, not PlottingMixin)
 3. **IR / RHE correction** — same as General tab
 4. **Cycle checkboxes** — 9-column grid, same UX as General tab
 5. **Scan-rate per cycle table** — 8-column grid, dynamically rebuilt when cycle selection changes; each entry has a `trace_add("write", …)` that triggers a debounced (300 ms) CV replot so legend updates as you type
@@ -130,11 +140,13 @@ Linear fit:  scan_rate (mV/s)  vs  Δj/2 (mA)
 - **`_loading_files` guard** — `selection_set()` fires `<<ListboxSelect>>` synchronously on Windows; wrap with `_loading_files = True/False` and early-return in `_on_file_select`
 - `canvas.draw()` (not `draw_idle()`) needed for legend resize to show frame changes in real-time
 - `set_draggable(True)` called after every `ax.legend(...)` call; old legend ref becomes stale after `ax.clear()` so reset to `None` before clearing
-- Toolbar Home button override requires subclassing `NavigationToolbar2Tk` (attribute assignment does not work — command is bound at init time)
+- Toolbar Home button override requires subclassing `NavigationToolbar2Tk` (attribute assignment does not work — command is bound at init time); only done in EchemPanel, not ECSAPanel
 - Tab-separated `.txt` files expected; column names normalized on load: whitespace stripped, `<`/`>` removed (e.g. `<Ewe>/V` → `Ewe/V`)
-- `_clear_annotation(redraw=False)` must be called **before** `ax.clear()` so `artist.remove()` runs on live axes
-- Annotation highlight dot uses label `"_click_dot"` (or `"_ann_dot"`); `_`-prefix hides from legend and excludes from pick candidates via `not ln.get_label().startswith("_")`
+- **`_clear_annotation` naming differs by panel** — EchemPanel (PlottingMixin) uses `_clear_annotation(redraw=False)`; ECSAPanel uses `_ei_clear_ann(redraw=False)`. Both must be called **before** `ax.clear()`.
+- **Annotation dot label differs by panel** — EchemPanel uses `"_click_dot"`; ECSAPanel uses `"_ann_dot"`. Both have `_`-prefix to hide from legend and exclude from pick candidates via `not ln.get_label().startswith("_")`.
 - `_pan_moved` reset to `False` on every press, set `True` on actual motion; gates annotation on release
 - Scan rate `StringVar` traces accumulate if not removed — `_rebuild_sr_table` calls `var.trace_remove()` for all previous trace IDs before rebuilding
 - Cycle column count: **9** for both EchemPanel and ECSAPanel
 - Scan-rate table column count: **8** for ECSAPanel
+- **Unit scale method name differs** — PlottingMixin exposes `_get_axis_unit_scale(col, target)`; ECSAPanel has its own standalone `_get_unit_scale(col, target_unit)` with the same logic but different name
+- **CorrectionMixin hardcodes column names** — `_apply_correction` looks for `"Ewe/V"` (potential) and `"I/mA"` (current) specifically; will error on files with differently named columns (e.g. EC-Lab format is fine, other instruments may not be)
