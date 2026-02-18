@@ -1,0 +1,951 @@
+"""ECSA Calculation Panel.
+
+Layout
+------
+Left (scrollable):
+    Files · axis selectors + unit dropdowns · reference electrode ·
+    IR correction · cycle checkboxes (9 col) · scan-rate table (8 col) ·
+    ECSA parameters · buttons · legend-frame toggle · result label · log.
+
+Right:
+    Upper frame – CV figure + its own NavigationToolbar2Tk
+    Lower frame – Cdl figure + its own NavigationToolbar2Tk
+
+Each figure is independent: toolbar Home/Zoom/Pan/Save work per-plot.
+
+Interactions (both plots independently)
+-----------------------------------------
+    Scroll wheel    – zoom centred on cursor
+    Left-drag       – pan
+    Left-click      – annotate nearest point (cycles overlapping lines)
+    Right-click     – dismiss annotation
+    Drag legend     – move  (set_draggable)
+    Right-drag leg  – resize font
+"""
+
+from collections import OrderedDict
+
+import numpy as np
+import tkinter as tk
+from tkinter import ttk
+
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+
+from .file_manager import FileManagerMixin
+from .correction import CorrectionMixin
+
+_CYCLE_BG        = "#e8f0fe"
+_CYCLE_ACTIVE_BG = "#cce0ff"
+_CLICK_CYCLE_PX  = 8
+
+# ── Unit tables (shared with EchemPanel) ─────────────────────────────
+_UNIT_DIMS = {
+    "A": "I",  "mA": "I",  "µA": "I",  "nA": "I",
+    "V": "E",  "mV": "E",  "µV": "E",  "nV": "E",
+    "s": "t",  "ms": "t",  "µs": "t",  "min": "t", "h": "t",
+}
+_DIM_OPTS = {
+    "I": ["(auto)", "A",  "mA",  "µA",  "nA"],
+    "E": ["(auto)", "V",  "mV",  "µV",  "nV"],
+    "t": ["(auto)", "s",  "ms",  "µs",  "min", "h"],
+}
+_ALL_UNITS = ["(auto)", "A", "mA", "µA", "nA",
+              "V", "mV", "µV", "nV", "s", "ms", "µs", "min", "h"]
+
+
+class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
+    """Self-contained ECSA extraction panel."""
+
+    def __init__(self, master):
+        ttk.Frame.__init__(self, master)
+        self.files            = OrderedDict()
+        self.active_file      = None
+        self._suppress_replot = False
+        self._loading_files   = False
+        self._cycle_vars      = {}   # {cycle_num: BooleanVar}
+        self._sr_vars         = {}   # {cycle_num: StringVar}
+        self._sr_traces       = {}   # {cycle_num: (var, trace_id)}
+        self._cv_redraw_id    = None
+        self._build_panel()
+
+    # ════════════════════════════════════════════════════════════════
+    # Panel construction
+    # ════════════════════════════════════════════════════════════════
+    def _build_panel(self):
+        body = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
+        body.pack(fill=tk.BOTH, expand=True)
+
+        # ── Scrollable left panel ─────────────────────────────────
+        left_outer = ttk.Frame(body, width=310)
+        body.add(left_outer, weight=0)
+
+        _lc  = tk.Canvas(left_outer, highlightthickness=0)
+        _ls  = ttk.Scrollbar(left_outer, orient=tk.VERTICAL, command=_lc.yview)
+        _lc.configure(yscrollcommand=_ls.set)
+        _ls.pack(side=tk.RIGHT, fill=tk.Y)
+        _lc.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        left = tk.Frame(_lc)
+        _lwin = _lc.create_window((0, 0), window=left, anchor=tk.NW)
+        left.bind("<Configure>", lambda e: _lc.configure(scrollregion=_lc.bbox("all")))
+        _lc.bind("<Configure>", lambda e: _lc.itemconfig(_lwin, width=e.width))
+        _lc.bind("<MouseWheel>", lambda e: _lc.yview_scroll(-1 * (e.delta // 120), "units"))
+
+        # ── Files ─────────────────────────────────────────────────
+        ttk.Label(left, text="Files:", font=("", 9, "bold")).pack(anchor=tk.W, padx=4, pady=(6, 0))
+        ttk.Label(left, text="Load one file per catalyst / scan-rate series",
+                  foreground="gray", font=("", 8)).pack(anchor=tk.W, padx=4)
+        fb = ttk.Frame(left)
+        fb.pack(fill=tk.X, padx=4)
+        ttk.Button(fb, text="Load File(s)", command=self._load_files).pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Button(fb, text="Remove",       command=self._remove_file).pack(side=tk.LEFT)
+        flf = ttk.Frame(left)
+        flf.pack(fill=tk.X, padx=4, pady=2)
+        self.file_listbox = tk.Listbox(flf, height=4, selectmode=tk.BROWSE, exportselection=False)
+        fl_sc = ttk.Scrollbar(flf, orient=tk.VERTICAL, command=self.file_listbox.yview)
+        self.file_listbox.configure(yscrollcommand=fl_sc.set)
+        self.file_listbox.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        fl_sc.pack(side=tk.RIGHT, fill=tk.Y)
+        self.file_listbox.bind("<<ListboxSelect>>", self._on_file_select)
+
+        # ── Axis selectors + unit dropdowns ──────────────────────
+        ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
+
+        def _refresh_unit_opts(col_var, unit_var, unit_cb):
+            col      = col_var.get()
+            raw_unit = col.rsplit("/", 1)[-1].strip() if "/" in col else ""
+            dim      = _UNIT_DIMS.get(raw_unit)
+            opts     = _DIM_OPTS.get(dim, _ALL_UNITS)
+            unit_cb["values"] = opts
+            if unit_var.get() not in opts:
+                unit_var.set("(auto)")
+            self._auto_replot()
+
+        def _refresh_unit_after(unit_var, unit_cb):
+            chosen = unit_var.get()
+            if chosen and chosen != "(auto)":
+                dim  = _UNIT_DIMS.get(chosen)
+                opts = _DIM_OPTS.get(dim, _ALL_UNITS)
+                unit_cb["values"] = opts
+            self._auto_replot()
+
+        # X-axis
+        ttk.Label(left, text="X-axis (potential):").pack(anchor=tk.W, padx=4)
+        x_row = ttk.Frame(left)
+        x_row.pack(fill=tk.X, padx=4, pady=2)
+        self.x_var   = tk.StringVar()
+        self.x_combo = ttk.Combobox(x_row, textvariable=self.x_var, state="readonly", width=16)
+        self.x_combo.pack(side=tk.LEFT)
+        self.x_unit_var = tk.StringVar(value="V")
+        x_unit_cb = ttk.Combobox(x_row, textvariable=self.x_unit_var,
+                                  values=_DIM_OPTS["E"], state="readonly", width=6)
+        x_unit_cb.pack(side=tk.LEFT, padx=(4, 0))
+        self.x_combo.bind("<<ComboboxSelected>>",
+                          lambda e: _refresh_unit_opts(self.x_var, self.x_unit_var, x_unit_cb))
+        x_unit_cb.bind("<<ComboboxSelected>>",
+                       lambda e: _refresh_unit_after(self.x_unit_var, x_unit_cb))
+
+        # Y-axis
+        ttk.Label(left, text="Y-axis (current):").pack(anchor=tk.W, padx=4)
+        y_row = ttk.Frame(left)
+        y_row.pack(fill=tk.X, padx=4, pady=2)
+        self.y_var   = tk.StringVar()
+        self.y_combo = ttk.Combobox(y_row, textvariable=self.y_var, state="readonly", width=16)
+        self.y_combo.pack(side=tk.LEFT)
+        self.y_unit_var = tk.StringVar(value="mA")
+        y_unit_cb = ttk.Combobox(y_row, textvariable=self.y_unit_var,
+                                  values=_DIM_OPTS["I"], state="readonly", width=6)
+        y_unit_cb.pack(side=tk.LEFT, padx=(4, 0))
+        self.y_combo.bind("<<ComboboxSelected>>",
+                          lambda e: _refresh_unit_opts(self.y_var, self.y_unit_var, y_unit_cb))
+        y_unit_cb.bind("<<ComboboxSelected>>",
+                       lambda e: _refresh_unit_after(self.y_unit_var, y_unit_cb))
+
+        # Reference electrode
+        ttk.Label(left, text="Reference Electrode:").pack(anchor=tk.W, padx=4, pady=(4, 0))
+        self.ref_electrode_var = tk.StringVar(value="Ag/AgCl")
+        ttk.Combobox(
+            left, textvariable=self.ref_electrode_var,
+            values=["Ag/AgCl", "SCE", "SHE", "NHE", "RHE",
+                    "Hg/HgO", "Hg/HgSO4 (MSE)", "Fc/Fc+", "Ag/Ag+", "Li/Li+"],
+            state="readonly", width=24,
+        ).pack(padx=4, pady=2)
+
+        # ── IR / RHE correction ───────────────────────────────────
+        ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
+        ttk.Label(left, text="IR / RHE Correction", font=("", 9, "bold")).pack(anchor=tk.W, padx=4)
+        rf = ttk.Frame(left)
+        rf.pack(fill=tk.X, padx=4, pady=2)
+        ttk.Label(rf, text="R_sol (Ohm):").pack(side=tk.LEFT)
+        self.r_sol_var = tk.StringVar(value="0")
+        ttk.Entry(rf, textvariable=self.r_sol_var, width=10).pack(side=tk.LEFT, padx=4)
+        ef = ttk.Frame(left)
+        ef.pack(fill=tk.X, padx=4, pady=2)
+        ttk.Label(ef, text="E_ref (V vs RHE):").pack(side=tk.LEFT)
+        self.e_ref_var = tk.StringVar(value="0")
+        ttk.Entry(ef, textvariable=self.e_ref_var, width=10).pack(side=tk.LEFT, padx=4)
+        cr = ttk.Frame(left)
+        cr.pack(fill=tk.X, padx=4, pady=2)
+        ttk.Button(cr, text="Apply Correction", command=self._apply_correction).pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Button(cr, text="Reset",            command=self._reset_correction).pack(side=tk.LEFT)
+
+        # ── Cycle checkboxes (9 columns) ──────────────────────────
+        ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
+        ttk.Label(left, text="Cycles:", font=("", 9, "bold")).pack(anchor=tk.W, padx=4)
+        cb_row = ttk.Frame(left)
+        cb_row.pack(fill=tk.X, padx=4)
+        ttk.Button(cb_row, text="Select All",   command=self._select_all).pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Button(cb_row, text="Deselect All", command=self._deselect_all).pack(side=tk.LEFT)
+
+        cyc_outer = ttk.Frame(left)
+        cyc_outer.pack(fill=tk.X, padx=4, pady=2)
+        cyc_canvas = tk.Canvas(cyc_outer, background=_CYCLE_BG, highlightthickness=0, height=90)
+        cyc_vs = ttk.Scrollbar(cyc_outer, orient=tk.VERTICAL,   command=cyc_canvas.yview)
+        cyc_hs = ttk.Scrollbar(cyc_outer, orient=tk.HORIZONTAL, command=cyc_canvas.xview)
+        cyc_canvas.configure(yscrollcommand=cyc_vs.set, xscrollcommand=cyc_hs.set)
+        cyc_vs.pack(side=tk.RIGHT,  fill=tk.Y)
+        cyc_hs.pack(side=tk.BOTTOM, fill=tk.X)
+        cyc_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        self._cycle_inner  = tk.Frame(cyc_canvas, background=_CYCLE_BG)
+        self._cycle_canvas = cyc_canvas
+        cyc_canvas.create_window((0, 0), window=self._cycle_inner, anchor=tk.NW)
+        self._cycle_inner.bind("<Configure>",
+                               lambda e: cyc_canvas.configure(scrollregion=cyc_canvas.bbox("all")))
+
+        def _cyc_wheel(e):
+            cyc_canvas.yview_scroll(-1 * (e.delta // 120), "units")
+            return "break"
+        cyc_canvas.bind("<MouseWheel>", _cyc_wheel)
+        self._cycle_inner.bind("<MouseWheel>", _cyc_wheel)
+
+        # ── Scan-rate per cycle (8-column grid) ───────────────────
+        ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
+        ttk.Label(left, text="Scan Rate per Cycle", font=("", 9, "bold")).pack(anchor=tk.W, padx=4)
+        ttk.Label(left, text="Enter scan rate (mV/s) — legend updates automatically",
+                  foreground="gray", font=("", 8)).pack(anchor=tk.W, padx=4)
+
+        sr_outer = ttk.Frame(left)
+        sr_outer.pack(fill=tk.X, padx=4, pady=2)
+        sr_canvas = tk.Canvas(sr_outer, highlightthickness=0, height=90)
+        sr_sc     = ttk.Scrollbar(sr_outer, orient=tk.VERTICAL, command=sr_canvas.yview)
+        sr_canvas.configure(yscrollcommand=sr_sc.set)
+        sr_sc.pack(side=tk.RIGHT, fill=tk.Y)
+        sr_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        self._sr_inner  = tk.Frame(sr_canvas)
+        self._sr_canvas = sr_canvas
+        _sr_win = sr_canvas.create_window((0, 0), window=self._sr_inner, anchor=tk.NW)
+        self._sr_inner.bind("<Configure>",
+                            lambda e: sr_canvas.configure(scrollregion=sr_canvas.bbox("all")))
+        sr_canvas.bind("<Configure>", lambda e: sr_canvas.itemconfig(_sr_win, width=e.width))
+
+        # ── ECSA parameters ───────────────────────────────────────
+        ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
+        ttk.Label(left, text="ECSA Parameters", font=("", 9, "bold")).pack(anchor=tk.W, padx=4)
+
+        estd_f = ttk.Frame(left)
+        estd_f.pack(fill=tk.X, padx=4, pady=2)
+        ttk.Label(estd_f, text="E_std (V):").pack(side=tk.LEFT)
+        self.e_std_var  = tk.StringVar(value="")
+        e_std_entry     = ttk.Entry(estd_f, textvariable=self.e_std_var, width=10)
+        e_std_entry.pack(side=tk.LEFT, padx=4)
+        ttk.Label(estd_f, text="← potential where ja & jc are read",
+                  foreground="gray", font=("", 8)).pack(side=tk.LEFT)
+        e_std_entry.bind("<Return>",   lambda e: self._plot_cv())
+        e_std_entry.bind("<FocusOut>", lambda e: self._plot_cv())
+
+        cs_f = ttk.Frame(left)
+        cs_f.pack(fill=tk.X, padx=4, pady=2)
+        ttk.Label(cs_f, text="Cs (mF/cm²):").pack(side=tk.LEFT)
+        self.cs_var = tk.StringVar(value="0.040")
+        ttk.Entry(cs_f, textvariable=self.cs_var, width=10).pack(side=tk.LEFT, padx=4)
+        ttk.Label(cs_f, text="typical 0.040", foreground="gray", font=("", 8)).pack(side=tk.LEFT)
+
+        # ── Action buttons ────────────────────────────────────────
+        act_f = ttk.Frame(left)
+        act_f.pack(fill=tk.X, padx=4, pady=6)
+        ttk.Button(act_f, text="Plot CV",
+                   command=self._plot_cv).pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Button(act_f, text="Extract Cdl & ECSA",
+                   command=self._extract_cdl_ecsa).pack(side=tk.LEFT)
+
+        # Legend frame toggle (CV plot)
+        leg_opt_row = ttk.Frame(left)
+        leg_opt_row.pack(fill=tk.X, padx=4, pady=(0, 4))
+        self.legend_frame_cv_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            leg_opt_row, text="Show CV Legend Frame",
+            variable=self.legend_frame_cv_var,
+            command=self._toggle_cv_legend_frame,
+        ).pack(side=tk.LEFT)
+
+        self.result_label = ttk.Label(left, text="", wraplength=290, justify=tk.LEFT)
+        self.result_label.pack(anchor=tk.W, padx=4, pady=2)
+
+        # ── Log ───────────────────────────────────────────────────
+        ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
+        ttk.Label(left, text="Log", font=("", 9, "bold")).pack(anchor=tk.W, padx=4)
+        log_f = ttk.Frame(left)
+        log_f.pack(fill=tk.X, padx=4, pady=2)
+        self.log_text = tk.Text(log_f, height=6, state=tk.DISABLED,
+                                wrap=tk.WORD, relief=tk.SUNKEN, borderwidth=1)
+        log_sc = ttk.Scrollbar(log_f, orient=tk.VERTICAL, command=self.log_text.yview)
+        self.log_text.configure(yscrollcommand=log_sc.set)
+        log_sc.pack(side=tk.RIGHT, fill=tk.Y)
+        self.log_text.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        # ── Right panel: two independent figures ──────────────────
+        right = ttk.Frame(body)
+        body.add(right, weight=1)
+
+        # Upper: CV plot
+        upper = ttk.Frame(right)
+        upper.pack(fill=tk.BOTH, expand=True)
+        self.fig_cv    = Figure(figsize=(6, 3.5), dpi=100, constrained_layout=True)
+        self.ax_cv     = self.fig_cv.add_subplot(1, 1, 1)
+        self.canvas_cv = FigureCanvasTkAgg(self.fig_cv, master=upper)
+        self.canvas_cv.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        tb_cv = ttk.Frame(upper)
+        tb_cv.pack(fill=tk.X)
+        NavigationToolbar2Tk(self.canvas_cv, tb_cv).update()
+
+        # Separator between plots
+        ttk.Separator(right, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=2)
+
+        # Lower: Cdl extraction plot
+        lower = ttk.Frame(right)
+        lower.pack(fill=tk.BOTH, expand=True)
+        self.fig_cdl    = Figure(figsize=(6, 3.5), dpi=100, constrained_layout=True)
+        self.ax_cdl     = self.fig_cdl.add_subplot(1, 1, 1)
+        self.canvas_cdl = FigureCanvasTkAgg(self.fig_cdl, master=lower)
+        self.canvas_cdl.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        tb_cdl = ttk.Frame(lower)
+        tb_cdl.pack(fill=tk.X)
+        NavigationToolbar2Tk(self.canvas_cdl, tb_cdl).update()
+
+        self._reset_cv_axes_labels()
+        self._reset_cdl_axes_labels()
+        self.canvas_cv.draw()
+        self.canvas_cdl.draw()
+
+        self._init_plot_interactions()
+
+    # ── Axis label helpers ───────────────────────────────────────────
+    def _reset_cv_axes_labels(self):
+        self.ax_cv.set_title("CV Curves  (non-Faradaic region)")
+        self.ax_cv.set_xlabel("Potential (V)")
+        self.ax_cv.set_ylabel("Current (mA)")
+
+    def _reset_cdl_axes_labels(self):
+        self.ax_cdl.set_title("Cdl Extraction")
+        self.ax_cdl.set_xlabel("Scan Rate  (mV/s)")
+        self.ax_cdl.set_ylabel("Δj/2  (mA)")
+
+    # ── Unit conversion helper ───────────────────────────────────────
+    def _get_unit_scale(self, col, target_unit):
+        """Return (scale_factor, display_label). Mirrors PlottingMixin logic."""
+        if not target_unit or target_unit == "(auto)":
+            return 1.0, col
+        _FACTORS = {
+            "A": 1.0,  "mA": 1e-3, "µA": 1e-6, "nA": 1e-9,
+            "V": 1.0,  "mV": 1e-3, "µV": 1e-6, "nV": 1e-9,
+            "s": 1.0,  "ms": 1e-3, "µs": 1e-6,
+            "min": 60.0, "h": 3600.0,
+        }
+        _DIMS = {
+            "A": "I", "mA": "I", "µA": "I", "nA": "I",
+            "V": "E", "mV": "E", "µV": "E", "nV": "E",
+            "s": "t", "ms": "t", "µs": "t", "min": "t", "h": "t",
+        }
+        if "/" in col:
+            col_base, src_unit = col.rsplit("/", 1)
+            col_base  = col_base.strip()
+            src_unit  = src_unit.strip()
+        else:
+            col_base  = col
+            src_unit  = None
+        display_label = f"{col_base}/{target_unit}"
+        src_f = _FACTORS.get(src_unit)
+        tgt_f = _FACTORS.get(target_unit)
+        if (src_f is not None and tgt_f is not None
+                and _DIMS.get(src_unit) == _DIMS.get(target_unit)):
+            return src_f / tgt_f, display_label
+        return 1.0, display_label
+
+    # ════════════════════════════════════════════════════════════════
+    # Interactive plot interactions
+    # ════════════════════════════════════════════════════════════════
+    def _init_plot_interactions(self):
+        self._legend_cv    = None
+        self._legend_cdl   = None
+        self._leg_size_cv  = 7.0
+        self._leg_size_cdl = 7.0
+
+        self._panning   = False
+        self._pan_ax    = None
+        self._pan_start = None
+        self._pan_moved = False
+
+        self._leg_resizing    = False
+        self._resize_leg      = None
+        self._resize_is_cv    = True
+        self._resize_start_y  = None
+        self._resize_start_sz = None
+
+        self._ann            = None
+        self._ann_dot        = None
+        self._ann_ax         = None
+        self._last_click_pos = None
+        self._cand_idx       = 0
+
+        for cv in (self.canvas_cv, self.canvas_cdl):
+            cv.mpl_connect("scroll_event",         self._ei_scroll)
+            cv.mpl_connect("button_press_event",   self._ei_press)
+            cv.mpl_connect("button_release_event", self._ei_release)
+            cv.mpl_connect("motion_notify_event",  self._ei_motion)
+
+    def _get_canvas(self, ax):
+        return self.canvas_cv if ax is self.ax_cv else self.canvas_cdl
+
+    # ── Legend hit-test ──────────────────────────────────────────────
+    def _ei_leg_hit(self, event):
+        try:
+            r = event.canvas.get_renderer()
+            for leg, is_cv in ((self._legend_cv, True), (self._legend_cdl, False)):
+                if leg is None:
+                    continue
+                if leg.get_window_extent(r).contains(event.x, event.y):
+                    return leg, is_cv
+        except Exception:
+            pass
+        return None, None
+
+    # ── Scroll = zoom ────────────────────────────────────────────────
+    def _ei_scroll(self, event):
+        ax = event.inaxes
+        if ax not in (self.ax_cv, self.ax_cdl):
+            return
+        scale = 0.8 if event.step > 0 else 1.25
+        xl, yl = ax.get_xlim(), ax.get_ylim()
+        xd, yd = event.xdata, event.ydata
+        xf = (xd - xl[0]) / (xl[1] - xl[0]) if xl[1] != xl[0] else 0.5
+        yf = (yd - yl[0]) / (yl[1] - yl[0]) if yl[1] != yl[0] else 0.5
+        nxr = (xl[1] - xl[0]) * scale
+        nyr = (yl[1] - yl[0]) * scale
+        ax.set_xlim(xd - nxr * xf,      xd + nxr * (1 - xf))
+        ax.set_ylim(yd - nyr * yf,      yd + nyr * (1 - yf))
+        self._get_canvas(ax).draw_idle()
+
+    # ── Press ────────────────────────────────────────────────────────
+    def _ei_press(self, event):
+        leg, is_cv = self._ei_leg_hit(event)
+        if event.button == 1:
+            self._pan_moved = False
+            if leg is None and event.inaxes in (self.ax_cv, self.ax_cdl):
+                self._panning   = True
+                self._pan_ax    = event.inaxes
+                self._pan_start = (event.xdata, event.ydata)
+        elif event.button == 3:
+            if leg is not None:
+                self._leg_resizing    = True
+                self._resize_leg      = leg
+                self._resize_is_cv    = is_cv
+                self._resize_start_y  = event.y
+                self._resize_start_sz = (self._leg_size_cv if is_cv else self._leg_size_cdl)
+
+    # ── Release ──────────────────────────────────────────────────────
+    def _ei_release(self, event):
+        self._panning = False
+        self._pan_ax  = None
+
+        was_resizing = self._leg_resizing
+        self._leg_resizing = False
+        if was_resizing:
+            return
+
+        leg, _ = self._ei_leg_hit(event)
+        if (event.button == 1
+                and not self._pan_moved
+                and event.inaxes in (self.ax_cv, self.ax_cdl)
+                and leg is None):
+            self._ei_annotate(event)
+        elif event.button == 3 and leg is None:
+            self._ei_clear_ann()
+
+    # ── Motion ───────────────────────────────────────────────────────
+    def _ei_motion(self, event):
+        if self._panning and self._pan_ax is not None:
+            if event.inaxes != self._pan_ax or event.xdata is None:
+                return
+            self._pan_moved = True
+            dx = self._pan_start[0] - event.xdata
+            dy = self._pan_start[1] - event.ydata
+            xl = self._pan_ax.get_xlim()
+            yl = self._pan_ax.get_ylim()
+            self._pan_ax.set_xlim(xl[0] + dx, xl[1] + dx)
+            self._pan_ax.set_ylim(yl[0] + dy, yl[1] + dy)
+            self._get_canvas(self._pan_ax).draw_idle()
+            return
+
+        if self._leg_resizing and self._resize_leg is not None:
+            dy     = event.y - self._resize_start_y
+            new_sz = max(4.0, min(30.0, self._resize_start_sz + dy / 5.0))
+            if self._resize_is_cv:
+                self._leg_size_cv  = new_sz
+            else:
+                self._leg_size_cdl = new_sz
+            for t in self._resize_leg.get_texts():
+                t.set_fontsize(new_sz)
+            tt = self._resize_leg.get_title()
+            if tt:
+                tt.set_fontsize(new_sz)
+            canvas = self.canvas_cv if self._resize_is_cv else self.canvas_cdl
+            canvas.draw()
+
+    # ── Click annotate ───────────────────────────────────────────────
+    def _ei_annotate(self, event):
+        ax    = event.inaxes
+        lines = [ln for ln in ax.lines
+                 if len(ln.get_xdata()) > 0 and ln.get_visible()
+                 and not ln.get_label().startswith("_")]
+        if not lines:
+            return
+        candidates = []
+        for ln in lines:
+            xd   = np.asarray(ln.get_xdata(), dtype=float)
+            yd   = np.asarray(ln.get_ydata(), dtype=float)
+            mask = np.isfinite(xd) & np.isfinite(yd)
+            if not mask.any():
+                continue
+            disp  = ax.transData.transform(np.column_stack([xd[mask], yd[mask]]))
+            dists = np.hypot(disp[:, 0] - event.x, disp[:, 1] - event.y)
+            best  = int(np.argmin(dists))
+            candidates.append((float(dists[best]), ln,
+                                float(xd[mask][best]), float(yd[mask][best])))
+        if not candidates:
+            return
+        candidates.sort(key=lambda t: t[0])
+        if (self._last_click_pos is not None
+                and abs(event.x - self._last_click_pos[0]) <= _CLICK_CYCLE_PX
+                and abs(event.y - self._last_click_pos[1]) <= _CLICK_CYCLE_PX):
+            self._cand_idx = (self._cand_idx + 1) % len(candidates)
+        else:
+            self._cand_idx = 0
+        self._last_click_pos = (event.x, event.y)
+        n                    = len(candidates)
+        _, ln, x, y          = candidates[self._cand_idx]
+        label                = ln.get_label() or "?"
+        xl, yl = ax.get_xlim(), ax.get_ylim()
+        xf = (x - xl[0]) / (xl[1] - xl[0]) if xl[1] != xl[0] else 0.5
+        yf = (y - yl[0]) / (yl[1] - yl[0]) if yl[1] != yl[0] else 0.5
+        xoff = -95 if xf > 0.65 else 15
+        yoff = -60 if yf > 0.65 else 15
+        hint = f"  [{self._cand_idx + 1}/{n}]" if n > 1 else ""
+        text = f"x = {x:.4g}\ny = {y:.4g}\n{label}{hint}"
+        if n > 1 and self._cand_idx == 0:
+            text += "\n↻ click again to cycle"
+        self._ei_clear_ann(redraw=False)
+        self._ann_ax = ax
+        self._ann    = ax.annotate(
+            text, xy=(x, y), xytext=(xoff, yoff), textcoords="offset points",
+            bbox=dict(boxstyle="round,pad=0.4", fc="lightyellow", ec="gray", alpha=0.92),
+            arrowprops=dict(arrowstyle="->", color="gray", lw=1.2),
+            fontsize=8, zorder=10,
+        )
+        self._ann_dot, = ax.plot(x, y, "o", color=ln.get_color(),
+                                  markersize=7, zorder=11, label="_ann_dot")
+        self._get_canvas(ax).draw_idle()
+
+    def _ei_clear_ann(self, redraw=True):
+        canvas = self._get_canvas(self._ann_ax) if self._ann_ax is not None else None
+        for artist in (self._ann, self._ann_dot):
+            if artist is not None:
+                try:
+                    artist.remove()
+                except Exception:
+                    pass
+        self._ann = self._ann_dot = None
+        self._last_click_pos = None
+        self._cand_idx       = 0
+        self._ann_ax         = None
+        if redraw and canvas is not None:
+            canvas.draw_idle()
+
+    # ════════════════════════════════════════════════════════════════
+    # FileManagerMixin overrides
+    # ════════════════════════════════════════════════════════════════
+    def _switch_active_file(self, short):
+        self.active_file = short
+        entry = self.files[short]
+        df    = entry["df"]
+        cols  = list(df.columns)
+
+        self.x_combo["values"] = cols
+        self.y_combo["values"] = cols
+
+        if not self.x_var.get() or self.x_var.get() not in cols:
+            x_default = next(
+                (c for c in cols if "ewe" in c.lower() or c.lower() in ("e/v", "potential")),
+                cols[1] if len(cols) > 1 else cols[0],
+            )
+            self.x_var.set(x_default)
+
+        if not self.y_var.get() or self.y_var.get() not in cols:
+            y_default = next(
+                (c for c in cols if "i/ma" in c.lower() or "current" in c.lower()),
+                cols[2] if len(cols) > 2 else cols[0],
+            )
+            self.y_var.set(y_default)
+
+        self.r_sol_var.set(str(entry["r_sol"]))
+        self.e_ref_var.set(str(entry["e_ref"]))
+
+        # Clear Cdl plot for new file
+        self._legend_cdl = None
+        self.ax_cdl.clear()
+        self._reset_cdl_axes_labels()
+        self.canvas_cdl.draw()
+        self.result_label.config(text="")
+
+        old = self._suppress_replot
+        self._suppress_replot = True
+        if "cycle number" in df.columns:
+            cycles = sorted(int(c) for c in df["cycle number"].unique())
+            self._populate_cycle_checkboxes(cycles, entry["selected_cycles"])
+        else:
+            self._populate_cycle_checkboxes([], [])
+        self._suppress_replot = old
+        self._auto_replot()
+
+    def _auto_replot(self):
+        if self._suppress_replot:
+            return
+        if not self.files or not self.x_var.get() or not self.y_var.get():
+            return
+        self._plot_cv()
+
+    def _plot(self):
+        self._plot_cv()
+
+    # ════════════════════════════════════════════════════════════════
+    # CV plot (upper figure)
+    # ════════════════════════════════════════════════════════════════
+    def _plot_cv(self):
+        if not self.active_file:
+            return
+        xcol = self.x_var.get()
+        ycol = self.y_var.get()
+        if not xcol or not ycol:
+            return
+
+        df       = self.files[self.active_file]["df"]
+        selected = self._selected_cycles()
+
+        # Apply unit scaling for display
+        x_scale, x_label = self._get_unit_scale(xcol, self.x_unit_var.get())
+        y_scale, y_label = self._get_unit_scale(ycol, self.y_unit_var.get())
+
+        self._ei_clear_ann(redraw=False)
+        self._legend_cv = None
+        self.ax_cv.clear()
+
+        if "cycle number" in df.columns:
+            if not selected:
+                # No cycles selected → show placeholder only
+                self._reset_cv_axes_labels()
+                self.canvas_cv.draw()
+                return
+            for c in selected:
+                sub = df[df["cycle number"] == c]
+                sr  = self._sr_vars.get(c, tk.StringVar()).get().strip()
+                lbl = f"C{c}" + (f"  ({sr} mV/s)" if sr else "")
+                self.ax_cv.plot(sub[xcol] * x_scale, sub[ycol] * y_scale, label=lbl)
+        else:
+            self.ax_cv.plot(df[xcol] * x_scale, df[ycol] * y_scale)
+
+        ref = self.ref_electrode_var.get().strip()
+        self.ax_cv.set_xlabel(f"{x_label}  (vs {ref})" if ref else x_label)
+        self.ax_cv.set_ylabel(y_label)
+        self.ax_cv.set_title("CV Curves  (non-Faradaic region)")
+
+        # Red dashed line at E_std (in display units)
+        try:
+            e_std_raw = float(self.e_std_var.get())
+            e_std_disp = e_std_raw * x_scale
+            self.ax_cv.axvline(e_std_disp, color="red", linestyle="--",
+                               linewidth=1.2, label=f"E_std = {e_std_raw:.3f} V")
+        except ValueError:
+            pass
+
+        if self.ax_cv.get_lines():
+            self._legend_cv = self.ax_cv.legend(fontsize=self._leg_size_cv)
+            self._legend_cv.set_draggable(True)
+            self._legend_cv.get_frame().set_visible(self.legend_frame_cv_var.get())
+
+        self.canvas_cv.draw()
+
+    def _toggle_cv_legend_frame(self):
+        if self._legend_cv is not None:
+            self._legend_cv.get_frame().set_visible(self.legend_frame_cv_var.get())
+            self.canvas_cv.draw()
+
+    # ════════════════════════════════════════════════════════════════
+    # Debounced CV redraw (triggered by scan rate edits)
+    # ════════════════════════════════════════════════════════════════
+    def _schedule_cv_redraw(self):
+        if self._cv_redraw_id is not None:
+            try:
+                self.after_cancel(self._cv_redraw_id)
+            except Exception:
+                pass
+        self._cv_redraw_id = self.after(300, self._plot_cv)
+
+    # ════════════════════════════════════════════════════════════════
+    # Scan-rate table  (8-column grid, with live-update traces)
+    # ════════════════════════════════════════════════════════════════
+    def _rebuild_sr_table(self):
+        # Remove stale traces before destroying widgets
+        for c, (var, tid) in list(self._sr_traces.items()):
+            try:
+                var.trace_remove("write", tid)
+            except Exception:
+                pass
+        self._sr_traces.clear()
+
+        for w in self._sr_inner.winfo_children():
+            w.destroy()
+
+        selected = sorted(self._selected_cycles())
+        ncols    = 8
+
+        for i, c in enumerate(selected):
+            if c not in self._sr_vars:
+                self._sr_vars[c] = tk.StringVar()
+            row_g = (i // ncols) * 2
+            col_g = i % ncols
+            ttk.Label(self._sr_inner, text=f"C{c}:").grid(
+                row=row_g, column=col_g, padx=3, pady=(3, 0), sticky=tk.W)
+            ttk.Entry(self._sr_inner, textvariable=self._sr_vars[c], width=5).grid(
+                row=row_g + 1, column=col_g, padx=3, pady=(0, 3))
+            # Live trace: schedule a debounced replot on every keystroke
+            tid = self._sr_vars[c].trace_add("write",
+                                              lambda *_: self._schedule_cv_redraw())
+            self._sr_traces[c] = (self._sr_vars[c], tid)
+
+        self._sr_inner.update_idletasks()
+        self._sr_canvas.configure(scrollregion=self._sr_canvas.bbox("all"))
+
+    # ════════════════════════════════════════════════════════════════
+    # Cdl extraction & ECSA calculation
+    # ════════════════════════════════════════════════════════════════
+    def _extract_cdl_ecsa(self):
+        if not self.active_file:
+            self._log("No file loaded.")
+            return
+
+        xcol = self.x_var.get()
+        ycol = self.y_var.get()
+        if not xcol or not ycol:
+            self._log("Select X and Y axes first.")
+            return
+
+        df = self.files[self.active_file]["df"]
+        if "cycle number" not in df.columns:
+            self._log("ERROR: 'cycle number' column not found.")
+            return
+
+        selected = sorted(self._selected_cycles())
+        if len(selected) < 2:
+            self._log("Select at least 2 cycles (one per scan rate).")
+            return
+
+        scan_rates = {}
+        for c in selected:
+            sr_str = self._sr_vars.get(c, tk.StringVar()).get().strip()
+            try:
+                scan_rates[c] = float(sr_str)
+            except ValueError:
+                self._log(f"C{c}: missing or invalid scan rate '{sr_str}'.")
+                return
+
+        try:
+            e_std = float(self.e_std_var.get())
+        except ValueError:
+            self._log("Invalid E_std — enter a numeric value (V).")
+            return
+
+        try:
+            cs = float(self.cs_var.get())
+            if cs <= 0:
+                raise ValueError
+        except ValueError:
+            self._log("Invalid Cs — must be > 0 (mF/cm²).")
+            return
+
+        self._log(f"\n── {self.active_file} ──")
+        self._log(f"E_std = {e_std} V    Cs = {cs} mF/cm²")
+        self._log(f"(Extraction uses raw column units: {xcol}, {ycol})")
+
+        sr_list = []
+        dj_list = []
+
+        for c in selected:
+            sub  = df[df["cycle number"] == c]
+            ewe  = sub[xcol].values.astype(float)
+            I    = sub[ycol].values.astype(float)
+
+            if len(ewe) < 4:
+                self._log(f"  C{c}: too few points — skipped.")
+                continue
+
+            emin, emax = ewe.min(), ewe.max()
+            if not (emin <= e_std <= emax):
+                self._log(f"  C{c}: E_std={e_std:.3f}V outside "
+                          f"[{emin:.3f}, {emax:.3f}]V — skipped.")
+                continue
+
+            imax  = int(np.argmax(ewe))
+            an_e, an_i = ewe[:imax + 1], I[:imax + 1]
+            ca_e, ca_i = ewe[imax:],      I[imax:]
+
+            try:
+                idx = np.argsort(an_e)
+                ja  = float(np.interp(e_std, an_e[idx], an_i[idx]))
+            except Exception:
+                self._log(f"  C{c}: anodic interpolation failed — skipped.")
+                continue
+
+            try:
+                idx = np.argsort(ca_e)
+                jc  = float(np.interp(e_std, ca_e[idx], ca_i[idx]))
+            except Exception:
+                self._log(f"  C{c}: cathodic interpolation failed — skipped.")
+                continue
+
+            dj = (ja - jc) / 2.0
+            self._log(f"  C{c}  ν={scan_rates[c]} mV/s  "
+                      f"ja={ja:.5f}  jc={jc:.5f}  Δj/2={dj:.5f}")
+            sr_list.append(scan_rates[c])
+            dj_list.append(dj)
+
+        if len(sr_list) < 2:
+            self._log("  Not enough valid cycles for linear fit.")
+            return
+
+        sr_arr           = np.array(sr_list)
+        dj_arr           = np.array(dj_list)
+        coeffs           = np.polyfit(sr_arr, dj_arr, 1)
+        slope, intercept = float(coeffs[0]), float(coeffs[1])
+        r_sq             = float(np.corrcoef(sr_arr, dj_arr)[0, 1] ** 2)
+
+        # slope [mA/(mV/s)] = F  →  ×1000 → mF
+        cdl_mF = slope * 1000.0
+        ecsa   = cdl_mF / cs
+
+        self._log(f"  Fit: Δj/2 = {slope:.5g}·ν + {intercept:.5g}")
+        self._log(f"  Cdl = {cdl_mF:.4f} mF    R² = {r_sq:.4f}")
+        self._log(f"  ECSA = {ecsa:.2f} cm²")
+
+        self.result_label.config(
+            text=(f"Cdl  = {cdl_mF:.4f} mF\n"
+                  f"ECSA = {ecsa:.2f} cm²\n"
+                  f"(Cs = {cs} mF/cm²,  R² = {r_sq:.4f})")
+        )
+
+        # ── Update lower plot ─────────────────────────────────────
+        self._legend_cdl = None
+        self.ax_cdl.clear()
+
+        sr_fit = np.linspace(0, sr_arr.max() * 1.1, 300)
+        dj_fit = np.polyval(coeffs, sr_fit)
+        y_unit = ycol.split("/")[-1] if "/" in ycol else ycol
+
+        self.ax_cdl.scatter(sr_arr, dj_arr, color="steelblue", zorder=5, label="Data")
+        self.ax_cdl.plot(
+            sr_fit, dj_fit, color="tomato", linewidth=1.5,
+            label=(f"y = {slope:.4g}x + {intercept:.4g}\n"
+                   f"Cdl = {cdl_mF:.4f} mF    R² = {r_sq:.4f}"),
+        )
+        self.ax_cdl.axhline(0, color="gray", linewidth=0.5, linestyle="--")
+        self.ax_cdl.set_xlabel("Scan Rate  (mV/s)")
+        self.ax_cdl.set_ylabel(f"Δj/2  ({y_unit})")
+        self.ax_cdl.set_title("Cdl Extraction")
+
+        self._legend_cdl = self.ax_cdl.legend(fontsize=self._leg_size_cdl)
+        self._legend_cdl.set_draggable(True)
+        self.canvas_cdl.draw()
+
+    # ════════════════════════════════════════════════════════════════
+    # Log helper
+    # ════════════════════════════════════════════════════════════════
+    def _log(self, message: str):
+        self.log_text.configure(state=tk.NORMAL)
+        self.log_text.insert(tk.END, message + "\n")
+        self.log_text.see(tk.END)
+        self.log_text.configure(state=tk.DISABLED)
+
+    # ════════════════════════════════════════════════════════════════
+    # Cycle helpers
+    # ════════════════════════════════════════════════════════════════
+    def _populate_cycle_checkboxes(self, cycles, selected):
+        for w in self._cycle_inner.winfo_children():
+            w.destroy()
+        self._cycle_vars.clear()
+
+        selected_set = set(selected)
+        ncols        = 9
+
+        def _wheel(e):
+            self._cycle_canvas.yview_scroll(-1 * (e.delta // 120), "units")
+            return "break"
+
+        for i, c in enumerate(cycles):
+            r, col = divmod(i, ncols)
+            var = tk.BooleanVar(value=(c in selected_set))
+            var.trace_add("write", self._on_cycle_toggle)
+            cb = tk.Checkbutton(
+                self._cycle_inner, text=f"C{c}", variable=var,
+                background=_CYCLE_BG, activebackground=_CYCLE_ACTIVE_BG,
+                selectcolor=_CYCLE_BG, anchor=tk.W,
+            )
+            cb.grid(row=r, column=col, sticky=tk.W, padx=2, pady=1)
+            cb.bind("<MouseWheel>", _wheel)
+            self._cycle_vars[c] = var
+
+        self._cycle_inner.update_idletasks()
+        self._cycle_canvas.configure(scrollregion=self._cycle_canvas.bbox("all"))
+        self._cycle_canvas.yview_moveto(0)
+        self._rebuild_sr_table()
+
+    def _on_cycle_toggle(self, *_args):
+        if not self._suppress_replot:
+            self._rebuild_sr_table()
+            self._auto_replot()
+
+    def _select_all(self):
+        self._suppress_replot = True
+        for v in self._cycle_vars.values():
+            v.set(True)
+        self._suppress_replot = False
+        self._rebuild_sr_table()
+        self._auto_replot()
+
+    def _deselect_all(self):
+        self._suppress_replot = True
+        for v in self._cycle_vars.values():
+            v.set(False)
+        self._suppress_replot = False
+        self._rebuild_sr_table()
+        # Clear CV plot to placeholder
+        self._legend_cv = None
+        self.ax_cv.clear()
+        self._reset_cv_axes_labels()
+        self.canvas_cv.draw()
+
+    def _selected_cycles(self):
+        return [c for c, v in self._cycle_vars.items() if v.get()]
+
+    def _edit_legend_labels(self):
+        pass
