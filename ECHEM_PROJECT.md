@@ -2,7 +2,7 @@
 
 ## Project Overview
 Electrochemistry GUI built with Python/tkinter + matplotlib.
-**Location:** `C:\Users\Mefford\PycharmProjects\echem_gui\echem-gui\`
+**Location:** `C:\Users\thsrk\echem_gui\echem-gui\`
 **Launch:** `python run_echem.py` or `python -m echem_gui`
 
 ## Package Structure
@@ -13,6 +13,7 @@ echem-gui/
     __init__.py             ← exports EchemGUI
     __main__.py             ← python -m echem_gui support
     app.py                  ← EchemGUI (tk.Tk window), EchemPanel class
+    multi_echem_panel.py    ← MultiEchemPanel class (Multi E.Chem tab)
     ecsa_panel.py           ← ECSAPanel class (dedicated ECSA Calc tab)
     file_manager.py         ← FileManagerMixin: load/remove/switch files
     correction.py           ← CorrectionMixin: IR compensation + RHE conversion
@@ -23,8 +24,9 @@ echem-gui/
 ```
 
 ## Architecture
-The app uses a **two-tab Notebook** at the top level:
+The app uses a **three-tab Notebook** at the top level (in this order):
 - **General E.Chem tab** → `EchemPanel(ttk.Frame + all mixins)`, `show_log=True`
+- **Multi E.Chem tab** → `MultiEchemPanel(ttk.Frame + FileManagerMixin + CorrectionMixin)`
 - **ECSA Calc tab** → `ECSAPanel(ttk.Frame + FileManagerMixin + CorrectionMixin)`
 
 Each panel is fully **independent**: its own `files` dict, `active_file`, figures, and canvases. Switching tabs never affects the other tab's data or plots.
@@ -32,78 +34,105 @@ Each panel is fully **independent**: its own `files` dict, `active_file`, figure
 ### EchemPanel (General E.Chem)
 - Inherits: `FileManagerMixin, CorrectionMixin, PlottingMixin, ECSAMixin, ExportMixin, ttk.Frame`
 - Left panel: scrollable canvas with all controls
-- Right panel: single matplotlib `Figure` + `NavigationToolbar2Tk` (with custom Home → `_reset_view()`)
+- Right panel: single matplotlib `Figure` + `NavigationToolbar2Tk` (custom Home → `_reset_view()`)
 - Optional sections: `show_ecsa=True` adds legacy ECSA Calc block; `show_log=True` adds Log widget
-- Constructed by `EchemGUI._build_ui()` via `EchemPanel(gen_tab, show_ecsa=False, show_log=True)`
+- **J virtual column**: when all loaded files have a positive electrode area, a "J" entry appears in both column comboboxes; selecting it computes current density (raw current / area) per file at plot time. Unit range combobox shows A/cm², mA/cm², µA/cm², nA/cm²
+- **Per-file view preservation**: `_save_active_state` saves `ax.get_xlim()/get_ylim()` to `entry["view_xlim"/"view_ylim"]`; `_switch_active_file` restores them after replot
+- **Overrides** `_save_active_state`, `_switch_active_file`, `_get_column_list`, `_clear_plot` from mixins
+
+### MultiEchemPanel (Multi E.Chem)
+- Inherits: `FileManagerMixin, CorrectionMixin, ttk.Frame`
+- Left panel: shared axis/unit controls, plot range, reference electrode, IR/RHE correction, cycle checkboxes, legend options — all apply to the **active file only**
+- Right panel: scrollable canvas holding one `LabelFrame + Figure` per loaded file, arranged in a 2-column grid; figures remain visible simultaneously
+- **Click-to-select**: clicking anywhere on a file's plot or toolbar frame calls `_activate_file(short)`, which updates the listbox selection and switches the left panel to that file
+- **J virtual column**: per-file check — "J" appears in column comboboxes only when the active file has area > 0; each file's J is computed with its own stored area
+- **Per-file view preservation**: `_save_active_state` saves each file's `ax.get_xlim()/get_ylim()` to `entry["view_xlim"/"view_ylim"]`; `_switch_active_file` restores them after replot
+- **Key methods**: `_create_file_figure`, `_relayout_figures`, `_plot_file(short)`, `_activate_file(short)`, `_reset_file_view(short)`
 
 ### ECSAPanel (ECSA Calc)
 - Inherits: `FileManagerMixin, CorrectionMixin, ttk.Frame`
-- Left panel: scrollable canvas (files, axis+unit selectors, reference electrode, IR correction, cycles, scan-rate table, ECSA params, buttons, legend-frame toggle, result label, log)
+- IR/RHE correction UI **removed** (correction not needed for ECSA); `r_sol_var` and `e_ref_var` kept as hidden `StringVar` so `FileManagerMixin` still works
+- Left panel: scrollable canvas (files, axis+unit selectors, CV plot range, reference electrode, cycles, scan-rate table, ECSA params, buttons, legend-frame toggles, result label, log)
 - Right panel: **two independent figures** stacked vertically, each with its own `NavigationToolbar2Tk`:
   - `fig_cv / ax_cv / canvas_cv` — CV curves (upper)
-  - `fig_cdl / ax_cdl / canvas_cdl` — Cdl extraction scatter + linear fit (lower)
+  - `fig_cdl / ax_cdl / canvas_cdl` — Cdl extraction scatter + linear fit (lower); legend shows equation, Cdl, R², and ECSA
 - Interactions (zoom/pan/annotate/legend drag) registered on **both** canvases; `_get_canvas(ax)` routes draw calls to the correct one
+- **Per-file view preservation**: saves/restores xlim/ylim for both `ax_cv` and `ax_cdl` independently; Cdl view restored right after `_replot_cdl`, CV view restored after `_auto_replot`
+- **Per-file isolation**: E_std, Cs, scan-rate data, axis selections, column/unit choices, plot ranges, legend settings, Cdl data and result text all saved/restored per file
 - **Overrides** from mixins:
-  - `_switch_active_file` — smarter column auto-detection (searches for "ewe"/"i/ma" keywords), clears Cdl plot + `result_label` on every file switch
-  - `_auto_replot` — delegates to `_plot_cv()` only (no full `_plot()`)
+  - `_clear_plot` — clears both plots and result label when all files removed
+  - `_save_active_state` — saves all per-file ECSA state + view limits
+  - `_switch_active_file` — restores full per-file state, Cdl plot, view limits
+  - `_auto_replot` — delegates to `_plot_cv()` only
   - `_plot` — also delegates to `_plot_cv()`
-  - `_edit_legend_labels` — **no-op** (`pass`); legend editor dialog not wired up in ECSAPanel
+  - `_edit_legend_labels` — **no-op** (`pass`)
 
 ### EchemGUI (main window)
 - Inherits only `tk.Tk`
-- Creates `ttk.Notebook`, adds `gen_tab` and `ecsa_tab` frames, instantiates one panel per tab
+- Creates `ttk.Notebook`, adds `gen_tab`, `multi_tab`, `ecsa_tab` frames in that order
+- Each tab instantiates its panel directly; no shared state
 
 ### Data model (per panel instance)
 - `self.files = OrderedDict[str, dict]` keyed by short filename
-  - Each entry: `{"path", "df_raw", "df", "selected_cycles", "r_sol", "e_ref"}`
+  - Base fields set on load: `{"path", "df_raw", "df", "selected_cycles", "r_sol", "e_ref", "area"}`
   - `df_raw` = original parsed data; `df` = corrected working copy
   - `selected_cycles` is always `[]` on first load; user picks manually
+  - `area` = electrode area string (cm²); used for J density calculation
+  - `view_xlim`, `view_ylim` = saved axis limits for zoom/pan preservation (set on first file switch away)
 - `self.active_file`: currently selected filename
 - `self._suppress_replot`: prevents cascading auto-replots during bulk UI updates
 - `self._loading_files`: blocks `<<ListboxSelect>>` during programmatic `selection_set()`
 
-**ECSAPanel additional state:**
-- `self._sr_vars = {cycle_num: StringVar}` — scan rate entry per cycle; persists across table rebuilds
-- `self._sr_traces = {cycle_num: (var, trace_id)}` — trace IDs saved so they can be removed before rebuild
-- `self._cv_redraw_id` — `after()` ID for debounced CV replot (300 ms); cancelled and rescheduled on each keystroke in scan-rate table
+**ECSAPanel additional per-file fields** (set by `setdefault` in `_switch_active_file`):
+- `sr_data`, `e_std`, `cs`, `x_col`, `y_col`, `x_unit`, `y_unit`
+- `x_min`, `x_max`, `y_min`, `y_max`, `ref_electrode`
+- `legend_frame_cv`, `legend_frame_cdl`, `cdl_data`, `result_text`
+- `view_xlim_cv`, `view_ylim_cv`, `view_xlim_cdl`, `view_ylim_cdl`
+
+**ECSAPanel panel-level state:**
+- `self._sr_vars = {cycle_num: StringVar}` — scan rate entry per cycle
+- `self._sr_traces = {cycle_num: (var, trace_id)}` — trace IDs for cleanup before rebuild
+- `self._cv_redraw_id` — `after()` ID for debounced CV replot (300 ms)
 
 ## Key Features
 
 ### General E.Chem tab
-1. **Multi-file support** — load multiple `.txt` files, manage in listbox, overlay on plot
-2. **Axis selectors + unit dropdowns** — X and Y each have a column selector and a unit combobox with dimension-aware filtering (I/E/t families)
-3. **Unit conversion** — `_get_axis_unit_scale(col, target)` (PlottingMixin) returns `(scale_factor, display_label)`; scale applied to data before plotting
-4. **IR correction** — `E_corrected = E_raw − (I_mA / 1000) × R_sol`
-5. **RHE conversion** — `E_RHE = E_measured + E_ref_vs_RHE`
-6. **Reference electrode selector** — appended to x-axis label as `(vs Ag/AgCl)` etc.
-7. **Auto-replot** — updates on cycle selection, correction, file switch; suppressed during load
-8. **Plot range** — blank entry = auto; triggers replot on Return / FocusOut
-9. **Cycle checkboxes** — 9-column grid, scrollable (vertical + horizontal), "Select All / Deselect All"
-10. **Legend controls** — show/hide, frame toggle, font size, location, "Edit Labels" dialog, drag to move, right-drag to resize
-11. **Mouse interactions** (via `PlottingMixin`):
-    - Scroll wheel = zoom centred on cursor
-    - Left-drag = pan
-    - Left-click = annotate nearest point (pixel-space distance, overlap cycling through lines)
-    - Right-click = dismiss annotation
-12. **Excel export** — active file only; "Raw" and "Corrected" sheets, cycles side-by-side
-13. **Log widget** — scrollable read-only text area at the bottom of the left panel
-14. **Legacy ECSA section** (hidden from General tab currently) — prototype Cdl estimate via `ECSAMixin`
+1. **Multi-file support** — load multiple `.txt` files, manage in listbox, overlay on single plot
+2. **Axis selectors + unit dropdowns** — X and Y each have a column selector and a unit combobox with dimension-aware filtering (I/E/t/J families)
+3. **J (current density) column** — virtual column; requires all files to have area > 0; computes I/area per file at plot time; density unit range: A/cm², mA/cm², µA/cm², nA/cm²
+4. **Unit conversion** — `_get_axis_unit_scale(col, target)` returns `(scale_factor, display_label)`; label format is `col (unit)` e.g. `I (mA)`, `Ewe (V)`
+5. **"(vs Ref)" logic** — appended to axis label only when the column/unit is a voltage type (V/mV/µV/nV); applies to both X and Y axes
+6. **IR correction** — `E_corrected = E_raw − (I_mA / 1000) × R_sol`
+7. **RHE conversion** — `E_RHE = E_measured + E_ref_vs_RHE`
+8. **Reference electrode selector** — appended to axis label as `(vs Ag/AgCl)` etc.
+9. **Auto-replot** — updates on cycle selection, correction, file switch; suppressed during load
+10. **Plot range** — blank = auto; triggers replot on Return / FocusOut
+11. **Cycle checkboxes** — 9-column grid, scrollable, "Select All / Deselect All"
+12. **Legend controls** — show/hide, frame toggle, font size, location, "Edit Labels" dialog, drag to move, right-drag to resize
+13. **Per-file zoom/pan preservation** — switching files restores each file's last view state
+14. **Mouse interactions** (PlottingMixin): scroll = zoom, left-drag = pan, left-click = annotate, right-click = dismiss
+15. **Excel export** — active file only; "Raw" and "Corrected" sheets, cycles side-by-side
+
+### Multi E.Chem tab
+1. **One plot per file** — each loaded file gets its own labelled figure; all visible simultaneously in a 2-column grid
+2. **Per-file settings** — axis columns, units, plot range, reference electrode, IR/RHE correction, cycle selection, legend options all independent per file
+3. **J (current density) column** — per-file check: "J" added to combos only when active file has area > 0
+4. **Click-to-select** — clicking any plot or its toolbar selects that file in the listbox and updates left controls
+5. **Per-file zoom/pan preservation** — switching files or clicking plots restores each file's last view state
+6. **Shared axis/unit UI** — left controls show settings of the currently active (selected) file only
+7. **Legend controls** — per-file show/hide, frame, size, location; legend draggable and font-resizable
 
 ### ECSA Calc tab
-1. **Independent file state** — loads its own files, does not share with General tab
-2. **Axis selectors + unit dropdowns** — same dimension-aware unit filtering as General tab; units applied for display only (extraction uses raw column values); unit scale via `_get_unit_scale()` (ECSAPanel standalone method, not PlottingMixin)
-3. **IR / RHE correction** — same as General tab
+1. **Independent file state** — fully separate from other tabs
+2. **No IR/RHE correction** — section removed; not needed for double-layer capacitance extraction
+3. **Axis selectors + unit dropdowns** — dimension-aware; display only; extraction uses raw column values
 4. **Cycle checkboxes** — 9-column grid, same UX as General tab
-5. **Scan-rate per cycle table** — 8-column grid, dynamically rebuilt when cycle selection changes; each entry has a `trace_add("write", …)` that triggers a debounced (300 ms) CV replot so legend updates as you type
-6. **E_std entry** — vertical red dashed line drawn on CV; Return/FocusOut triggers replot
-7. **Cs entry** — specific capacitance (default 0.040 mF/cm²)
-8. **Plot CV button** — explicit replot of selected cycles
-9. **Extract Cdl & ECSA button** — runs extraction, updates lower plot, logs results
-10. **CV Legend Frame toggle** — "Show CV Legend Frame" checkbox
-11. **Deselect All** — clears CV plot to placeholder (does NOT fall back to all cycles)
-12. **File switch** — clears Cdl plot and result label automatically
-13. **Two independent toolbars** — each matplotlib toolbar controls only its own plot (Home, Back, Forward, Zoom, Pan, Configure, Save all work per-plot)
-14. **Log widget** — same as General tab
+5. **Scan-rate per cycle table** — 8-column grid; each entry has `trace_add("write", …)` triggering debounced (300 ms) CV replot so legend updates as you type
+6. **E_std entry** — red dashed vertical line on CV; immediate save to entry dict + replot on Return/FocusOut
+7. **Cs entry** — specific capacitance (default 0.040 mF/cm²); immediate save to entry dict on Return/FocusOut
+8. **Extract Cdl & ECSA** — runs extraction, updates Cdl plot; legend shows fit equation + Cdl + R² + ECSA; results persisted per file for restore on file switch
+9. **Per-file zoom/pan preservation** — CV and Cdl views independently saved/restored per file
+10. **Two independent toolbars** — each toolbar controls only its own plot
 
 ## ECSA Physics (Cdl extraction)
 ```
@@ -121,7 +150,7 @@ Linear fit:  scan_rate (mV/s)  vs  Δj/2 (mA)
 ```
 - Extraction always uses raw column data regardless of display unit selection.
 - E_std is in the same units as the raw x-column (typically V).
-- Result logged per file, allowing multiple catalysts to be processed in sequence.
+- Result logged per file; ECSA shown in Cdl plot legend.
 
 ## Dependencies
 - Python standard: `tkinter`, `collections`
@@ -133,20 +162,22 @@ Linear fit:  scan_rate (mV/s)  vs  Δj/2 (mA)
 - Plot skips files with `cycle number` column but no selected cycles
 - Export only exports the active file; blocks if no cycles selected
 - `constrained_layout=True` on Figure prevents subplot title/label overlap
-- Two separate Figure objects in ECSAPanel (not subplots) gives each plot a fully functional independent toolbar including Home/Zoom history
+- Two separate Figure objects in ECSAPanel (not subplots) gives each plot a fully functional independent toolbar
+- J column is a UI-level virtual column, not in the DataFrame; resolved to the actual current column at plot time by searching for a column whose unit suffix is in `_CURRENT_UNITS = {"A","mA","µA","nA"}`
 
 ## Known Patterns / Gotchas
 - **`_suppress_replot` must save/restore** — use `old = self._suppress_replot` pattern, not hard-set `False`
 - **`_loading_files` guard** — `selection_set()` fires `<<ListboxSelect>>` synchronously on Windows; wrap with `_loading_files = True/False` and early-return in `_on_file_select`
+- **`_clear_plot` hook** — `FileManagerMixin._remove_file` calls `self._clear_plot()` when the last file is removed; base implementation is a no-op; override in each panel to clear canvases
 - `canvas.draw()` (not `draw_idle()`) needed for legend resize to show frame changes in real-time
 - `set_draggable(True)` called after every `ax.legend(...)` call; old legend ref becomes stale after `ax.clear()` so reset to `None` before clearing
-- Toolbar Home button override requires subclassing `NavigationToolbar2Tk` (attribute assignment does not work — command is bound at init time); only done in EchemPanel, not ECSAPanel
+- Toolbar Home button override requires subclassing `NavigationToolbar2Tk` (attribute assignment does not work — command is bound at init time)
 - Tab-separated `.txt` files expected; column names normalized on load: whitespace stripped, `<`/`>` removed (e.g. `<Ewe>/V` → `Ewe/V`)
 - **`_clear_annotation` naming differs by panel** — EchemPanel (PlottingMixin) uses `_clear_annotation(redraw=False)`; ECSAPanel uses `_ei_clear_ann(redraw=False)`. Both must be called **before** `ax.clear()`.
-- **Annotation dot label differs by panel** — EchemPanel uses `"_click_dot"`; ECSAPanel uses `"_ann_dot"`. Both have `_`-prefix to hide from legend and exclude from pick candidates via `not ln.get_label().startswith("_")`.
-- `_pan_moved` reset to `False` on every press, set `True` on actual motion; gates annotation on release
+- **Axis label format** — `col (unit)` e.g. `I (mA)`, `time (ms)`; auto case converts the column name's own `/` separator to the same format (e.g. `I/mA` → `I (mA)`)
+- **`_pan_moved`** reset to `False` on every press, set `True` on actual motion; gates annotation on release
 - Scan rate `StringVar` traces accumulate if not removed — `_rebuild_sr_table` calls `var.trace_remove()` for all previous trace IDs before rebuilding
-- Cycle column count: **9** for both EchemPanel and ECSAPanel
-- Scan-rate table column count: **8** for ECSAPanel
-- **Unit scale method name differs** — PlottingMixin exposes `_get_axis_unit_scale(col, target)`; ECSAPanel has its own standalone `_get_unit_scale(col, target_unit)` with the same logic but different name
-- **CorrectionMixin hardcodes column names** — `_apply_correction` looks for `"Ewe/V"` (potential) and `"I/mA"` (current) specifically; will error on files with differently named columns (e.g. EC-Lab format is fine, other instruments may not be)
+- **Unit scale method name differs** — PlottingMixin: `_get_axis_unit_scale(col, target)`; ECSAPanel and MultiEchemPanel: `_get_unit_scale(col, target_unit)` (same logic, different name)
+- **View preservation timing** — in ECSAPanel, Cdl view is restored immediately after `_replot_cdl()`, CV view after `_auto_replot()`; order matters since both draw to canvas
+- **Area var in file_manager** — `_save_active_state` and `_switch_active_file` handle `area_var` via `getattr(self, "area_var", None)` so panels without it are unaffected
+- **CorrectionMixin column names** — `_apply_correction` looks for `"Ewe/V"` and `"I/mA"`; silently no-ops if columns absent (since recent cleanup of correction.py)
