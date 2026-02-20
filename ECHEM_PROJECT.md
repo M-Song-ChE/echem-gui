@@ -3,15 +3,15 @@
 ## Project Overview
 Electrochemistry GUI built with Python/tkinter + matplotlib.
 **Location:** `C:\Users\thsrk\echem_gui\echem-gui\`
-**Launch:** `python run_echem.py` or `python -m echem_gui`
+**Launch:** `python run_echem.py` or `python -m echem_core`
 
 ## Package Structure
 ```
-echem-gui/
+echem_gui/
   run_echem.py              ← entry point (thin launcher)
-  echem_gui/
+  echem_core/
     __init__.py             ← exports EchemGUI
-    __main__.py             ← python -m echem_gui support
+    __main__.py             ← python -m echem_core support
     app.py                  ← EchemGUI (tk.Tk window), EchemPanel class
     multi_echem_panel.py    ← MultiEchemPanel class (Multi E.Chem tab)
     ecsa_panel.py           ← ECSAPanel class (dedicated ECSA Calc tab)

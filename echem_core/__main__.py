@@ -1,4 +1,4 @@
-"""Entry point: python -m echem_gui"""
+"""Entry point: python -m echem_core"""
 
 from .app import EchemGUI
 
