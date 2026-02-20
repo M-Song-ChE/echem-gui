@@ -52,6 +52,7 @@ _DIM_OPTS = {
 }
 _ALL_UNITS = ["(auto)", "A", "mA", "µA", "nA",
               "V", "mV", "µV", "nV", "s", "ms", "µs", "min", "h"]
+_VOLTAGE_UNITS = frozenset({"V", "mV", "µV", "nV"})
 
 
 class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
@@ -162,33 +163,49 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         y_unit_cb.bind("<<ComboboxSelected>>",
                        lambda e: _refresh_unit_after(self.y_unit_var, y_unit_cb))
 
+        # CV plot range (min / max per axis)
+        ttk.Label(left, text="CV Plot Range:", font=("", 8)).pack(anchor=tk.W, padx=4, pady=(6, 0))
+        xr_f = ttk.Frame(left)
+        xr_f.pack(fill=tk.X, padx=4, pady=(1, 0))
+        ttk.Label(xr_f, text="X min:").pack(side=tk.LEFT)
+        self.x_min_var = tk.StringVar()
+        _xmin = ttk.Entry(xr_f, textvariable=self.x_min_var, width=7)
+        _xmin.pack(side=tk.LEFT, padx=(2, 6))
+        ttk.Label(xr_f, text="X max:").pack(side=tk.LEFT)
+        self.x_max_var = tk.StringVar()
+        _xmax = ttk.Entry(xr_f, textvariable=self.x_max_var, width=7)
+        _xmax.pack(side=tk.LEFT, padx=2)
+        yr_f = ttk.Frame(left)
+        yr_f.pack(fill=tk.X, padx=4, pady=(1, 0))
+        ttk.Label(yr_f, text="Y min:").pack(side=tk.LEFT)
+        self.y_min_var = tk.StringVar()
+        _ymin = ttk.Entry(yr_f, textvariable=self.y_min_var, width=7)
+        _ymin.pack(side=tk.LEFT, padx=(2, 6))
+        ttk.Label(yr_f, text="Y max:").pack(side=tk.LEFT)
+        self.y_max_var = tk.StringVar()
+        _ymax = ttk.Entry(yr_f, textvariable=self.y_max_var, width=7)
+        _ymax.pack(side=tk.LEFT, padx=2)
+        ttk.Label(left, text="(blank = auto)", foreground="gray",
+                  font=("", 8)).pack(anchor=tk.W, padx=4)
+        for _re in (_xmin, _xmax, _ymin, _ymax):
+            _re.bind("<Return>",   lambda e: self._plot_cv())
+            _re.bind("<FocusOut>", lambda e: self._plot_cv())
+
         # Reference electrode
         ttk.Label(left, text="Reference Electrode:").pack(anchor=tk.W, padx=4, pady=(4, 0))
         self.ref_electrode_var = tk.StringVar(value="Ag/AgCl")
-        ttk.Combobox(
+        _ref_cb = ttk.Combobox(
             left, textvariable=self.ref_electrode_var,
             values=["Ag/AgCl", "SCE", "SHE", "NHE", "RHE",
                     "Hg/HgO", "Hg/HgSO4 (MSE)", "Fc/Fc+", "Ag/Ag+", "Li/Li+"],
             state="readonly", width=24,
-        ).pack(padx=4, pady=2)
+        )
+        _ref_cb.pack(padx=4, pady=2)
+        _ref_cb.bind("<<ComboboxSelected>>", lambda e: self._auto_replot())
 
-        # ── IR / RHE correction ───────────────────────────────────
-        ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
-        ttk.Label(left, text="IR / RHE Correction", font=("", 9, "bold")).pack(anchor=tk.W, padx=4)
-        rf = ttk.Frame(left)
-        rf.pack(fill=tk.X, padx=4, pady=2)
-        ttk.Label(rf, text="R_sol (Ohm):").pack(side=tk.LEFT)
+        # Hidden vars required by FileManagerMixin (IR/RHE correction not used in ECSA)
         self.r_sol_var = tk.StringVar(value="0")
-        ttk.Entry(rf, textvariable=self.r_sol_var, width=10).pack(side=tk.LEFT, padx=4)
-        ef = ttk.Frame(left)
-        ef.pack(fill=tk.X, padx=4, pady=2)
-        ttk.Label(ef, text="E_ref (V vs RHE):").pack(side=tk.LEFT)
         self.e_ref_var = tk.StringVar(value="0")
-        ttk.Entry(ef, textvariable=self.e_ref_var, width=10).pack(side=tk.LEFT, padx=4)
-        cr = ttk.Frame(left)
-        cr.pack(fill=tk.X, padx=4, pady=2)
-        ttk.Button(cr, text="Apply Correction", command=self._apply_correction).pack(side=tk.LEFT, padx=(0, 4))
-        ttk.Button(cr, text="Reset",            command=self._reset_correction).pack(side=tk.LEFT)
 
         # ── Cycle checkboxes (9 columns) ──────────────────────────
         ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
@@ -253,15 +270,31 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         e_std_entry.pack(side=tk.LEFT, padx=4)
         ttk.Label(estd_f, text="← potential where ja & jc are read",
                   foreground="gray", font=("", 8)).pack(side=tk.LEFT)
-        e_std_entry.bind("<Return>",   lambda e: self._plot_cv())
-        e_std_entry.bind("<FocusOut>", lambda e: self._plot_cv())
+
+        def _on_estd_change(e=None):
+            # Persist immediately so file-switch always sees the latest value
+            if self.active_file and self.active_file in self.files:
+                self.files[self.active_file]["e_std"] = self.e_std_var.get()
+            self._plot_cv()
+
+        e_std_entry.bind("<Return>",   _on_estd_change)
+        e_std_entry.bind("<FocusOut>", _on_estd_change)
 
         cs_f = ttk.Frame(left)
         cs_f.pack(fill=tk.X, padx=4, pady=2)
         ttk.Label(cs_f, text="Cs (mF/cm²):").pack(side=tk.LEFT)
         self.cs_var = tk.StringVar(value="0.040")
-        ttk.Entry(cs_f, textvariable=self.cs_var, width=10).pack(side=tk.LEFT, padx=4)
+        cs_entry = ttk.Entry(cs_f, textvariable=self.cs_var, width=10)
+        cs_entry.pack(side=tk.LEFT, padx=4)
         ttk.Label(cs_f, text="typical 0.040", foreground="gray", font=("", 8)).pack(side=tk.LEFT)
+
+        def _on_cs_change(e=None):
+            # Persist immediately so file-switch always sees the latest value
+            if self.active_file and self.active_file in self.files:
+                self.files[self.active_file]["cs"] = self.cs_var.get()
+
+        cs_entry.bind("<Return>",   _on_cs_change)
+        cs_entry.bind("<FocusOut>", _on_cs_change)
 
         # ── Action buttons ────────────────────────────────────────
         act_f = ttk.Frame(left)
@@ -271,7 +304,7 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         ttk.Button(act_f, text="Extract Cdl & ECSA",
                    command=self._extract_cdl_ecsa).pack(side=tk.LEFT)
 
-        # Legend frame toggle (CV plot)
+        # Legend frame toggles
         leg_opt_row = ttk.Frame(left)
         leg_opt_row.pack(fill=tk.X, padx=4, pady=(0, 4))
         self.legend_frame_cv_var = tk.BooleanVar(value=True)
@@ -280,6 +313,12 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             variable=self.legend_frame_cv_var,
             command=self._toggle_cv_legend_frame,
         ).pack(side=tk.LEFT)
+        self.legend_frame_cdl_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            leg_opt_row, text="Show Cdl Legend Frame",
+            variable=self.legend_frame_cdl_var,
+            command=self._toggle_cdl_legend_frame,
+        ).pack(side=tk.LEFT, padx=(8, 0))
 
         self.result_label = ttk.Label(left, text="", wraplength=290, justify=tk.LEFT)
         self.result_label.pack(anchor=tk.W, padx=4, pady=2)
@@ -309,7 +348,11 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         self.canvas_cv.get_tk_widget().pack(fill=tk.BOTH, expand=True)
         tb_cv = ttk.Frame(upper)
         tb_cv.pack(fill=tk.X)
-        NavigationToolbar2Tk(self.canvas_cv, tb_cv).update()
+        _panel = self
+        class _CVToolbar(NavigationToolbar2Tk):
+            def home(tb_self, *args):
+                _panel._reset_cv_view()
+        _CVToolbar(self.canvas_cv, tb_cv).update()
 
         # Separator between plots
         ttk.Separator(right, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=2)
@@ -323,7 +366,10 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         self.canvas_cdl.get_tk_widget().pack(fill=tk.BOTH, expand=True)
         tb_cdl = ttk.Frame(lower)
         tb_cdl.pack(fill=tk.X)
-        NavigationToolbar2Tk(self.canvas_cdl, tb_cdl).update()
+        class _CdlToolbar(NavigationToolbar2Tk):
+            def home(tb_self, *args):
+                _panel._reset_cdl_view()
+        _CdlToolbar(self.canvas_cdl, tb_cdl).update()
 
         self._reset_cv_axes_labels()
         self._reset_cdl_axes_labels()
@@ -347,6 +393,9 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
     def _get_unit_scale(self, col, target_unit):
         """Return (scale_factor, display_label). Mirrors PlottingMixin logic."""
         if not target_unit or target_unit == "(auto)":
+            if "/" in col:
+                _cb, _cu = col.rsplit("/", 1)
+                return 1.0, f"{_cb.strip()} ({_cu.strip()})"
             return 1.0, col
         _FACTORS = {
             "A": 1.0,  "mA": 1e-3, "µA": 1e-6, "nA": 1e-9,
@@ -366,7 +415,7 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         else:
             col_base  = col
             src_unit  = None
-        display_label = f"{col_base}/{target_unit}"
+        display_label = f"{col_base} ({target_unit})"
         src_f = _FACTORS.get(src_unit)
         tgt_f = _FACTORS.get(target_unit)
         if (src_f is not None and tgt_f is not None
@@ -382,6 +431,12 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         self._legend_cdl   = None
         self._leg_size_cv  = 7.0
         self._leg_size_cdl = 7.0
+
+        # Stored auto-scaled limits for Home button restore
+        self._auto_xlim_cv  = None
+        self._auto_ylim_cv  = None
+        self._auto_xlim_cdl = None
+        self._auto_ylim_cdl = None
 
         self._panning   = False
         self._pan_ax    = None
@@ -576,39 +631,112 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
     # ════════════════════════════════════════════════════════════════
     # FileManagerMixin overrides
     # ════════════════════════════════════════════════════════════════
+    def _clear_plot(self):
+        """Clear both plots when all files are removed."""
+        self._ei_clear_ann(redraw=False)
+        self._legend_cv = None
+        self._legend_cdl = None
+        self.ax_cv.clear()
+        self.ax_cdl.clear()
+        self._reset_cv_axes_labels()
+        self._reset_cdl_axes_labels()
+        self.canvas_cv.draw()
+        self.canvas_cdl.draw()
+        self.result_label.config(text="")
+
+    def _save_active_state(self):
+        """Extend base save to include all ECSA-panel per-file state."""
+        super()._save_active_state()   # saves selected_cycles, r_sol, e_ref
+        if self.active_file and self.active_file in self.files:
+            entry = self.files[self.active_file]
+            entry["sr_data"]        = {c: var.get() for c, var in self._sr_vars.items()}
+            entry["e_std"]          = self.e_std_var.get()
+            entry["cs"]             = self.cs_var.get()
+            entry["x_col"]          = self.x_var.get()
+            entry["y_col"]          = self.y_var.get()
+            entry["x_unit"]         = self.x_unit_var.get()
+            entry["y_unit"]         = self.y_unit_var.get()
+            entry["x_min"]          = self.x_min_var.get()
+            entry["x_max"]          = self.x_max_var.get()
+            entry["y_min"]          = self.y_min_var.get()
+            entry["y_max"]          = self.y_max_var.get()
+            entry["ref_electrode"]  = self.ref_electrode_var.get()
+            entry["legend_frame_cv"]  = self.legend_frame_cv_var.get()
+            entry["legend_frame_cdl"] = self.legend_frame_cdl_var.get()
+            entry["result_text"]    = self.result_label.cget("text")
+            # Preserve current zoom/pan for both plots
+            entry["view_xlim_cv"]  = self.ax_cv.get_xlim()
+            entry["view_ylim_cv"]  = self.ax_cv.get_ylim()
+            entry["view_xlim_cdl"] = self.ax_cdl.get_xlim()
+            entry["view_ylim_cdl"] = self.ax_cdl.get_ylim()
+
     def _switch_active_file(self, short):
         self.active_file = short
         entry = self.files[short]
-        df    = entry["df"]
-        cols  = list(df.columns)
+
+        # Initialise per-file fields that may be absent on first visit
+        entry.setdefault("sr_data",         {})
+        entry.setdefault("e_std",           "")
+        entry.setdefault("cs",              "0.040")
+        entry.setdefault("x_col",           None)
+        entry.setdefault("y_col",           None)
+        entry.setdefault("x_unit",          "V")
+        entry.setdefault("y_unit",          "mA")
+        entry.setdefault("x_min",           "")
+        entry.setdefault("x_max",           "")
+        entry.setdefault("y_min",           "")
+        entry.setdefault("y_max",           "")
+        entry.setdefault("ref_electrode",   "Ag/AgCl")
+        entry.setdefault("legend_frame_cv",  True)
+        entry.setdefault("legend_frame_cdl", True)
+        entry.setdefault("cdl_data",        None)
+        entry.setdefault("result_text",     "")
+
+        df   = entry["df"]
+        cols = list(df.columns)
 
         self.x_combo["values"] = cols
         self.y_combo["values"] = cols
 
-        if not self.x_var.get() or self.x_var.get() not in cols:
+        # Restore saved column selection, or auto-detect on first visit
+        x_col = entry["x_col"]
+        if x_col and x_col in cols:
+            self.x_var.set(x_col)
+        else:
             x_default = next(
                 (c for c in cols if "ewe" in c.lower() or c.lower() in ("e/v", "potential")),
                 cols[1] if len(cols) > 1 else cols[0],
             )
             self.x_var.set(x_default)
 
-        if not self.y_var.get() or self.y_var.get() not in cols:
+        y_col = entry["y_col"]
+        if y_col and y_col in cols:
+            self.y_var.set(y_col)
+        else:
             y_default = next(
                 (c for c in cols if "i/ma" in c.lower() or "current" in c.lower()),
                 cols[2] if len(cols) > 2 else cols[0],
             )
             self.y_var.set(y_default)
 
+        self.x_unit_var.set(entry["x_unit"])
+        self.y_unit_var.set(entry["y_unit"])
+        self.x_min_var.set(entry["x_min"])
+        self.x_max_var.set(entry["x_max"])
+        self.y_min_var.set(entry["y_min"])
+        self.y_max_var.set(entry["y_max"])
+        self.ref_electrode_var.set(entry["ref_electrode"])
+        self.legend_frame_cv_var.set(entry["legend_frame_cv"])
+        self.legend_frame_cdl_var.set(entry["legend_frame_cdl"])
         self.r_sol_var.set(str(entry["r_sol"]))
         self.e_ref_var.set(str(entry["e_ref"]))
+        self.e_std_var.set(entry["e_std"])
+        self.cs_var.set(entry["cs"])
 
-        # Clear Cdl plot for new file
-        self._legend_cdl = None
-        self.ax_cdl.clear()
-        self._reset_cdl_axes_labels()
-        self.canvas_cdl.draw()
-        self.result_label.config(text="")
+        # Clear per-panel scan-rate vars so the new file starts completely fresh
+        self._sr_vars.clear()
 
+        # Populate cycle checkboxes + scan-rate table, with sr restore all inside suppress
         old = self._suppress_replot
         self._suppress_replot = True
         if "cycle number" in df.columns:
@@ -616,8 +744,38 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             self._populate_cycle_checkboxes(cycles, entry["selected_cycles"])
         else:
             self._populate_cycle_checkboxes([], [])
+
+        # Restore saved scan-rate values into the freshly created StringVars
+        for c, val in entry["sr_data"].items():
+            if c in self._sr_vars:
+                self._sr_vars[c].set(val)
         self._suppress_replot = old
+
+        # Restore Cdl plot or show empty placeholder
+        self._legend_cdl = None
+        self.ax_cdl.clear()
+        if entry["cdl_data"] is not None:
+            self._replot_cdl(entry["cdl_data"])
+        else:
+            self._reset_cdl_axes_labels()
+            self.canvas_cdl.draw()
+
+        # Restore Cdl zoom/pan if the user had previously modified the view
+        if "view_xlim_cdl" in entry:
+            self.ax_cdl.set_xlim(entry["view_xlim_cdl"])
+            self.ax_cdl.set_ylim(entry["view_ylim_cdl"])
+            self.canvas_cdl.draw_idle()
+
+        # Restore result label
+        self.result_label.config(text=entry["result_text"])
+
         self._auto_replot()
+
+        # Restore CV zoom/pan if the user had previously modified the view
+        if "view_xlim_cv" in entry:
+            self.ax_cv.set_xlim(entry["view_xlim_cv"])
+            self.ax_cv.set_ylim(entry["view_ylim_cv"])
+            self.canvas_cv.draw_idle()
 
     def _auto_replot(self):
         if self._suppress_replot:
@@ -666,8 +824,17 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             self.ax_cv.plot(df[xcol] * x_scale, df[ycol] * y_scale)
 
         ref = self.ref_electrode_var.get().strip()
-        self.ax_cv.set_xlabel(f"{x_label}  (vs {ref})" if ref else x_label)
-        self.ax_cv.set_ylabel(y_label)
+        _x_src = xcol.rsplit("/", 1)[-1].strip() if "/" in xcol else ""
+        _x_unit_str = self.x_unit_var.get()
+        _x_is_V = (_x_unit_str in _VOLTAGE_UNITS if _x_unit_str != "(auto)"
+                   else _x_src in _VOLTAGE_UNITS)
+        self.ax_cv.set_xlabel(f"{x_label}  (vs {ref})" if (ref and _x_is_V) else x_label)
+
+        _y_src = ycol.rsplit("/", 1)[-1].strip() if "/" in ycol else ""
+        _y_unit_str = self.y_unit_var.get()
+        _y_is_V = (_y_unit_str in _VOLTAGE_UNITS if _y_unit_str != "(auto)"
+                   else _y_src in _VOLTAGE_UNITS)
+        self.ax_cv.set_ylabel(f"{y_label}  (vs {ref})" if (ref and _y_is_V) else y_label)
         self.ax_cv.set_title("CV Curves  (non-Faradaic region)")
 
         # Red dashed line at E_std (in display units)
@@ -685,16 +852,100 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             self._legend_cv.get_frame().set_visible(self.legend_frame_cv_var.get())
 
         self.canvas_cv.draw()
+        self._auto_xlim_cv = self.ax_cv.get_xlim()
+        self._auto_ylim_cv = self.ax_cv.get_ylim()
+        self._apply_cv_range()
 
     def _toggle_cv_legend_frame(self):
         if self._legend_cv is not None:
             self._legend_cv.get_frame().set_visible(self.legend_frame_cv_var.get())
             self.canvas_cv.draw()
 
+    def _toggle_cdl_legend_frame(self):
+        if self._legend_cdl is not None:
+            self._legend_cdl.get_frame().set_visible(self.legend_frame_cdl_var.get())
+            self.canvas_cdl.draw()
+
+    def _reset_cv_view(self):
+        """Restore CV plot to the auto-scaled limits from the last draw."""
+        if self._auto_xlim_cv is not None:
+            self.ax_cv.set_xlim(self._auto_xlim_cv)
+            self.ax_cv.set_ylim(self._auto_ylim_cv)
+            self.canvas_cv.draw_idle()
+
+    def _reset_cdl_view(self):
+        """Restore Cdl plot to the auto-scaled limits from the last draw."""
+        if self._auto_xlim_cdl is not None:
+            self.ax_cdl.set_xlim(self._auto_xlim_cdl)
+            self.ax_cdl.set_ylim(self._auto_ylim_cdl)
+            self.canvas_cdl.draw_idle()
+
+    def _apply_cv_range(self):
+        """Apply manual axis limits from range entries; no-op if all blank."""
+        changed = False
+        try:
+            self.ax_cv.set_xlim(left=float(self.x_min_var.get()))
+            changed = True
+        except ValueError:
+            pass
+        try:
+            self.ax_cv.set_xlim(right=float(self.x_max_var.get()))
+            changed = True
+        except ValueError:
+            pass
+        try:
+            self.ax_cv.set_ylim(bottom=float(self.y_min_var.get()))
+            changed = True
+        except ValueError:
+            pass
+        try:
+            self.ax_cv.set_ylim(top=float(self.y_max_var.get()))
+            changed = True
+        except ValueError:
+            pass
+        if changed:
+            self.canvas_cv.draw_idle()
+
+    def _replot_cdl(self, cdl_data):
+        """Replot the Cdl extraction figure from stored per-file data."""
+        sr_arr = cdl_data["sr_arr"]
+        dj_arr = cdl_data["dj_arr"]
+        coeffs = cdl_data["coeffs"]
+        cdl_mF = cdl_data["cdl_mF"]
+        r_sq   = cdl_data["r_sq"]
+        y_unit = cdl_data["y_unit"]
+        ecsa   = cdl_data.get("ecsa")
+        slope, intercept = float(coeffs[0]), float(coeffs[1])
+        sr_fit = np.linspace(0, sr_arr.max() * 1.1, 300)
+        dj_fit = np.polyval(coeffs, sr_fit)
+
+        _fit_label = (f"y = {slope:.4g}x + {intercept:.4g}\n"
+                      f"Cdl = {cdl_mF:.4f} mF    R² = {r_sq:.4f}")
+        if ecsa is not None:
+            _fit_label += f"\nECSA = {ecsa:.2f} cm²"
+
+        self.ax_cdl.scatter(sr_arr, dj_arr, color="steelblue", zorder=5, label="Data")
+        self.ax_cdl.plot(
+            sr_fit, dj_fit, color="tomato", linewidth=1.5,
+            label=_fit_label,
+        )
+        self.ax_cdl.axhline(0, color="gray", linewidth=0.5, linestyle="--")
+        self.ax_cdl.set_xlabel("Scan Rate  (mV/s)")
+        self.ax_cdl.set_ylabel(f"Δj/2  ({y_unit})")
+        self.ax_cdl.set_title("Cdl Extraction")
+        self._legend_cdl = self.ax_cdl.legend(fontsize=self._leg_size_cdl)
+        self._legend_cdl.set_draggable(True)
+        self._legend_cdl.get_frame().set_visible(self.legend_frame_cdl_var.get())
+        self.canvas_cdl.draw()
+        self._auto_xlim_cdl = self.ax_cdl.get_xlim()
+        self._auto_ylim_cdl = self.ax_cdl.get_ylim()
+
     # ════════════════════════════════════════════════════════════════
     # Debounced CV redraw (triggered by scan rate edits)
     # ════════════════════════════════════════════════════════════════
     def _schedule_cv_redraw(self):
+        if self._suppress_replot:
+            return
         if self._cv_redraw_id is not None:
             try:
                 self.after_cancel(self._cv_redraw_id)
@@ -866,7 +1117,8 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         self.ax_cdl.plot(
             sr_fit, dj_fit, color="tomato", linewidth=1.5,
             label=(f"y = {slope:.4g}x + {intercept:.4g}\n"
-                   f"Cdl = {cdl_mF:.4f} mF    R² = {r_sq:.4f}"),
+                   f"Cdl = {cdl_mF:.4f} mF    R² = {r_sq:.4f}\n"
+                   f"ECSA = {ecsa:.2f} cm²"),
         )
         self.ax_cdl.axhline(0, color="gray", linewidth=0.5, linestyle="--")
         self.ax_cdl.set_xlabel("Scan Rate  (mV/s)")
@@ -875,7 +1127,28 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
 
         self._legend_cdl = self.ax_cdl.legend(fontsize=self._leg_size_cdl)
         self._legend_cdl.set_draggable(True)
+        self._legend_cdl.get_frame().set_visible(self.legend_frame_cdl_var.get())
         self.canvas_cdl.draw()
+        self._auto_xlim_cdl = self.ax_cdl.get_xlim()
+        self._auto_ylim_cdl = self.ax_cdl.get_ylim()
+
+        # Persist Cdl data and result text to the file entry for file-switch restore
+        if self.active_file in self.files:
+            self.files[self.active_file]["cdl_data"] = {
+                "sr_arr": sr_arr,
+                "dj_arr": dj_arr,
+                "coeffs": coeffs,
+                "cdl_mF": cdl_mF,
+                "r_sq":   r_sq,
+                "y_unit": y_unit,
+                "ecsa":   ecsa,
+                "cs":     cs,
+            }
+            self.files[self.active_file]["result_text"] = (
+                f"Cdl  = {cdl_mF:.4f} mF\n"
+                f"ECSA = {ecsa:.2f} cm²\n"
+                f"(Cs = {cs} mF/cm²,  R² = {r_sq:.4f})"
+            )
 
     # ════════════════════════════════════════════════════════════════
     # Log helper

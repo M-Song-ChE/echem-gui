@@ -7,6 +7,14 @@ from tkinter import messagebox
 # Label prefix for internal artists (hidden from legend, excluded from click picking)
 _ANN_DOT_LABEL = "_click_dot"
 
+
+# Maps J density range units to the underlying current base unit
+_J_TO_BASE = {"A/cm²": "A", "mA/cm²": "mA", "µA/cm²": "µA", "nA/cm²": "nA"}
+
+# Physical-dimension unit sets used for "vs Ref" axis-label guarding
+_VOLTAGE_UNITS = frozenset({"V", "mV", "µV", "nV"})
+_CURRENT_UNITS = frozenset({"A", "mA", "µA", "nA"})
+
 # Pixel radius: if a new click lands within this many pixels of the previous one,
 # treat it as a "same spot" repeated click and advance to the next overlapping line.
 _CLICK_CYCLE_PX = 8
@@ -310,13 +318,57 @@ class PlottingMixin:
 
         self._save_active_state()
 
-        # Resolve unit conversion for both axes ONCE before the plot loop
+        # ── Resolve "J" virtual column to the real current column ──────────
+        _x_is_J = (xcol == "J")
+        _y_is_J = (ycol == "J")
+
+        # Find the actual current column from the first file that has one
+        _real_xcol = xcol
+        _real_ycol = ycol
+        if _x_is_J or _y_is_J:
+            for entry in self.files.values():
+                for c in entry["df"].columns:
+                    if "/" in c:
+                        u = c.rsplit("/", 1)[-1].strip()
+                        if u in _CURRENT_UNITS:
+                            if _x_is_J:
+                                _real_xcol = c
+                            if _y_is_J:
+                                _real_ycol = c
+                            break
+                break
+
+        # ── Resolve axis scales ────────────────────────────────────────────
         x_unit_var = getattr(self, "x_unit_var", None)
         y_unit_var = getattr(self, "y_unit_var", None)
-        x_scale, x_label = self._get_axis_unit_scale(
-            xcol, x_unit_var.get() if x_unit_var else "(auto)")
-        y_scale, y_label = self._get_axis_unit_scale(
-            ycol, y_unit_var.get() if y_unit_var else "(auto)")
+        _x_unit_str = x_unit_var.get() if x_unit_var else "(auto)"
+        _y_unit_str = y_unit_var.get() if y_unit_var else "(auto)"
+
+        # X-axis scale
+        if _x_is_J:
+            _xbase = _J_TO_BASE.get(_x_unit_str)
+            if _xbase:
+                x_scale_base, _ = self._get_axis_unit_scale(_real_xcol, _xbase)
+                x_label = f"J ({_x_unit_str})"
+            else:
+                x_scale_base = 1.0
+                _src = _real_xcol.rsplit("/", 1)[-1].strip() if "/" in _real_xcol else "?"
+                x_label = f"J ({_src}/cm²)"
+        else:
+            x_scale_base, x_label = self._get_axis_unit_scale(_real_xcol, _x_unit_str)
+
+        # Y-axis scale
+        if _y_is_J:
+            _ybase = _J_TO_BASE.get(_y_unit_str)
+            if _ybase:
+                y_scale_base, _ = self._get_axis_unit_scale(_real_ycol, _ybase)
+                y_label = f"J ({_y_unit_str})"
+            else:
+                y_scale_base = 1.0
+                _src = _real_ycol.rsplit("/", 1)[-1].strip() if "/" in _real_ycol else "?"
+                y_label = f"J ({_src}/cm²)"
+        else:
+            y_scale_base, y_label = self._get_axis_unit_scale(_real_ycol, _y_unit_str)
 
         # Clear annotation BEFORE ax.clear() so .remove() still works on live artists
         self._clear_annotation(redraw=False)
@@ -327,9 +379,20 @@ class PlottingMixin:
 
         for short, entry in self.files.items():
             df = entry["df"]
-            if xcol not in df.columns or ycol not in df.columns:
+            if _real_xcol not in df.columns or _real_ycol not in df.columns:
                 continue
             cycles = entry["selected_cycles"]
+
+            # Per-file area for J density conversion
+            try:
+                _farea = float(entry.get("area", "") or 0)
+            except (ValueError, TypeError):
+                _farea = 0.0
+
+            x_scale = (x_scale_base / _farea if (_x_is_J and _farea > 0)
+                       else x_scale_base)
+            y_scale = (y_scale_base / _farea if (_y_is_J and _farea > 0)
+                       else y_scale_base)
 
             if "cycle number" in df.columns:
                 if not cycles:
@@ -337,20 +400,38 @@ class PlottingMixin:
                 for c in cycles:
                     sub = df[df["cycle number"] == c]
                     label = f"{short} C{c}" if multi else f"Cycle {c}"
-                    self.ax.plot(sub[xcol] * x_scale, sub[ycol] * y_scale, label=label)
+                    self.ax.plot(sub[_real_xcol] * x_scale,
+                                sub[_real_ycol] * y_scale, label=label)
                 has_legend = True
             else:
                 label = short if multi else None
-                self.ax.plot(df[xcol] * x_scale, df[ycol] * y_scale, label=label)
+                self.ax.plot(df[_real_xcol] * x_scale,
+                            df[_real_ycol] * y_scale, label=label)
                 if label:
                     has_legend = True
 
-        # Build axis labels: append reference electrode to X (potential) axis
+        # ── Axis labels: append "(vs Ref)" only for voltage-type axes ──────────
         ref = getattr(self, "ref_electrode_var", None)
         ref_text = ref.get().strip() if ref else ""
-        xlabel = f"{x_label}  (vs {ref_text})" if ref_text else x_label
+
+        # J is never voltage → no "(vs Ref)"
+        if _x_is_J:
+            _x_is_V = False
+        else:
+            _x_src = _real_xcol.rsplit("/", 1)[-1].strip() if "/" in _real_xcol else ""
+            _x_is_V = (_x_unit_str in _VOLTAGE_UNITS if _x_unit_str != "(auto)"
+                       else _x_src in _VOLTAGE_UNITS)
+        xlabel = f"{x_label}  (vs {ref_text})" if (ref_text and _x_is_V) else x_label
         self.ax.set_xlabel(xlabel)
-        self.ax.set_ylabel(y_label)
+
+        if _y_is_J:
+            _y_is_V = False
+        else:
+            _y_src = _real_ycol.rsplit("/", 1)[-1].strip() if "/" in _real_ycol else ""
+            _y_is_V = (_y_unit_str in _VOLTAGE_UNITS if _y_unit_str != "(auto)"
+                       else _y_src in _VOLTAGE_UNITS)
+        ylabel = f"{y_label}  (vs {ref_text})" if (ref_text and _y_is_V) else y_label
+        self.ax.set_ylabel(ylabel)
 
         # Store auto-scaled limits before user overrides
         self.fig.tight_layout()
@@ -392,6 +473,9 @@ class PlottingMixin:
         - unknown / mismatched dimension → scale=1, label uses the new unit string
         """
         if not target_unit or target_unit == "(auto)":
+            if "/" in col:
+                _cb, _cu = col.rsplit("/", 1)
+                return 1.0, f"{_cb.strip()} ({_cu.strip()})"
             return 1.0, col
 
         # SI scale factors for every supported unit
@@ -417,7 +501,7 @@ class PlottingMixin:
             col_base    = col
             source_unit = None
 
-        display_label = f"{col_base}/{target_unit}"
+        display_label = f"{col_base} ({target_unit})"
 
         src_f = _FACTORS.get(source_unit)
         tgt_f = _FACTORS.get(target_unit)

@@ -16,6 +16,7 @@ from .plotting import PlottingMixin
 from .ecsa import ECSAMixin
 from .export import ExportMixin
 from .ecsa_panel import ECSAPanel
+from .multi_echem_panel import MultiEchemPanel
 
 _CYCLE_BG = "#e8f0fe"   # light blue for the cycle checkbox area
 _CYCLE_ACTIVE_BG = "#cce0ff"
@@ -106,6 +107,7 @@ class EchemPanel(
             "I": ["(auto)", "A",  "mA",  "µA",  "nA"],
             "E": ["(auto)", "V",  "mV",  "µV",  "nV"],
             "t": ["(auto)", "s",  "ms",  "µs",  "min", "h"],
+            "J": ["(auto)", "A/cm²", "mA/cm²", "µA/cm²", "nA/cm²"],
         }
         _ALL_UNITS = ["(auto)",
                       "A", "mA", "µA", "nA",
@@ -114,9 +116,12 @@ class EchemPanel(
 
         def _refresh_unit_opts(col_var, unit_var, unit_cb):
             col = col_var.get()
-            raw_unit = col.rsplit("/", 1)[-1].strip() if "/" in col else ""
-            dim  = _UNIT_DIMS.get(raw_unit)
-            opts = _DIM_OPTS.get(dim, _ALL_UNITS)
+            if col == "J":
+                dim = "J"
+            else:
+                raw_unit = col.rsplit("/", 1)[-1].strip() if "/" in col else ""
+                dim = _UNIT_DIMS.get(raw_unit)
+            opts = list(_DIM_OPTS.get(dim, ["(auto)"]))
             unit_cb["values"] = opts
             if unit_var.get() not in opts:
                 unit_var.set("(auto)")
@@ -125,10 +130,30 @@ class EchemPanel(
         def _refresh_unit_after_select(unit_var, unit_cb):
             chosen = unit_var.get()
             if chosen and chosen != "(auto)":
-                dim  = _UNIT_DIMS.get(chosen)
-                opts = _DIM_OPTS.get(dim, _ALL_UNITS)
+                if chosen.endswith("/cm²"):
+                    opts = list(_DIM_OPTS["J"])
+                else:
+                    dim = _UNIT_DIMS.get(chosen)
+                    opts = list(_DIM_OPTS.get(dim, _ALL_UNITS))
                 unit_cb["values"] = opts
             self._auto_replot()
+
+        def _refresh_j_in_combos():
+            """Add or remove 'J' from column comboboxes based on area."""
+            has_j = self._all_files_have_area()
+            for combo, var in ((self.x_combo, self.x_var),
+                               (self.y_combo, self.y_var)):
+                vals = list(combo["values"])
+                if has_j and "J" not in vals:
+                    vals.append("J")
+                    combo["values"] = vals
+                elif not has_j and "J" in vals:
+                    vals.remove("J")
+                    combo["values"] = vals
+                    if var.get() == "J":
+                        # Fall back to first column
+                        if vals:
+                            var.set(vals[0])
 
         # X-axis: defaults to voltage (V)
         ttk.Label(left, text="X-axis:").pack(anchor=tk.W, padx=4, pady=(6, 0))
@@ -139,7 +164,7 @@ class EchemPanel(
         self.x_combo.pack(side=tk.LEFT)
         self.x_unit_var = tk.StringVar(value="V")
         x_unit_cb = ttk.Combobox(x_axis_row, textvariable=self.x_unit_var,
-                                  values=_DIM_OPTS["E"], state="readonly", width=6)
+                                  values=_DIM_OPTS["E"], state="readonly", width=8)
         x_unit_cb.pack(side=tk.LEFT, padx=(4, 0))
         self.x_combo.bind("<<ComboboxSelected>>",
                           lambda e: _refresh_unit_opts(self.x_var, self.x_unit_var, x_unit_cb))
@@ -155,12 +180,36 @@ class EchemPanel(
         self.y_combo.pack(side=tk.LEFT)
         self.y_unit_var = tk.StringVar(value="mA")
         y_unit_cb = ttk.Combobox(y_axis_row, textvariable=self.y_unit_var,
-                                  values=_DIM_OPTS["I"], state="readonly", width=6)
+                                  values=_DIM_OPTS["I"], state="readonly", width=8)
         y_unit_cb.pack(side=tk.LEFT, padx=(4, 0))
         self.y_combo.bind("<<ComboboxSelected>>",
                           lambda e: _refresh_unit_opts(self.y_var, self.y_unit_var, y_unit_cb))
         y_unit_cb.bind("<<ComboboxSelected>>",
                        lambda e: _refresh_unit_after_select(self.y_unit_var, y_unit_cb))
+
+        # Current density (per-file electrode area — unlocks "J" in column combos)
+        area_row = ttk.Frame(left)
+        area_row.pack(fill=tk.X, padx=4, pady=(2, 0))
+        ttk.Label(area_row, text="Area (cm²):").pack(side=tk.LEFT)
+        self.area_var = tk.StringVar()
+        _area_e = ttk.Entry(area_row, textvariable=self.area_var, width=8)
+        _area_e.pack(side=tk.LEFT, padx=(4, 0))
+
+        def _on_area_change(e=None):
+            # Persist area to the active file entry immediately
+            if self.active_file and self.active_file in self.files:
+                self.files[self.active_file]["area"] = self.area_var.get()
+            # Update "J" availability in column combos, then refresh unit combos
+            _refresh_j_in_combos()
+            self._suppress_replot = True
+            _refresh_unit_opts(self.x_var, self.x_unit_var, x_unit_cb)
+            self._suppress_replot = False
+            _refresh_unit_opts(self.y_var, self.y_unit_var, y_unit_cb)
+
+        _area_e.bind("<Return>",   _on_area_change)
+        _area_e.bind("<FocusOut>", _on_area_change)
+        ttk.Label(area_row, text="all files need area for J",
+                  foreground="gray", font=("", 8)).pack(side=tk.LEFT, padx=6)
 
         # Reference electrode
         ttk.Label(left, text="Reference Electrode:").pack(anchor=tk.W, padx=4, pady=(6, 0))
@@ -258,19 +307,24 @@ class EchemPanel(
         r_frame.pack(fill=tk.X, padx=4, pady=2)
         ttk.Label(r_frame, text="R_sol (Ohm):").pack(side=tk.LEFT)
         self.r_sol_var = tk.StringVar(value="0")
-        ttk.Entry(r_frame, textvariable=self.r_sol_var, width=10).pack(side=tk.LEFT, padx=4)
+        _rsol_e = ttk.Entry(r_frame, textvariable=self.r_sol_var, width=10)
+        _rsol_e.pack(side=tk.LEFT, padx=4)
+        _rsol_e.bind("<Return>",   lambda e: self._apply_correction())
+        _rsol_e.bind("<FocusOut>", lambda e: self._apply_correction())
 
         e_frame = ttk.Frame(left)
         e_frame.pack(fill=tk.X, padx=4, pady=2)
         ttk.Label(e_frame, text="E_ref (V vs RHE):").pack(side=tk.LEFT)
         self.e_ref_var = tk.StringVar(value="0")
-        ttk.Entry(e_frame, textvariable=self.e_ref_var, width=10).pack(side=tk.LEFT, padx=4)
+        _eref_e = ttk.Entry(e_frame, textvariable=self.e_ref_var, width=10)
+        _eref_e.pack(side=tk.LEFT, padx=4)
+        _eref_e.bind("<Return>",   lambda e: self._apply_correction())
+        _eref_e.bind("<FocusOut>", lambda e: self._apply_correction())
 
-        corr_btn_row = ttk.Frame(left)
-        corr_btn_row.pack(fill=tk.X, padx=4, pady=2)
-        ttk.Button(corr_btn_row, text="Apply Correction",
-                   command=self._apply_correction).pack(side=tk.LEFT, padx=(0, 4))
-        ttk.Button(corr_btn_row, text="Reset", command=self._reset_correction).pack(side=tk.LEFT)
+        ttk.Label(left, text="(auto-applied on Enter / focus change)",
+                  foreground="gray", font=("", 8)).pack(anchor=tk.W, padx=4)
+        ttk.Button(left, text="Reset Correction",
+                   command=self._reset_correction).pack(anchor=tk.W, padx=4, pady=(2, 0))
 
         # Cycle selector (checkboxes)
         ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
@@ -437,6 +491,56 @@ class EchemPanel(
             return
         open_legend_editor(self, self._legend_obj, self.canvas, self._current_legend_size)
 
+    # ── J / area helpers ─────────────────────────────────────────────
+    def _all_files_have_area(self):
+        """True only when every loaded file has a positive electrode area."""
+        if not self.files:
+            return False
+        for short, entry in self.files.items():
+            if short == self.active_file:
+                try:
+                    if float(self.area_var.get()) <= 0:
+                        return False
+                except (ValueError, TypeError):
+                    return False
+            else:
+                try:
+                    if float(entry.get("area", "") or 0) <= 0:
+                        return False
+                except (ValueError, TypeError):
+                    return False
+        return True
+
+    def _get_column_list(self, df):
+        """Append virtual 'J' column when all files have area set."""
+        cols = list(df.columns)
+        if self._all_files_have_area():
+            cols.append("J")
+        return cols
+
+    def _clear_plot(self):
+        """Clear the plot when all files are removed."""
+        self._clear_annotation(redraw=False)
+        self._legend_obj = None
+        self.ax.clear()
+        self.canvas.draw()
+
+    def _save_active_state(self):
+        """Extend base save to preserve the current plot view per file."""
+        if self.active_file and self.active_file in self.files:
+            self.files[self.active_file]["view_xlim"] = self.ax.get_xlim()
+            self.files[self.active_file]["view_ylim"] = self.ax.get_ylim()
+        super()._save_active_state()
+
+    def _switch_active_file(self, short):
+        """Extend base switch to restore per-file zoom/pan state after replot."""
+        super()._switch_active_file(short)
+        entry = self.files.get(short)
+        if entry and "view_xlim" in entry:
+            self.ax.set_xlim(entry["view_xlim"])
+            self.ax.set_ylim(entry["view_ylim"])
+            self.canvas.draw_idle()
+
 
 # ── Main application window ──────────────────────────────────────────
 class EchemGUI(tk.Tk):
@@ -453,6 +557,10 @@ class EchemGUI(tk.Tk):
         gen_tab = ttk.Frame(notebook)
         notebook.add(gen_tab, text="General E.Chem")
         EchemPanel(gen_tab, show_ecsa=False, show_log=True).pack(fill=tk.BOTH, expand=True)
+
+        multi_tab = ttk.Frame(notebook)
+        notebook.add(multi_tab, text="Multi E.Chem")
+        MultiEchemPanel(multi_tab).pack(fill=tk.BOTH, expand=True)
 
         ecsa_tab = ttk.Frame(notebook)
         notebook.add(ecsa_tab, text="ECSA Calc")

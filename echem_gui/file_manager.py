@@ -49,6 +49,7 @@ class FileManagerMixin:
                 "selected_cycles": [],   # none pre-selected; user picks manually
                 "r_sol": 0.0,
                 "e_ref": 0.0,
+                "area": "",
             }
             self.file_listbox.insert(tk.END, short)
 
@@ -92,6 +93,8 @@ class FileManagerMixin:
                 self.file_listbox.selection_set(0)
                 self._switch_active_file(list(self.files.keys())[0])
                 return
+            self._clear_plot()
+            return
 
         self._auto_replot()
 
@@ -119,6 +122,17 @@ class FileManagerMixin:
                 entry["e_ref"] = float(self.e_ref_var.get())
             except ValueError:
                 pass
+            area_var = getattr(self, "area_var", None)
+            if area_var is not None:
+                entry["area"] = area_var.get()
+
+    def _clear_plot(self):
+        """Called when all files are removed. Override in subclasses to clear the plot."""
+        pass
+
+    def _get_column_list(self, df):
+        """Return column names for axis comboboxes. Override to add virtual columns."""
+        return list(df.columns)
 
     def _switch_active_file(self, short):
         """Switch the UI to display the given file's data."""
@@ -126,16 +140,21 @@ class FileManagerMixin:
         entry = self.files[short]
         df = entry["df"]
 
-        cols = list(df.columns)
+        # Restore area first so _get_column_list() (which may check area) sees
+        # the correct value for the incoming file.
+        self.r_sol_var.set(str(entry["r_sol"]))
+        self.e_ref_var.set(str(entry["e_ref"]))
+        area_var = getattr(self, "area_var", None)
+        if area_var is not None:
+            area_var.set(entry.get("area", ""))
+
+        cols = self._get_column_list(df)
         self.x_combo["values"] = cols
         self.y_combo["values"] = cols
         if not self.x_var.get() or self.x_var.get() not in cols:
             self.x_var.set(cols[1] if len(cols) > 1 else cols[0])
         if not self.y_var.get() or self.y_var.get() not in cols:
             self.y_var.set(cols[2] if len(cols) > 2 else cols[0])
-
-        self.r_sol_var.set(str(entry["r_sol"]))
-        self.e_ref_var.set(str(entry["e_ref"]))
 
         # Rebuild cycle checkboxes, suppressing auto-replot during update
         old_suppress = self._suppress_replot
