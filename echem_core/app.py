@@ -296,8 +296,87 @@ class EchemPanel(
         ).pack(side=tk.LEFT, padx=2)
 
         ttk.Button(left, text="Edit Labels", command=self._edit_legend_labels).pack(anchor=tk.W, padx=4, pady=2)
-        ttk.Label(left, text="(left-drag legend to move, right-drag to resize)",
+        ttk.Label(left, text="(left-drag legend to move, right-drag to resize; dbl-click to edit)",
                   foreground="gray").pack(anchor=tk.W, padx=4)
+
+        # Grid
+        ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
+        ttk.Label(left, text="Grid", font=("", 9, "bold")).pack(anchor=tk.W, padx=4)
+        grid_xy_row = ttk.Frame(left)
+        grid_xy_row.pack(fill=tk.X, padx=4, pady=2)
+        self.x_grid_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(grid_xy_row, text="X", variable=self.x_grid_var,
+                        command=self._auto_replot).pack(side=tk.LEFT)
+        ttk.Label(grid_xy_row, text="Interval:").pack(side=tk.LEFT, padx=(6, 0))
+        self.x_grid_int_var = tk.StringVar(value="0")
+        _xgi = ttk.Entry(grid_xy_row, textvariable=self.x_grid_int_var, width=5)
+        _xgi.pack(side=tk.LEFT, padx=(2, 0))
+        self.y_grid_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(grid_xy_row, text="Y", variable=self.y_grid_var,
+                        command=self._auto_replot).pack(side=tk.LEFT, padx=(10, 0))
+        ttk.Label(grid_xy_row, text="Interval:").pack(side=tk.LEFT, padx=(6, 0))
+        self.y_grid_int_var = tk.StringVar(value="0")
+        _ygi = ttk.Entry(grid_xy_row, textvariable=self.y_grid_int_var, width=5)
+        _ygi.pack(side=tk.LEFT, padx=(2, 0))
+        for _gi in (_xgi, _ygi):
+            _gi.bind("<Return>",   lambda e: self._auto_replot())
+            _gi.bind("<FocusOut>", lambda e: self._auto_replot())
+        grid_style_row = ttk.Frame(left)
+        grid_style_row.pack(fill=tk.X, padx=4, pady=(0, 2))
+        ttk.Label(grid_style_row, text="Style:").pack(side=tk.LEFT)
+        self.grid_style_var = tk.StringVar(value="dashed")
+        _gscb = ttk.Combobox(grid_style_row, textvariable=self.grid_style_var,
+                             values=["dashed", "dotted", "solid", "dash-dot"],
+                             state="readonly", width=9)
+        _gscb.pack(side=tk.LEFT, padx=4)
+        _gscb.bind("<<ComboboxSelected>>", lambda e: self._auto_replot())
+
+        # Reference Lines
+        ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
+        ttk.Label(left, text="Reference Lines", font=("", 9, "bold")).pack(anchor=tk.W, padx=4)
+        ref_add_row = ttk.Frame(left)
+        ref_add_row.pack(fill=tk.X, padx=4, pady=2)
+        ttk.Label(ref_add_row, text="X:").pack(side=tk.LEFT)
+        self._ref_x_var = tk.StringVar()
+        _ref_x_e = ttk.Entry(ref_add_row, textvariable=self._ref_x_var, width=7)
+        _ref_x_e.pack(side=tk.LEFT, padx=(2, 0))
+        ttk.Button(ref_add_row, text="+X", width=3,
+                   command=self._add_xrefline).pack(side=tk.LEFT, padx=(2, 8))
+        ttk.Label(ref_add_row, text="Y:").pack(side=tk.LEFT)
+        self._ref_y_var = tk.StringVar()
+        _ref_y_e = ttk.Entry(ref_add_row, textvariable=self._ref_y_var, width=7)
+        _ref_y_e.pack(side=tk.LEFT, padx=(2, 0))
+        ttk.Button(ref_add_row, text="+Y", width=3,
+                   command=self._add_yrefline).pack(side=tk.LEFT, padx=2)
+        _ref_x_e.bind("<Return>", lambda e: self._add_xrefline())
+        _ref_y_e.bind("<Return>", lambda e: self._add_yrefline())
+        ref_list_row = ttk.Frame(left)
+        ref_list_row.pack(fill=tk.X, padx=4, pady=(0, 2))
+        self._reflines_lb = tk.Listbox(ref_list_row, height=3,
+                                        selectmode=tk.SINGLE, exportselection=False)
+        self._reflines_lb.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self._reflines_lb.bind("<<ListboxSelect>>", lambda e: self._on_refline_select())
+        ttk.Button(ref_list_row, text="Remove",
+                   command=self._remove_refline).pack(side=tk.RIGHT, padx=(4, 0))
+        ref_opt_row = ttk.Frame(left)
+        ref_opt_row.pack(fill=tk.X, padx=4, pady=(0, 2))
+        ttk.Label(ref_opt_row, text="Style:").pack(side=tk.LEFT)
+        self._refline_style_var = tk.StringVar(value="dashed")
+        _rl_style_cb = ttk.Combobox(ref_opt_row, textvariable=self._refline_style_var,
+                                     values=["dashed", "dotted", "solid", "dash-dot"],
+                                     state="readonly", width=9)
+        _rl_style_cb.pack(side=tk.LEFT, padx=(2, 8))
+        ttk.Label(ref_opt_row, text="Color:").pack(side=tk.LEFT)
+        self._refline_color_var = tk.StringVar(value="dimgray")
+        _rl_color_cb = ttk.Combobox(ref_opt_row, textvariable=self._refline_color_var,
+                                     values=["dimgray", "black", "red", "blue", "green",
+                                             "orange", "purple", "crimson", "royalblue",
+                                             "darkorange", "teal", "saddlebrown"],
+                                     state="readonly", width=10)
+        _rl_color_cb.pack(side=tk.LEFT, padx=2)
+        _rl_style_cb.bind("<<ComboboxSelected>>", lambda e: self._on_refline_style_color_change())
+        _rl_color_cb.bind("<<ComboboxSelected>>", lambda e: self._on_refline_style_color_change())
+        self._reflines = []
 
         # IR / RHE correction
         ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
@@ -489,7 +568,63 @@ class EchemPanel(
             from tkinter import messagebox
             messagebox.showinfo("Info", "Plot data first to create a legend.")
             return
+        self._legend_obj.set_draggable(False)
         open_legend_editor(self, self._legend_obj, self.canvas, self._current_legend_size)
+        if self._legend_obj is not None:
+            self._legend_obj.set_draggable(True)
+
+    # ── Reference line helpers ───────────────────────────────────────
+    def _add_xrefline(self):
+        try:
+            v = float(self._ref_x_var.get())
+        except ValueError:
+            return
+        style = self._refline_style_var.get()
+        color = self._refline_color_var.get()
+        self._reflines.append(('x', v, style, color))
+        self._reflines_lb.insert(tk.END, f"X = {v:.4g}")
+        self._auto_replot()
+
+    def _add_yrefline(self):
+        try:
+            v = float(self._ref_y_var.get())
+        except ValueError:
+            return
+        style = self._refline_style_var.get()
+        color = self._refline_color_var.get()
+        self._reflines.append(('y', v, style, color))
+        self._reflines_lb.insert(tk.END, f"Y = {v:.4g}")
+        self._auto_replot()
+
+    def _on_refline_select(self):
+        """Populate the style/color comboboxes from the selected line's settings."""
+        sel = self._reflines_lb.curselection()
+        if not sel:
+            return
+        _, _, style, color = self._reflines[sel[0]]
+        self._refline_style_var.set(style)
+        self._refline_color_var.set(color)
+
+    def _on_refline_style_color_change(self):
+        """Apply new style/color to the currently selected reference line."""
+        sel = self._reflines_lb.curselection()
+        if not sel:
+            return  # nothing selected — comboboxes just set defaults for next line
+        idx = sel[0]
+        axis, val, _, _ = self._reflines[idx]
+        self._reflines[idx] = (axis, val,
+                               self._refline_style_var.get(),
+                               self._refline_color_var.get())
+        self._auto_replot()
+
+    def _remove_refline(self):
+        sel = self._reflines_lb.curselection()
+        if not sel:
+            return
+        idx = sel[0]
+        self._reflines.pop(idx)
+        self._reflines_lb.delete(idx)
+        self._auto_replot()
 
     # ── J / area helpers ─────────────────────────────────────────────
     def _all_files_have_area(self):
@@ -524,6 +659,40 @@ class EchemPanel(
         self._legend_obj = None
         self.ax.clear()
         self.canvas.draw()
+
+    def _sync_file_selection_from_line(self, ln):
+        """Select the file matching the clicked line and update the left panel.
+
+        Suppresses replot (keeps annotation alive) and preserves the current
+        view (avoids jarring pan/zoom jumps on annotation click).
+        """
+        label = ln.get_label() or ""
+        if not label or label.startswith("_"):
+            return
+        for short in self.files:
+            if label == short or label.startswith(short + " "):
+                keys = list(self.files.keys())
+                idx = keys.index(short)
+                self._loading_files = True
+                try:
+                    self.file_listbox.selection_clear(0, tk.END)
+                    self.file_listbox.selection_set(idx)
+                    self.file_listbox.see(idx)
+                finally:
+                    self._loading_files = False
+                if short != self.active_file:
+                    self._save_active_state()
+                    # Capture view so the file switch doesn't pan/zoom the shared axes
+                    xlim = self.ax.get_xlim()
+                    ylim = self.ax.get_ylim()
+                    old = self._suppress_replot
+                    self._suppress_replot = True
+                    self._switch_active_file(short)
+                    self._suppress_replot = old
+                    # Restore the view that was in place before the switch
+                    self.ax.set_xlim(xlim)
+                    self.ax.set_ylim(ylim)
+                break
 
     def _save_active_state(self):
         """Extend base save to preserve the current plot view per file."""

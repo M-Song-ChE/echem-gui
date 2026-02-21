@@ -91,3 +91,4 @@ def open_legend_editor(parent, legend_obj, canvas, font_size):
     cx = max(0, min(cx, sw - dw))
     cy = max(0, min(cy, sh - dh))
     dlg.geometry(f"+{cx}+{cy}")
+    parent.wait_window(dlg)

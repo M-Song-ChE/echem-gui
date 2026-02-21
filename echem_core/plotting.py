@@ -19,6 +19,62 @@ _CURRENT_UNITS = frozenset({"A", "mA", "µA", "nA"})
 # treat it as a "same spot" repeated click and advance to the next overlapping line.
 _CLICK_CYCLE_PX = 8
 
+_GRID_STYLE_MAP = {"solid": "-", "dashed": "--", "dotted": ":", "dash-dot": "-."}
+
+
+def apply_grid(ax, x_grid, y_grid, x_interval, y_interval, style="dashed"):
+    """Apply X/Y grid lines to *ax* with optional fixed tick interval.
+
+    Parameters
+    ----------
+    ax         : matplotlib Axes
+    x_grid     : bool – show X grid
+    y_grid     : bool – show Y grid
+    x_interval : str or float – tick spacing for X; 0 or blank = auto
+    y_interval : str or float – tick spacing for Y; 0 or blank = auto
+    style      : one of "solid", "dashed", "dotted", "dash-dot"
+    """
+    from matplotlib.ticker import MultipleLocator, AutoLocator
+    ls = _GRID_STYLE_MAP.get(style, "--")
+    ax.xaxis.set_major_locator(AutoLocator())
+    ax.yaxis.set_major_locator(AutoLocator())
+    ax.grid(False)
+    if x_grid:
+        try:
+            xi = float(x_interval)
+            if xi > 0:
+                ax.xaxis.set_major_locator(MultipleLocator(xi))
+        except (ValueError, TypeError):
+            pass
+        ax.grid(True, axis="x", which="major", linestyle=ls,
+                alpha=0.4, color="gray", linewidth=0.8)
+    if y_grid:
+        try:
+            yi = float(y_interval)
+            if yi > 0:
+                ax.yaxis.set_major_locator(MultipleLocator(yi))
+        except (ValueError, TypeError):
+            pass
+        ax.grid(True, axis="y", which="major", linestyle=ls,
+                alpha=0.4, color="gray", linewidth=0.8)
+
+
+def draw_reflines(ax, reflines):
+    """Draw vertical (X) and horizontal (Y) reference lines on ax.
+
+    reflines = list of ('x'|'y', float, style, color) tuples.
+    Each line carries its own style and color.  Labels start with '_' so
+    they are excluded from the legend automatically.
+    """
+    for axis, val, style, color in reflines:
+        ls = _GRID_STYLE_MAP.get(style, '--')
+        if axis == 'x':
+            ax.axvline(val, color=color, linestyle=ls,
+                       linewidth=1.0, alpha=0.7, label='_xref')
+        else:
+            ax.axhline(val, color=color, linestyle=ls,
+                       linewidth=1.0, alpha=0.7, label='_yref')
+
 
 class PlottingMixin:
     """Mixin that provides plotting behaviour.
@@ -101,7 +157,9 @@ class PlottingMixin:
             self._pan_moved = False   # reset drag-detection on each new press
             if on_legend:
                 # Legend dragging handled by set_draggable(True); don't start panning
-                pass
+                if getattr(event, 'dblclick', False):
+                    self._edit_legend_labels()
+                    return
             else:
                 self._panning = True
                 self._pan_start = (event.xdata, event.ydata)
@@ -265,6 +323,7 @@ class PlottingMixin:
         )
 
         self.canvas.draw_idle()
+        getattr(self, '_sync_file_selection_from_line', lambda _ln: None)(ln)
 
     def _clear_annotation(self, redraw=True):
         """Remove the current click annotation and its highlight dot."""
@@ -442,6 +501,9 @@ class PlottingMixin:
         # Apply manual axis range if specified
         self._apply_axis_range()
 
+        # Reference lines — each tuple carries its own style and color
+        draw_reflines(self.ax, getattr(self, '_reflines', []))
+
         # Legend — use set_draggable(True) for reliable position dragging
         self._legend_obj = None
         if has_legend and self.legend_show_var.get():
@@ -456,6 +518,17 @@ class PlottingMixin:
             frame_visible = getattr(self, "legend_frame_var", None)
             self._legend_obj.get_frame().set_visible(
                 frame_visible.get() if frame_visible is not None else True
+            )
+
+        _xgv = getattr(self, 'x_grid_var', None)
+        if _xgv is not None:
+            apply_grid(
+                self.ax,
+                _xgv.get(),
+                getattr(self, 'y_grid_var').get(),
+                getattr(self, 'x_grid_int_var').get(),
+                getattr(self, 'y_grid_int_var').get(),
+                getattr(self, 'grid_style_var').get(),
             )
 
         self.canvas.draw()

@@ -25,6 +25,8 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolb
 
 from .file_manager import FileManagerMixin
 from .correction import CorrectionMixin
+from .plotting import apply_grid, draw_reflines
+from .legend_editor import open_legend_editor
 
 _CYCLE_BG        = "#e8f0fe"
 
@@ -344,8 +346,87 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
                     "upper center", "center"],
             state="readonly", width=11,
         ).pack(side=tk.LEFT, padx=2)
-        ttk.Label(left, text="(left-drag to move, right-drag to resize)",
+        ttk.Label(left, text="(left-drag to move, right-drag to resize; dbl-click to edit)",
                   foreground="gray", font=("", 8)).pack(anchor=tk.W, padx=4)
+
+        # ── Grid ──────────────────────────────────────────────────
+        ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
+        ttk.Label(left, text="Grid  (active file)", font=("", 9, "bold")).pack(anchor=tk.W, padx=4)
+        grid_xy_row = ttk.Frame(left)
+        grid_xy_row.pack(fill=tk.X, padx=4, pady=2)
+        self.x_grid_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(grid_xy_row, text="X", variable=self.x_grid_var,
+                        command=self._auto_replot).pack(side=tk.LEFT)
+        ttk.Label(grid_xy_row, text="Interval:").pack(side=tk.LEFT, padx=(6, 0))
+        self.x_grid_int_var = tk.StringVar(value="0")
+        _xgi = ttk.Entry(grid_xy_row, textvariable=self.x_grid_int_var, width=5)
+        _xgi.pack(side=tk.LEFT, padx=(2, 0))
+        self.y_grid_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(grid_xy_row, text="Y", variable=self.y_grid_var,
+                        command=self._auto_replot).pack(side=tk.LEFT, padx=(10, 0))
+        ttk.Label(grid_xy_row, text="Interval:").pack(side=tk.LEFT, padx=(6, 0))
+        self.y_grid_int_var = tk.StringVar(value="0")
+        _ygi = ttk.Entry(grid_xy_row, textvariable=self.y_grid_int_var, width=5)
+        _ygi.pack(side=tk.LEFT, padx=(2, 0))
+        for _gi in (_xgi, _ygi):
+            _gi.bind("<Return>",   lambda e: self._auto_replot())
+            _gi.bind("<FocusOut>", lambda e: self._auto_replot())
+        grid_style_row = ttk.Frame(left)
+        grid_style_row.pack(fill=tk.X, padx=4, pady=(0, 2))
+        ttk.Label(grid_style_row, text="Style:").pack(side=tk.LEFT)
+        self.grid_style_var = tk.StringVar(value="dashed")
+        _gscb = ttk.Combobox(grid_style_row, textvariable=self.grid_style_var,
+                             values=["dashed", "dotted", "solid", "dash-dot"],
+                             state="readonly", width=9)
+        _gscb.pack(side=tk.LEFT, padx=4)
+        _gscb.bind("<<ComboboxSelected>>", lambda e: self._auto_replot())
+
+        # ── Reference Lines ───────────────────────────────────────
+        ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
+        ttk.Label(left, text="Reference Lines  (active file)",
+                  font=("", 9, "bold")).pack(anchor=tk.W, padx=4)
+        ref_add_row = ttk.Frame(left)
+        ref_add_row.pack(fill=tk.X, padx=4, pady=2)
+        ttk.Label(ref_add_row, text="X:").pack(side=tk.LEFT)
+        self._ref_x_var = tk.StringVar()
+        _ref_x_e = ttk.Entry(ref_add_row, textvariable=self._ref_x_var, width=7)
+        _ref_x_e.pack(side=tk.LEFT, padx=(2, 0))
+        ttk.Button(ref_add_row, text="+X", width=3,
+                   command=self._add_xrefline).pack(side=tk.LEFT, padx=(2, 8))
+        ttk.Label(ref_add_row, text="Y:").pack(side=tk.LEFT)
+        self._ref_y_var = tk.StringVar()
+        _ref_y_e = ttk.Entry(ref_add_row, textvariable=self._ref_y_var, width=7)
+        _ref_y_e.pack(side=tk.LEFT, padx=(2, 0))
+        ttk.Button(ref_add_row, text="+Y", width=3,
+                   command=self._add_yrefline).pack(side=tk.LEFT, padx=2)
+        _ref_x_e.bind("<Return>", lambda e: self._add_xrefline())
+        _ref_y_e.bind("<Return>", lambda e: self._add_yrefline())
+        ref_list_row = ttk.Frame(left)
+        ref_list_row.pack(fill=tk.X, padx=4, pady=(0, 2))
+        self._reflines_lb = tk.Listbox(ref_list_row, height=3,
+                                        selectmode=tk.SINGLE, exportselection=False)
+        self._reflines_lb.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self._reflines_lb.bind("<<ListboxSelect>>", lambda e: self._on_refline_select())
+        ttk.Button(ref_list_row, text="Remove",
+                   command=self._remove_refline).pack(side=tk.RIGHT, padx=(4, 0))
+        ref_opt_row = ttk.Frame(left)
+        ref_opt_row.pack(fill=tk.X, padx=4, pady=(0, 2))
+        ttk.Label(ref_opt_row, text="Style:").pack(side=tk.LEFT)
+        self._refline_style_var = tk.StringVar(value="dashed")
+        _rl_style_cb = ttk.Combobox(ref_opt_row, textvariable=self._refline_style_var,
+                                     values=["dashed", "dotted", "solid", "dash-dot"],
+                                     state="readonly", width=9)
+        _rl_style_cb.pack(side=tk.LEFT, padx=(2, 8))
+        ttk.Label(ref_opt_row, text="Color:").pack(side=tk.LEFT)
+        self._refline_color_var = tk.StringVar(value="dimgray")
+        _rl_color_cb = ttk.Combobox(ref_opt_row, textvariable=self._refline_color_var,
+                                     values=["dimgray", "black", "red", "blue", "green",
+                                             "orange", "purple", "crimson", "royalblue",
+                                             "darkorange", "teal", "saddlebrown"],
+                                     state="readonly", width=10)
+        _rl_color_cb.pack(side=tk.LEFT, padx=2)
+        _rl_style_cb.bind("<<ComboboxSelected>>", lambda e: self._on_refline_style_color_change())
+        _rl_color_cb.bind("<<ComboboxSelected>>", lambda e: self._on_refline_style_color_change())
 
         # ── Plot button ───────────────────────────────────────────
         ttk.Button(left, text="Plot Active File",
@@ -598,6 +679,11 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         except ValueError:
             pass
         entry["legend_loc"] = self.legend_loc_var.get()
+        entry["x_grid"]     = self.x_grid_var.get()
+        entry["y_grid"]     = self.y_grid_var.get()
+        entry["x_grid_int"] = self.x_grid_int_var.get()
+        entry["y_grid_int"] = self.y_grid_int_var.get()
+        entry["grid_style"]     = self.grid_style_var.get()
 
     def _switch_active_file(self, short):
         self.active_file = short
@@ -621,6 +707,12 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         entry.setdefault("legend_frame",  True)
         entry.setdefault("leg_size",      8.0)
         entry.setdefault("legend_loc",    "best")
+        entry.setdefault("x_grid",        False)
+        entry.setdefault("y_grid",        False)
+        entry.setdefault("x_grid_int",    "0")
+        entry.setdefault("y_grid_int",    "0")
+        entry.setdefault("grid_style",    "dashed")
+        entry.setdefault("reflines",      [])
 
         df   = entry["df"]
 
@@ -673,6 +765,11 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         self.legend_loc_var.set(entry["legend_loc"])
         self.r_sol_var.set(str(entry["r_sol"]))
         self.e_ref_var.set(str(entry["e_ref"]))
+        self.x_grid_var.set(entry["x_grid"])
+        self.y_grid_var.set(entry["y_grid"])
+        self.x_grid_int_var.set(entry["x_grid_int"])
+        self.y_grid_int_var.set(entry["y_grid_int"])
+        self.grid_style_var.set(entry["grid_style"])
 
         old = self._suppress_replot
         self._suppress_replot = True
@@ -691,6 +788,8 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             _entry["ax"].set_xlim(_entry["view_xlim"])
             _entry["ax"].set_ylim(_entry["view_ylim"])
             _entry["canvas"].draw_idle()
+
+        self._refresh_reflines_lb()
 
     # ════════════════════════════════════════════════════════════════
     # Replot
@@ -837,6 +936,17 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         # Apply manual axis range
         self._apply_range(short, x_min_s, x_max_s, y_min_s, y_max_s)
 
+        # Reference lines — each entry carries its own style and color
+        draw_reflines(ax, entry.get("reflines", []))
+
+        # Grid — read from live UI if active file, else from stored entry
+        _xg  = self.x_grid_var.get()     if is_active else entry.get("x_grid",     False)
+        _yg  = self.y_grid_var.get()     if is_active else entry.get("y_grid",     False)
+        _xgi = self.x_grid_int_var.get() if is_active else entry.get("x_grid_int", "0")
+        _ygi = self.y_grid_int_var.get() if is_active else entry.get("y_grid_int", "0")
+        _gs  = self.grid_style_var.get() if is_active else entry.get("grid_style", "dashed")
+        apply_grid(ax, _xg, _yg, _xgi, _ygi, _gs)
+
         # Legend
         if leg_show and has_data and ax.get_lines():
             entry["legend"] = ax.legend(fontsize=leg_size, loc=leg_loc)
@@ -917,6 +1027,17 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         entry["pan_moved"] = False
         ax = entry.get("ax")
         if event.button == 1 and event.inaxes is ax:
+            # Double-click on legend → open label editor
+            if getattr(event, 'dblclick', False):
+                leg = entry.get("legend")
+                if leg is not None:
+                    try:
+                        r = event.canvas.get_renderer()
+                        if leg.get_window_extent(r).contains(event.x, event.y):
+                            self._edit_legend_labels()
+                            return
+                    except Exception:
+                        pass
             leg = entry.get("legend")
             if leg is not None:
                 try:
@@ -1149,9 +1270,93 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             self._save_active_state()
             self._switch_active_file(short)
 
-    # Required no-op stubs for FileManagerMixin compatibility
     def _edit_legend_labels(self):
-        pass
+        if not self.active_file:
+            return
+        entry = self.files.get(self.active_file)
+        if entry is None:
+            return
+        leg = entry.get("legend")
+        if leg is None:
+            from tkinter import messagebox
+            messagebox.showinfo("Info", "Plot data first to create a legend.")
+            return
+        leg.set_draggable(False)
+        open_legend_editor(self, leg, entry["canvas"], entry.get("leg_size", 8.0))
+        if entry.get("legend") is not None:
+            entry["legend"].set_draggable(True)
+
+    # ════════════════════════════════════════════════════════════════
+    # Reference line helpers
+    # ════════════════════════════════════════════════════════════════
+    def _add_xrefline(self):
+        if not self.active_file:
+            return
+        try:
+            v = float(self._ref_x_var.get())
+        except ValueError:
+            return
+        style = self._refline_style_var.get()
+        color = self._refline_color_var.get()
+        self.files[self.active_file].setdefault("reflines", []).append(('x', v, style, color))
+        self._reflines_lb.insert(tk.END, f"X = {v:.4g}")
+        self._auto_replot()
+
+    def _add_yrefline(self):
+        if not self.active_file:
+            return
+        try:
+            v = float(self._ref_y_var.get())
+        except ValueError:
+            return
+        style = self._refline_style_var.get()
+        color = self._refline_color_var.get()
+        self.files[self.active_file].setdefault("reflines", []).append(('y', v, style, color))
+        self._reflines_lb.insert(tk.END, f"Y = {v:.4g}")
+        self._auto_replot()
+
+    def _remove_refline(self):
+        sel = self._reflines_lb.curselection()
+        if not sel or not self.active_file:
+            return
+        idx = sel[0]
+        self.files[self.active_file]["reflines"].pop(idx)
+        self._reflines_lb.delete(idx)
+        self._auto_replot()
+
+    def _refresh_reflines_lb(self):
+        self._reflines_lb.delete(0, tk.END)
+        if not self.active_file:
+            return
+        for axis, val, _, _ in self.files.get(self.active_file, {}).get("reflines", []):
+            self._reflines_lb.insert(tk.END, f"{'X' if axis == 'x' else 'Y'} = {val:.4g}")
+
+    def _on_refline_select(self):
+        """Populate style/color comboboxes from the selected line's own settings."""
+        sel = self._reflines_lb.curselection()
+        if not sel or not self.active_file:
+            return
+        reflines = self.files.get(self.active_file, {}).get("reflines", [])
+        if sel[0] >= len(reflines):
+            return
+        _, _, style, color = reflines[sel[0]]
+        self._refline_style_var.set(style)
+        self._refline_color_var.set(color)
+
+    def _on_refline_style_color_change(self):
+        """Apply new style/color to the currently selected reference line."""
+        sel = self._reflines_lb.curselection()
+        if not sel or not self.active_file:
+            return  # no line selected — comboboxes just set defaults for next add
+        reflines = self.files.get(self.active_file, {}).get("reflines", [])
+        idx = sel[0]
+        if idx >= len(reflines):
+            return
+        axis, val, _, _ = reflines[idx]
+        reflines[idx] = (axis, val,
+                         self._refline_style_var.get(),
+                         self._refline_color_var.get())
+        self._auto_replot()
 
     # ════════════════════════════════════════════════════════════════
     # Log helper

@@ -34,6 +34,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolb
 
 from .file_manager import FileManagerMixin
 from .correction import CorrectionMixin
+from .plotting import apply_grid, draw_reflines
 
 _CYCLE_BG        = "#e8f0fe"
 _CYCLE_ACTIVE_BG = "#cce0ff"
@@ -319,6 +320,159 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             variable=self.legend_frame_cdl_var,
             command=self._toggle_cdl_legend_frame,
         ).pack(side=tk.LEFT, padx=(8, 0))
+
+        # CV Grid
+        ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=4)
+        ttk.Label(left, text="CV Grid", font=("", 8, "bold")).pack(anchor=tk.W, padx=4)
+        cv_grid_row = ttk.Frame(left)
+        cv_grid_row.pack(fill=tk.X, padx=4, pady=(2, 0))
+        self.cv_x_grid_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(cv_grid_row, text="X", variable=self.cv_x_grid_var,
+                        command=self._auto_replot).pack(side=tk.LEFT)
+        ttk.Label(cv_grid_row, text="Interval:").pack(side=tk.LEFT, padx=(6, 0))
+        self.cv_x_grid_int_var = tk.StringVar(value="0")
+        _cvxgi = ttk.Entry(cv_grid_row, textvariable=self.cv_x_grid_int_var, width=5)
+        _cvxgi.pack(side=tk.LEFT, padx=(2, 0))
+        self.cv_y_grid_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(cv_grid_row, text="Y", variable=self.cv_y_grid_var,
+                        command=self._auto_replot).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Label(cv_grid_row, text="Interval:").pack(side=tk.LEFT, padx=(6, 0))
+        self.cv_y_grid_int_var = tk.StringVar(value="0")
+        _cvygi = ttk.Entry(cv_grid_row, textvariable=self.cv_y_grid_int_var, width=5)
+        _cvygi.pack(side=tk.LEFT, padx=(2, 0))
+        for _gi in (_cvxgi, _cvygi):
+            _gi.bind("<Return>",   lambda e: self._auto_replot())
+            _gi.bind("<FocusOut>", lambda e: self._auto_replot())
+        cv_grid_style_row = ttk.Frame(left)
+        cv_grid_style_row.pack(fill=tk.X, padx=4, pady=(0, 2))
+        ttk.Label(cv_grid_style_row, text="Style:").pack(side=tk.LEFT)
+        self.cv_grid_style_var = tk.StringVar(value="dashed")
+        _cvgscb = ttk.Combobox(cv_grid_style_row, textvariable=self.cv_grid_style_var,
+                               values=["dashed", "dotted", "solid", "dash-dot"],
+                               state="readonly", width=9)
+        _cvgscb.pack(side=tk.LEFT, padx=4)
+        _cvgscb.bind("<<ComboboxSelected>>", lambda e: self._auto_replot())
+
+        # CV Reference Lines
+        ttk.Label(left, text="CV Ref Lines", font=("", 8, "bold")).pack(anchor=tk.W, padx=4)
+        cv_ref_add_row = ttk.Frame(left)
+        cv_ref_add_row.pack(fill=tk.X, padx=4, pady=(2, 0))
+        ttk.Label(cv_ref_add_row, text="X:").pack(side=tk.LEFT)
+        self._cv_ref_x_var = tk.StringVar()
+        _cvref_x_e = ttk.Entry(cv_ref_add_row, textvariable=self._cv_ref_x_var, width=7)
+        _cvref_x_e.pack(side=tk.LEFT, padx=(2, 0))
+        ttk.Button(cv_ref_add_row, text="+X", width=3,
+                   command=self._add_cv_xrefline).pack(side=tk.LEFT, padx=(2, 8))
+        ttk.Label(cv_ref_add_row, text="Y:").pack(side=tk.LEFT)
+        self._cv_ref_y_var = tk.StringVar()
+        _cvref_y_e = ttk.Entry(cv_ref_add_row, textvariable=self._cv_ref_y_var, width=7)
+        _cvref_y_e.pack(side=tk.LEFT, padx=(2, 0))
+        ttk.Button(cv_ref_add_row, text="+Y", width=3,
+                   command=self._add_cv_yrefline).pack(side=tk.LEFT, padx=2)
+        _cvref_x_e.bind("<Return>", lambda e: self._add_cv_xrefline())
+        _cvref_y_e.bind("<Return>", lambda e: self._add_cv_yrefline())
+        cv_ref_list_row = ttk.Frame(left)
+        cv_ref_list_row.pack(fill=tk.X, padx=4, pady=(0, 2))
+        self._cv_reflines_lb = tk.Listbox(cv_ref_list_row, height=3,
+                                           selectmode=tk.SINGLE, exportselection=False)
+        self._cv_reflines_lb.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self._cv_reflines_lb.bind("<<ListboxSelect>>", lambda e: self._on_cv_refline_select())
+        ttk.Button(cv_ref_list_row, text="Remove",
+                   command=self._remove_cv_refline).pack(side=tk.RIGHT, padx=(4, 0))
+        cv_ref_opt_row = ttk.Frame(left)
+        cv_ref_opt_row.pack(fill=tk.X, padx=4, pady=(0, 2))
+        ttk.Label(cv_ref_opt_row, text="Style:").pack(side=tk.LEFT)
+        self._cv_refline_style_var = tk.StringVar(value="dashed")
+        _cvrl_style_cb = ttk.Combobox(cv_ref_opt_row, textvariable=self._cv_refline_style_var,
+                                       values=["dashed", "dotted", "solid", "dash-dot"],
+                                       state="readonly", width=9)
+        _cvrl_style_cb.pack(side=tk.LEFT, padx=(2, 8))
+        ttk.Label(cv_ref_opt_row, text="Color:").pack(side=tk.LEFT)
+        self._cv_refline_color_var = tk.StringVar(value="dimgray")
+        _cvrl_color_cb = ttk.Combobox(cv_ref_opt_row, textvariable=self._cv_refline_color_var,
+                                       values=["dimgray", "black", "red", "blue", "green",
+                                               "orange", "purple", "crimson", "royalblue",
+                                               "darkorange", "teal", "saddlebrown"],
+                                       state="readonly", width=10)
+        _cvrl_color_cb.pack(side=tk.LEFT, padx=2)
+        _cvrl_style_cb.bind("<<ComboboxSelected>>", lambda e: self._on_cv_refline_style_color_change())
+        _cvrl_color_cb.bind("<<ComboboxSelected>>", lambda e: self._on_cv_refline_style_color_change())
+
+        # Cdl Grid
+        ttk.Label(left, text="Cdl Grid", font=("", 8, "bold")).pack(anchor=tk.W, padx=4)
+        cdl_grid_row = ttk.Frame(left)
+        cdl_grid_row.pack(fill=tk.X, padx=4, pady=(2, 0))
+        self.cdl_x_grid_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(cdl_grid_row, text="X", variable=self.cdl_x_grid_var,
+                        command=self._replot_active_cdl).pack(side=tk.LEFT)
+        ttk.Label(cdl_grid_row, text="Interval:").pack(side=tk.LEFT, padx=(6, 0))
+        self.cdl_x_grid_int_var = tk.StringVar(value="0")
+        _cdlxgi = ttk.Entry(cdl_grid_row, textvariable=self.cdl_x_grid_int_var, width=5)
+        _cdlxgi.pack(side=tk.LEFT, padx=(2, 0))
+        self.cdl_y_grid_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(cdl_grid_row, text="Y", variable=self.cdl_y_grid_var,
+                        command=self._replot_active_cdl).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Label(cdl_grid_row, text="Interval:").pack(side=tk.LEFT, padx=(6, 0))
+        self.cdl_y_grid_int_var = tk.StringVar(value="0")
+        _cdlygi = ttk.Entry(cdl_grid_row, textvariable=self.cdl_y_grid_int_var, width=5)
+        _cdlygi.pack(side=tk.LEFT, padx=(2, 0))
+        for _gi in (_cdlxgi, _cdlygi):
+            _gi.bind("<Return>",   lambda e: self._replot_active_cdl())
+            _gi.bind("<FocusOut>", lambda e: self._replot_active_cdl())
+        cdl_grid_style_row = ttk.Frame(left)
+        cdl_grid_style_row.pack(fill=tk.X, padx=4, pady=(0, 4))
+        ttk.Label(cdl_grid_style_row, text="Style:").pack(side=tk.LEFT)
+        self.cdl_grid_style_var = tk.StringVar(value="dashed")
+        _cdlgscb = ttk.Combobox(cdl_grid_style_row, textvariable=self.cdl_grid_style_var,
+                                values=["dashed", "dotted", "solid", "dash-dot"],
+                                state="readonly", width=9)
+        _cdlgscb.pack(side=tk.LEFT, padx=4)
+        _cdlgscb.bind("<<ComboboxSelected>>", lambda e: self._replot_active_cdl())
+
+        # Cdl Reference Lines
+        ttk.Label(left, text="Cdl Ref Lines", font=("", 8, "bold")).pack(anchor=tk.W, padx=4)
+        cdl_ref_add_row = ttk.Frame(left)
+        cdl_ref_add_row.pack(fill=tk.X, padx=4, pady=(2, 0))
+        ttk.Label(cdl_ref_add_row, text="X:").pack(side=tk.LEFT)
+        self._cdl_ref_x_var = tk.StringVar()
+        _cdlref_x_e = ttk.Entry(cdl_ref_add_row, textvariable=self._cdl_ref_x_var, width=7)
+        _cdlref_x_e.pack(side=tk.LEFT, padx=(2, 0))
+        ttk.Button(cdl_ref_add_row, text="+X", width=3,
+                   command=self._add_cdl_xrefline).pack(side=tk.LEFT, padx=(2, 8))
+        ttk.Label(cdl_ref_add_row, text="Y:").pack(side=tk.LEFT)
+        self._cdl_ref_y_var = tk.StringVar()
+        _cdlref_y_e = ttk.Entry(cdl_ref_add_row, textvariable=self._cdl_ref_y_var, width=7)
+        _cdlref_y_e.pack(side=tk.LEFT, padx=(2, 0))
+        ttk.Button(cdl_ref_add_row, text="+Y", width=3,
+                   command=self._add_cdl_yrefline).pack(side=tk.LEFT, padx=2)
+        _cdlref_x_e.bind("<Return>", lambda e: self._add_cdl_xrefline())
+        _cdlref_y_e.bind("<Return>", lambda e: self._add_cdl_yrefline())
+        cdl_ref_list_row = ttk.Frame(left)
+        cdl_ref_list_row.pack(fill=tk.X, padx=4, pady=(0, 2))
+        self._cdl_reflines_lb = tk.Listbox(cdl_ref_list_row, height=3,
+                                            selectmode=tk.SINGLE, exportselection=False)
+        self._cdl_reflines_lb.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self._cdl_reflines_lb.bind("<<ListboxSelect>>", lambda e: self._on_cdl_refline_select())
+        ttk.Button(cdl_ref_list_row, text="Remove",
+                   command=self._remove_cdl_refline).pack(side=tk.RIGHT, padx=(4, 0))
+        cdl_ref_opt_row = ttk.Frame(left)
+        cdl_ref_opt_row.pack(fill=tk.X, padx=4, pady=(0, 2))
+        ttk.Label(cdl_ref_opt_row, text="Style:").pack(side=tk.LEFT)
+        self._cdl_refline_style_var = tk.StringVar(value="dashed")
+        _cdlrl_style_cb = ttk.Combobox(cdl_ref_opt_row, textvariable=self._cdl_refline_style_var,
+                                        values=["dashed", "dotted", "solid", "dash-dot"],
+                                        state="readonly", width=9)
+        _cdlrl_style_cb.pack(side=tk.LEFT, padx=(2, 8))
+        ttk.Label(cdl_ref_opt_row, text="Color:").pack(side=tk.LEFT)
+        self._cdl_refline_color_var = tk.StringVar(value="dimgray")
+        _cdlrl_color_cb = ttk.Combobox(cdl_ref_opt_row, textvariable=self._cdl_refline_color_var,
+                                        values=["dimgray", "black", "red", "blue", "green",
+                                                "orange", "purple", "crimson", "royalblue",
+                                                "darkorange", "teal", "saddlebrown"],
+                                        state="readonly", width=10)
+        _cdlrl_color_cb.pack(side=tk.LEFT, padx=2)
+        _cdlrl_style_cb.bind("<<ComboboxSelected>>", lambda e: self._on_cdl_refline_style_color_change())
+        _cdlrl_color_cb.bind("<<ComboboxSelected>>", lambda e: self._on_cdl_refline_style_color_change())
 
         self.result_label = ttk.Label(left, text="", wraplength=290, justify=tk.LEFT)
         self.result_label.pack(anchor=tk.W, padx=4, pady=2)
@@ -664,6 +818,16 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             entry["legend_frame_cv"]  = self.legend_frame_cv_var.get()
             entry["legend_frame_cdl"] = self.legend_frame_cdl_var.get()
             entry["result_text"]    = self.result_label.cget("text")
+            entry["cv_x_grid"]      = self.cv_x_grid_var.get()
+            entry["cv_y_grid"]      = self.cv_y_grid_var.get()
+            entry["cv_x_grid_int"]  = self.cv_x_grid_int_var.get()
+            entry["cv_y_grid_int"]  = self.cv_y_grid_int_var.get()
+            entry["cv_grid_style"]  = self.cv_grid_style_var.get()
+            entry["cdl_x_grid"]     = self.cdl_x_grid_var.get()
+            entry["cdl_y_grid"]     = self.cdl_y_grid_var.get()
+            entry["cdl_x_grid_int"] = self.cdl_x_grid_int_var.get()
+            entry["cdl_y_grid_int"] = self.cdl_y_grid_int_var.get()
+            entry["cdl_grid_style"]    = self.cdl_grid_style_var.get()
             # Preserve current zoom/pan for both plots
             entry["view_xlim_cv"]  = self.ax_cv.get_xlim()
             entry["view_ylim_cv"]  = self.ax_cv.get_ylim()
@@ -691,6 +855,18 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         entry.setdefault("legend_frame_cdl", True)
         entry.setdefault("cdl_data",        None)
         entry.setdefault("result_text",     "")
+        entry.setdefault("cv_x_grid",       False)
+        entry.setdefault("cv_y_grid",       False)
+        entry.setdefault("cv_x_grid_int",   "0")
+        entry.setdefault("cv_y_grid_int",   "0")
+        entry.setdefault("cv_grid_style",   "dashed")
+        entry.setdefault("cdl_x_grid",      False)
+        entry.setdefault("cdl_y_grid",      False)
+        entry.setdefault("cdl_x_grid_int",  "0")
+        entry.setdefault("cdl_y_grid_int",  "0")
+        entry.setdefault("cdl_grid_style",  "dashed")
+        entry.setdefault("cv_reflines",      [])
+        entry.setdefault("cdl_reflines",     [])
 
         df   = entry["df"]
         cols = list(df.columns)
@@ -732,6 +908,16 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         self.e_ref_var.set(str(entry["e_ref"]))
         self.e_std_var.set(entry["e_std"])
         self.cs_var.set(entry["cs"])
+        self.cv_x_grid_var.set(entry["cv_x_grid"])
+        self.cv_y_grid_var.set(entry["cv_y_grid"])
+        self.cv_x_grid_int_var.set(entry["cv_x_grid_int"])
+        self.cv_y_grid_int_var.set(entry["cv_y_grid_int"])
+        self.cv_grid_style_var.set(entry["cv_grid_style"])
+        self.cdl_x_grid_var.set(entry["cdl_x_grid"])
+        self.cdl_y_grid_var.set(entry["cdl_y_grid"])
+        self.cdl_x_grid_int_var.set(entry["cdl_x_grid_int"])
+        self.cdl_y_grid_int_var.set(entry["cdl_y_grid_int"])
+        self.cdl_grid_style_var.set(entry["cdl_grid_style"])
 
         # Clear per-panel scan-rate vars so the new file starts completely fresh
         self._sr_vars.clear()
@@ -776,6 +962,9 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             self.ax_cv.set_xlim(entry["view_xlim_cv"])
             self.ax_cv.set_ylim(entry["view_ylim_cv"])
             self.canvas_cv.draw_idle()
+
+        self._refresh_cv_reflines_lb()
+        self._refresh_cdl_reflines_lb()
 
     def _auto_replot(self):
         if self._suppress_replot:
@@ -835,7 +1024,7 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         _y_is_V = (_y_unit_str in _VOLTAGE_UNITS if _y_unit_str != "(auto)"
                    else _y_src in _VOLTAGE_UNITS)
         self.ax_cv.set_ylabel(f"{y_label}  (vs {ref})" if (ref and _y_is_V) else y_label)
-        self.ax_cv.set_title("CV Curves  (non-Faradaic region)")
+        self.ax_cv.set_title(f"{self.active_file}  —  CV Curves  (non-Faradaic region)")
 
         # Red dashed line at E_std (in display units)
         try:
@@ -851,6 +1040,14 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             self._legend_cv.set_draggable(True)
             self._legend_cv.get_frame().set_visible(self.legend_frame_cv_var.get())
 
+        if self.active_file and self.active_file in self.files:
+            draw_reflines(self.ax_cv,
+                          self.files[self.active_file].get("cv_reflines", []))
+
+        apply_grid(self.ax_cv,
+                   self.cv_x_grid_var.get(), self.cv_y_grid_var.get(),
+                   self.cv_x_grid_int_var.get(), self.cv_y_grid_int_var.get(),
+                   self.cv_grid_style_var.get())
         self.canvas_cv.draw()
         self._auto_xlim_cv = self.ax_cv.get_xlim()
         self._auto_ylim_cv = self.ax_cv.get_ylim()
@@ -906,6 +1103,17 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         if changed:
             self.canvas_cv.draw_idle()
 
+    def _replot_active_cdl(self):
+        """Re-render the Cdl plot for the active file (grid change, no re-extraction)."""
+        if not self.active_file or self.active_file not in self.files:
+            return
+        cdl_data = self.files[self.active_file].get("cdl_data")
+        if cdl_data is None:
+            return
+        self._legend_cdl = None
+        self.ax_cdl.clear()
+        self._replot_cdl(cdl_data)
+
     def _replot_cdl(self, cdl_data):
         """Replot the Cdl extraction figure from stored per-file data."""
         sr_arr = cdl_data["sr_arr"]
@@ -932,10 +1140,21 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         self.ax_cdl.axhline(0, color="gray", linewidth=0.5, linestyle="--")
         self.ax_cdl.set_xlabel("Scan Rate  (mV/s)")
         self.ax_cdl.set_ylabel(f"Δj/2  ({y_unit})")
-        self.ax_cdl.set_title("Cdl Extraction")
+        _cdl_title = (f"{self.active_file}  —  Cdl Extraction"
+                      if self.active_file else "Cdl Extraction")
+        self.ax_cdl.set_title(_cdl_title)
         self._legend_cdl = self.ax_cdl.legend(fontsize=self._leg_size_cdl)
         self._legend_cdl.set_draggable(True)
         self._legend_cdl.get_frame().set_visible(self.legend_frame_cdl_var.get())
+
+        if self.active_file and self.active_file in self.files:
+            draw_reflines(self.ax_cdl,
+                          self.files[self.active_file].get("cdl_reflines", []))
+
+        apply_grid(self.ax_cdl,
+                   self.cdl_x_grid_var.get(), self.cdl_y_grid_var.get(),
+                   self.cdl_x_grid_int_var.get(), self.cdl_y_grid_int_var.get(),
+                   self.cdl_grid_style_var.get())
         self.canvas_cdl.draw()
         self._auto_xlim_cdl = self.ax_cdl.get_xlim()
         self._auto_ylim_cdl = self.ax_cdl.get_ylim()
@@ -1123,11 +1342,20 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         self.ax_cdl.axhline(0, color="gray", linewidth=0.5, linestyle="--")
         self.ax_cdl.set_xlabel("Scan Rate  (mV/s)")
         self.ax_cdl.set_ylabel(f"Δj/2  ({y_unit})")
-        self.ax_cdl.set_title("Cdl Extraction")
+        self.ax_cdl.set_title(f"{self.active_file}  —  Cdl Extraction")
 
         self._legend_cdl = self.ax_cdl.legend(fontsize=self._leg_size_cdl)
         self._legend_cdl.set_draggable(True)
         self._legend_cdl.get_frame().set_visible(self.legend_frame_cdl_var.get())
+
+        if self.active_file and self.active_file in self.files:
+            draw_reflines(self.ax_cdl,
+                          self.files[self.active_file].get("cdl_reflines", []))
+
+        apply_grid(self.ax_cdl,
+                   self.cdl_x_grid_var.get(), self.cdl_y_grid_var.get(),
+                   self.cdl_x_grid_int_var.get(), self.cdl_y_grid_int_var.get(),
+                   self.cdl_grid_style_var.get())
         self.canvas_cdl.draw()
         self._auto_xlim_cdl = self.ax_cdl.get_xlim()
         self._auto_ylim_cdl = self.ax_cdl.get_ylim()
@@ -1149,6 +1377,150 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
                 f"ECSA = {ecsa:.2f} cm²\n"
                 f"(Cs = {cs} mF/cm²,  R² = {r_sq:.4f})"
             )
+
+    # ════════════════════════════════════════════════════════════════
+    # Reference line helpers (CV)
+    # ════════════════════════════════════════════════════════════════
+    def _add_cv_xrefline(self):
+        if not self.active_file:
+            return
+        try:
+            v = float(self._cv_ref_x_var.get())
+        except ValueError:
+            return
+        style = self._cv_refline_style_var.get()
+        color = self._cv_refline_color_var.get()
+        self.files[self.active_file].setdefault("cv_reflines", []).append(('x', v, style, color))
+        self._cv_reflines_lb.insert(tk.END, f"X = {v:.4g}")
+        self._auto_replot()
+
+    def _add_cv_yrefline(self):
+        if not self.active_file:
+            return
+        try:
+            v = float(self._cv_ref_y_var.get())
+        except ValueError:
+            return
+        style = self._cv_refline_style_var.get()
+        color = self._cv_refline_color_var.get()
+        self.files[self.active_file].setdefault("cv_reflines", []).append(('y', v, style, color))
+        self._cv_reflines_lb.insert(tk.END, f"Y = {v:.4g}")
+        self._auto_replot()
+
+    def _remove_cv_refline(self):
+        sel = self._cv_reflines_lb.curselection()
+        if not sel or not self.active_file:
+            return
+        idx = sel[0]
+        self.files[self.active_file]["cv_reflines"].pop(idx)
+        self._cv_reflines_lb.delete(idx)
+        self._auto_replot()
+
+    def _refresh_cv_reflines_lb(self):
+        self._cv_reflines_lb.delete(0, tk.END)
+        if not self.active_file:
+            return
+        for axis, val, _, _ in self.files.get(self.active_file, {}).get("cv_reflines", []):
+            self._cv_reflines_lb.insert(tk.END, f"{'X' if axis == 'x' else 'Y'} = {val:.4g}")
+
+    def _on_cv_refline_select(self):
+        """Populate CV style/color comboboxes from the selected line's settings."""
+        sel = self._cv_reflines_lb.curselection()
+        if not sel or not self.active_file:
+            return
+        reflines = self.files.get(self.active_file, {}).get("cv_reflines", [])
+        if sel[0] >= len(reflines):
+            return
+        _, _, style, color = reflines[sel[0]]
+        self._cv_refline_style_var.set(style)
+        self._cv_refline_color_var.set(color)
+
+    def _on_cv_refline_style_color_change(self):
+        """Apply new style/color to the currently selected CV reference line."""
+        sel = self._cv_reflines_lb.curselection()
+        if not sel or not self.active_file:
+            return
+        reflines = self.files.get(self.active_file, {}).get("cv_reflines", [])
+        idx = sel[0]
+        if idx >= len(reflines):
+            return
+        axis, val, _, _ = reflines[idx]
+        reflines[idx] = (axis, val,
+                         self._cv_refline_style_var.get(),
+                         self._cv_refline_color_var.get())
+        self._auto_replot()
+
+    # ════════════════════════════════════════════════════════════════
+    # Reference line helpers (Cdl)
+    # ════════════════════════════════════════════════════════════════
+    def _add_cdl_xrefline(self):
+        if not self.active_file:
+            return
+        try:
+            v = float(self._cdl_ref_x_var.get())
+        except ValueError:
+            return
+        style = self._cdl_refline_style_var.get()
+        color = self._cdl_refline_color_var.get()
+        self.files[self.active_file].setdefault("cdl_reflines", []).append(('x', v, style, color))
+        self._cdl_reflines_lb.insert(tk.END, f"X = {v:.4g}")
+        self._replot_active_cdl()
+
+    def _add_cdl_yrefline(self):
+        if not self.active_file:
+            return
+        try:
+            v = float(self._cdl_ref_y_var.get())
+        except ValueError:
+            return
+        style = self._cdl_refline_style_var.get()
+        color = self._cdl_refline_color_var.get()
+        self.files[self.active_file].setdefault("cdl_reflines", []).append(('y', v, style, color))
+        self._cdl_reflines_lb.insert(tk.END, f"Y = {v:.4g}")
+        self._replot_active_cdl()
+
+    def _remove_cdl_refline(self):
+        sel = self._cdl_reflines_lb.curselection()
+        if not sel or not self.active_file:
+            return
+        idx = sel[0]
+        self.files[self.active_file]["cdl_reflines"].pop(idx)
+        self._cdl_reflines_lb.delete(idx)
+        self._replot_active_cdl()
+
+    def _refresh_cdl_reflines_lb(self):
+        self._cdl_reflines_lb.delete(0, tk.END)
+        if not self.active_file:
+            return
+        for axis, val, _, _ in self.files.get(self.active_file, {}).get("cdl_reflines", []):
+            self._cdl_reflines_lb.insert(tk.END, f"{'X' if axis == 'x' else 'Y'} = {val:.4g}")
+
+    def _on_cdl_refline_select(self):
+        """Populate Cdl style/color comboboxes from the selected line's settings."""
+        sel = self._cdl_reflines_lb.curselection()
+        if not sel or not self.active_file:
+            return
+        reflines = self.files.get(self.active_file, {}).get("cdl_reflines", [])
+        if sel[0] >= len(reflines):
+            return
+        _, _, style, color = reflines[sel[0]]
+        self._cdl_refline_style_var.set(style)
+        self._cdl_refline_color_var.set(color)
+
+    def _on_cdl_refline_style_color_change(self):
+        """Apply new style/color to the currently selected Cdl reference line."""
+        sel = self._cdl_reflines_lb.curselection()
+        if not sel or not self.active_file:
+            return
+        reflines = self.files.get(self.active_file, {}).get("cdl_reflines", [])
+        idx = sel[0]
+        if idx >= len(reflines):
+            return
+        axis, val, _, _ = reflines[idx]
+        reflines[idx] = (axis, val,
+                         self._cdl_refline_style_var.get(),
+                         self._cdl_refline_color_var.get())
+        self._replot_active_cdl()
 
     # ════════════════════════════════════════════════════════════════
     # Log helper
