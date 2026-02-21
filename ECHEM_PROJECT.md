@@ -17,10 +17,10 @@ echem_gui/
     ecsa_panel.py           ← ECSAPanel class (dedicated ECSA Calc tab)
     file_manager.py         ← FileManagerMixin: load/remove/switch files
     correction.py           ← CorrectionMixin: IR compensation + RHE conversion
-    plotting.py             ← PlottingMixin: plot, zoom, pan, legend drag/resize, reset view, click-annotate
+    plotting.py             ← PlottingMixin: plot, zoom, pan, legend drag/resize, reset view, click-annotate; draw_reflines() helper
     ecsa.py                 ← ECSAMixin: legacy ECSA calc (used only by General E.Chem tab)
     export.py               ← ExportMixin: Excel export (raw + corrected sheets)
-    legend_editor.py        ← open_legend_editor(): dialog for renaming legend labels
+    legend_editor.py        ← open_legend_editor(): blocking dialog for renaming legend labels
 ```
 
 ## Architecture
@@ -38,6 +38,8 @@ Each panel is fully **independent**: its own `files` dict, `active_file`, figure
 - Optional sections: `show_ecsa=True` adds legacy ECSA Calc block; `show_log=True` adds Log widget
 - **J virtual column**: when all loaded files have a positive electrode area, a "J" entry appears in both column comboboxes; selecting it computes current density (raw current / area) per file at plot time. Unit range combobox shows A/cm², mA/cm², µA/cm², nA/cm²
 - **Per-file view preservation**: `_save_active_state` saves `ax.get_xlim()/get_ylim()` to `entry["view_xlim"/"view_ylim"]`; `_switch_active_file` restores them after replot
+- **Click-to-switch**: `_sync_file_selection_from_line` (called on annotate click) saves current state, suppresses replot, switches active file, and restores xlim/ylim so clicking any plot line updates the full left-panel to that file's settings
+- **Reference lines**: panel-level `self._reflines` (list of `('x'|'y', float, style, color)` 4-tuples); persists across file adds/removes; drawn on the shared overlay plot via `draw_reflines()`
 - **Overrides** `_save_active_state`, `_switch_active_file`, `_get_column_list`, `_clear_plot` from mixins
 
 ### MultiEchemPanel (Multi E.Chem)
@@ -47,6 +49,7 @@ Each panel is fully **independent**: its own `files` dict, `active_file`, figure
 - **Click-to-select**: clicking anywhere on a file's plot or toolbar frame calls `_activate_file(short)`, which updates the listbox selection and switches the left panel to that file
 - **J virtual column**: per-file check — "J" appears in column comboboxes only when the active file has area > 0; each file's J is computed with its own stored area
 - **Per-file view preservation**: `_save_active_state` saves each file's `ax.get_xlim()/get_ylim()` to `entry["view_xlim"/"view_ylim"]`; `_switch_active_file` restores them after replot
+- **Reference lines**: per-file `entry["reflines"]` (list of `('x'|'y', float, style, color)` 4-tuples); listbox refreshes on `_switch_active_file`; drawn in `_plot_file` via `draw_reflines()`
 - **Key methods**: `_create_file_figure`, `_relayout_figures`, `_plot_file(short)`, `_activate_file(short)`, `_reset_file_view(short)`
 
 ### ECSAPanel (ECSA Calc)
@@ -59,13 +62,15 @@ Each panel is fully **independent**: its own `files` dict, `active_file`, figure
 - Interactions (zoom/pan/annotate/legend drag) registered on **both** canvases; `_get_canvas(ax)` routes draw calls to the correct one
 - **Per-file view preservation**: saves/restores xlim/ylim for both `ax_cv` and `ax_cdl` independently; Cdl view restored right after `_replot_cdl`, CV view restored after `_auto_replot`
 - **Per-file isolation**: E_std, Cs, scan-rate data, axis selections, column/unit choices, plot ranges, legend settings, Cdl data and result text all saved/restored per file
+- **CV and Cdl plot titles** include the active filename (e.g. `"sample.txt  —  CV Curves  (non-Faradaic region)"`) to prevent confusion when multiple files are loaded
+- **Reference lines**: separate `entry["cv_reflines"]` and `entry["cdl_reflines"]` per file (list of `('x'|'y', float, style, color)` 4-tuples); two independent UI sections in the left panel; listboxes refresh on `_switch_active_file`; drawn in `_plot_cv`, `_replot_cdl`, and `_extract_cdl_ecsa` via `draw_reflines()`
 - **Overrides** from mixins:
   - `_clear_plot` — clears both plots and result label when all files removed
   - `_save_active_state` — saves all per-file ECSA state + view limits
   - `_switch_active_file` — restores full per-file state, Cdl plot, view limits
   - `_auto_replot` — delegates to `_plot_cv()` only
   - `_plot` — also delegates to `_plot_cv()`
-  - `_edit_legend_labels` — **no-op** (`pass`)
+  - `_edit_legend_labels` — disables legend draggable, opens editor, re-enables draggable
 
 ### EchemGUI (main window)
 - Inherits only `tk.Tk`
@@ -87,6 +92,9 @@ Each panel is fully **independent**: its own `files` dict, `active_file`, figure
 - `sr_data`, `e_std`, `cs`, `x_col`, `y_col`, `x_unit`, `y_unit`
 - `x_min`, `x_max`, `y_min`, `y_max`, `ref_electrode`
 - `legend_frame_cv`, `legend_frame_cdl`, `cdl_data`, `result_text`
+- `cv_x_grid`, `cv_y_grid`, `cv_x_grid_int`, `cv_y_grid_int`, `cv_grid_style`
+- `cdl_x_grid`, `cdl_y_grid`, `cdl_x_grid_int`, `cdl_y_grid_int`, `cdl_grid_style`
+- `cv_reflines`, `cdl_reflines` — lists of `('x'|'y', float, style, color)` 4-tuples
 - `view_xlim_cv`, `view_ylim_cv`, `view_xlim_cdl`, `view_ylim_cdl`
 
 **ECSAPanel panel-level state:**
@@ -108,10 +116,11 @@ Each panel is fully **independent**: its own `files` dict, `active_file`, figure
 9. **Auto-replot** — updates on cycle selection, correction, file switch; suppressed during load
 10. **Plot range** — blank = auto; triggers replot on Return / FocusOut
 11. **Cycle checkboxes** — 9-column grid, scrollable, "Select All / Deselect All"
-12. **Legend controls** — show/hide, frame toggle, font size, location, "Edit Labels" dialog, drag to move, right-drag to resize
+12. **Legend controls** — show/hide, frame toggle, font size, location, "Edit Labels" dialog (blocking; drag disabled during edit), drag to move, right-drag to resize
 13. **Per-file zoom/pan preservation** — switching files restores each file's last view state
-14. **Mouse interactions** (PlottingMixin): scroll = zoom, left-drag = pan, left-click = annotate, right-click = dismiss
-15. **Excel export** — active file only; "Raw" and "Corrected" sheets, cycles side-by-side
+14. **Mouse interactions** (PlottingMixin): scroll = zoom, left-drag = pan, left-click = annotate (switches active file), right-click = dismiss
+15. **Reference lines** — add X (vertical) or Y (horizontal) dashed guide lines at typed values; each line has its own style (dashed/dotted/solid/dash-dot) and color; managed via listbox + Remove; selecting a line loads its style/color into the dropdowns for individual editing; panel-level (shared across all overlaid files)
+16. **Excel export** — active file only; "Raw" and "Corrected" sheets, cycles side-by-side
 
 ### Multi E.Chem tab
 1. **One plot per file** — each loaded file gets its own labelled figure; all visible simultaneously in a 2-column grid
@@ -120,7 +129,8 @@ Each panel is fully **independent**: its own `files` dict, `active_file`, figure
 4. **Click-to-select** — clicking any plot or its toolbar selects that file in the listbox and updates left controls
 5. **Per-file zoom/pan preservation** — switching files or clicking plots restores each file's last view state
 6. **Shared axis/unit UI** — left controls show settings of the currently active (selected) file only
-7. **Legend controls** — per-file show/hide, frame, size, location; legend draggable and font-resizable
+7. **Legend controls** — per-file show/hide, frame, size, location; legend draggable and font-resizable; "Edit Labels" dialog (blocking; drag disabled during edit)
+8. **Reference lines** — per-file X/Y guide lines; each line carries its own style and color; listbox refreshes when switching files
 
 ### ECSA Calc tab
 1. **Independent file state** — fully separate from other tabs
@@ -132,7 +142,9 @@ Each panel is fully **independent**: its own `files` dict, `active_file`, figure
 7. **Cs entry** — specific capacitance (default 0.040 mF/cm²); immediate save to entry dict on Return/FocusOut
 8. **Extract Cdl & ECSA** — runs extraction, updates Cdl plot; legend shows fit equation + Cdl + R² + ECSA; results persisted per file for restore on file switch
 9. **Per-file zoom/pan preservation** — CV and Cdl views independently saved/restored per file
-10. **Two independent toolbars** — each toolbar controls only its own plot
+10. **Two independent toolbars** — each toolbar controls only its own plot; Home button restores auto-scaled limits from the last draw
+11. **CV and Cdl plot titles** — include the active filename for easy identification during multi-file analysis
+12. **Reference lines** — separate CV and Cdl sections; per-file, per-line style and color; both listboxes refresh on file switch
 
 ## ECSA Physics (Cdl extraction)
 ```
@@ -243,3 +255,6 @@ git rm --cached <file>      # unstage without deleting the local file
 - **View preservation timing** — in ECSAPanel, Cdl view is restored immediately after `_replot_cdl()`, CV view after `_auto_replot()`; order matters since both draw to canvas
 - **Area var in file_manager** — `_save_active_state` and `_switch_active_file` handle `area_var` via `getattr(self, "area_var", None)` so panels without it are unaffected
 - **CorrectionMixin column names** — `_apply_correction` looks for `"Ewe/V"` and `"I/mA"`; silently no-ops if columns absent (since recent cleanup of correction.py)
+- **`open_legend_editor` must be blocking** — uses `dlg.grab_set()` + `parent.wait_window(dlg)`; without `wait_window`, the function returns immediately and matplotlib's `DraggableLegend` handler stays in "dragging" state (never receives button_release); always call `legend.set_draggable(False)` before opening and re-enable after
+- **`draw_reflines` tuple format** — each entry is a 4-tuple `('x'|'y', float, style, color)`; style is a key into `_GRID_STYLE_MAP`; labels start with `'_'` so they are excluded from the legend automatically; call after `_apply_axis_range()` / `_apply_range()` so reflines don't perturb autoscaling; call before `apply_grid()` / `canvas.draw()`
+- **ECSAPanel `_auto_xlim_cdl` / `_auto_ylim_cdl`** — only set after `canvas_cdl.draw()` completes inside `_replot_cdl` and `_extract_cdl_ecsa`; if either function crashes before that point, the reset-view button will silently do nothing (value stays `None`)
