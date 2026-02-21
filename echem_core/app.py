@@ -17,6 +17,7 @@ from .ecsa import ECSAMixin
 from .export import ExportMixin
 from .ecsa_panel import ECSAPanel
 from .multi_echem_panel import MultiEchemPanel
+from .eis_panel import EISPanel
 
 _CYCLE_BG = "#e8f0fe"   # light blue for the cycle checkbox area
 _CYCLE_ACTIVE_BG = "#cce0ff"
@@ -734,3 +735,7 @@ class EchemGUI(tk.Tk):
         ecsa_tab = ttk.Frame(notebook)
         notebook.add(ecsa_tab, text="ECSA Calc")
         ECSAPanel(ecsa_tab).pack(fill=tk.BOTH, expand=True)
+
+        eis_tab = ttk.Frame(notebook)
+        notebook.add(eis_tab, text="Nyquist Plot")
+        EISPanel(eis_tab).pack(fill=tk.BOTH, expand=True)

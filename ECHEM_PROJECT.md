@@ -15,6 +15,7 @@ echem_gui/
     app.py                  ← EchemGUI (tk.Tk window), EchemPanel class
     multi_echem_panel.py    ← MultiEchemPanel class (Multi E.Chem tab)
     ecsa_panel.py           ← ECSAPanel class (dedicated ECSA Calc tab)
+    eis_panel.py            ← EISPanel class (Nyquist Plot tab)
     file_manager.py         ← FileManagerMixin: load/remove/switch files
     correction.py           ← CorrectionMixin: IR compensation + RHE conversion
     plotting.py             ← PlottingMixin: plot, zoom, pan, legend drag/resize, reset view, click-annotate; draw_reflines() helper
@@ -24,10 +25,11 @@ echem_gui/
 ```
 
 ## Architecture
-The app uses a **three-tab Notebook** at the top level (in this order):
+The app uses a **four-tab Notebook** at the top level (in this order):
 - **General E.Chem tab** → `EchemPanel(ttk.Frame + all mixins)`, `show_log=True`
 - **Multi E.Chem tab** → `MultiEchemPanel(ttk.Frame + FileManagerMixin + CorrectionMixin)`
 - **ECSA Calc tab** → `ECSAPanel(ttk.Frame + FileManagerMixin + CorrectionMixin)`
+- **Nyquist Plot tab** → `EISPanel(ttk.Frame + FileManagerMixin)`
 
 Each panel is fully **independent**: its own `files` dict, `active_file`, figures, and canvases. Switching tabs never affects the other tab's data or plots.
 
