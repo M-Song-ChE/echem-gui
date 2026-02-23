@@ -76,7 +76,7 @@ Each panel is fully **independent**: its own `files` dict, `active_file`, figure
 
 ### EchemGUI (main window)
 - Inherits only `tk.Tk`
-- Creates `ttk.Notebook`, adds `gen_tab`, `multi_tab`, `ecsa_tab` frames in that order
+- Creates `ttk.Notebook`, adds `gen_tab`, `multi_tab`, `ecsa_tab`, `eis_tab` frames in that order
 - Each tab instantiates its panel directly; no shared state
 
 ### Data model (per panel instance)
@@ -86,9 +86,14 @@ Each panel is fully **independent**: its own `files` dict, `active_file`, figure
   - `selected_cycles` is always `[]` on first load; user picks manually
   - `area` = electrode area string (cm²); used for J density calculation
   - `view_xlim`, `view_ylim` = saved axis limits for zoom/pan preservation (set on first file switch away)
+  - **Color/marker fields** (set in `file_manager._load_files`): `"color"` (hex string from Tab10-like palette), `"marker"` (matplotlib marker string); palette cycles through 10 named colors so successive files auto-differentiate
+  - **Per-file gradient fields** (defaulted in `_switch_active_file`): `"cycle_gradient"` (bool, default `True`), `"cycle_reverse"` (bool, default `False`), `"lightness_step"` (str float, default `"0.08"`); saved by `_save_active_state` / `_on_gradient_change`
 - `self.active_file`: currently selected filename
 - `self._suppress_replot`: prevents cascading auto-replots during bulk UI updates
 - `self._loading_files`: blocks `<<ListboxSelect>>` during programmatic `selection_set()`
+
+**MultiEchemPanel additional per-file field:**
+- `custom_title` — user-edited subplot title string; set by double-clicking the title; used in `_plot_file` instead of the raw filename
 
 **ECSAPanel additional per-file fields** (set by `setdefault` in `_switch_active_file`):
 - `sr_data`, `e_std`, `cs`, `x_col`, `y_col`, `x_unit`, `y_unit`
@@ -123,6 +128,9 @@ Each panel is fully **independent**: its own `files` dict, `active_file`, figure
 14. **Mouse interactions** (PlottingMixin): scroll = zoom, left-drag = pan, left-click = annotate (switches active file), right-click = dismiss
 15. **Reference lines** — add X (vertical) or Y (horizontal) dashed guide lines at typed values; each line has its own style (dashed/dotted/solid/dash-dot) and color; managed via listbox + Remove; selecting a line loads its style/color into the dropdowns for individual editing; panel-level (shared across all overlaid files)
 16. **Excel export** — active file only; "Raw" and "Corrected" sheets, cycles side-by-side
+17. **File colors** — each file auto-assigned a distinct base color from a Tab10-like palette on load; overridable via "Color:" combobox in the left panel; stored in `entry["color"]`
+18. **Cycle color gradient** — when Gradient is checked, cycles within a file are tinted from lightest (first) to darkest (last) so evolution is easy to track; "Reverse" flips the order; "Step" spinbox (0.01–0.30) controls lightness delta per cycle; each file stores its own gradient settings independently
+19. **Editable plot title** — double-click anywhere in the title strip (above the top spine) to open a rename dialog; title persists across replots
 
 ### Multi E.Chem tab
 1. **One plot per file** — each loaded file gets its own labelled figure; all visible simultaneously in a 2-column grid
@@ -133,6 +141,10 @@ Each panel is fully **independent**: its own `files` dict, `active_file`, figure
 6. **Shared axis/unit UI** — left controls show settings of the currently active (selected) file only
 7. **Legend controls** — per-file show/hide, frame, size, location; legend draggable and font-resizable; "Edit Labels" dialog (blocking; drag disabled during edit)
 8. **Reference lines** — per-file X/Y guide lines; each line carries its own style and color; listbox refreshes when switching files
+9. **File colors** — per-file base color from palette; overridable via "Color:" combobox
+10. **Cycle color gradient** — per-file gradient/reverse/step settings; same UX as General tab
+11. **Subplot zoom** — double-click any subplot to expand it to fill the full panel; a "← Back to Grid" bar appears at the top; clicking it restores the 2-column grid; figures remain live (no recreation)
+12. **Editable subplot titles** — double-click the title strip on any subplot to rename it; title stored in `entry["custom_title"]` and persists across replots; double-clicking in a zoomed view is the same gesture but zoom-toggle takes priority unless the cursor is in the title strip
 
 ### ECSA Calc tab
 1. **Independent file state** — fully separate from other tabs
@@ -147,6 +159,18 @@ Each panel is fully **independent**: its own `files` dict, `active_file`, figure
 10. **Two independent toolbars** — each toolbar controls only its own plot; Home button restores auto-scaled limits from the last draw
 11. **CV and Cdl plot titles** — include the active filename for easy identification during multi-file analysis
 12. **Reference lines** — separate CV and Cdl sections; per-file, per-line style and color; both listboxes refresh on file switch
+13. **File colors** — per-file base color from palette; overridable via "Color:" combobox; applies to CV cycles
+14. **Cycle color gradient** — per-file gradient/reverse/step settings; gradient applied to CV cycles only; Cdl scatter/fit plot remains fixed colors (steelblue/tomato)
+15. **Editable plot titles** — double-click the title strip on either the CV or Cdl plot to rename it
+
+### Nyquist Plot tab
+1. **EIS / impedance data** — loads tab-separated `.txt` files with Re(Z) and -Im(Z) columns
+2. **Axis selectors + unit dropdowns** — X and Y each independently configurable
+3. **Multi-file overlay** — all loaded files shown on a single Nyquist plot; each file uses its auto-assigned palette color and unique marker shape from `entry["color"]` / `entry["marker"]`
+4. **Connect lines toggle** — show/hide connecting line between data points
+5. **Show markers toggle** — show/hide point markers
+6. **Per-file zoom/pan preservation** — same mechanism as other tabs
+7. **Editable plot title** — double-click the title strip to rename
 
 ## ECSA Physics (Cdl extraction)
 ```
@@ -260,3 +284,9 @@ git rm --cached <file>      # unstage without deleting the local file
 - **`open_legend_editor` must be blocking** — uses `dlg.grab_set()` + `parent.wait_window(dlg)`; without `wait_window`, the function returns immediately and matplotlib's `DraggableLegend` handler stays in "dragging" state (never receives button_release); always call `legend.set_draggable(False)` before opening and re-enable after
 - **`draw_reflines` tuple format** — each entry is a 4-tuple `('x'|'y', float, style, color)`; style is a key into `_GRID_STYLE_MAP`; labels start with `'_'` so they are excluded from the legend automatically; call after `_apply_axis_range()` / `_apply_range()` so reflines don't perturb autoscaling; call before `apply_grid()` / `canvas.draw()`
 - **ECSAPanel `_auto_xlim_cdl` / `_auto_ylim_cdl`** — only set after `canvas_cdl.draw()` completes inside `_replot_cdl` and `_extract_cdl_ecsa`; if either function crashes before that point, the reset-view button will silently do nothing (value stays `None`)
+- **`_switch_active_file` UI-restore ordering (critical)** — `FileManagerMixin._switch_active_file` sets `self.active_file = short` and then calls `_auto_replot()`; `_auto_replot` → `_plot/_plot_file` → `_save_active_state` will immediately write the current UI var values into `self.files[short]` (the new file). If UI vars still hold the old file's values at that moment, the new file's settings are clobbered. **Fix:** always restore per-file UI vars (color, gradient, etc.) **before** calling `super()._switch_active_file()` in any panel override.
+- **`_cycle_colors(base_color, n, step, reverse)`** (module-level in `plotting.py`) — converts the base color to HLS, offsets lightness linearly across `n` cycles. `reverse=False` → first cycle lightest, last darkest (most recently evolved = most visible). `reverse=True` flips. Clamps lightness to [0.15, 0.85]. Uses `colorsys` + `matplotlib.colors`; returns a list of `(r, g, b)` tuples.
+- **`file_manager` palette constants** — `_COLOR_NAMES`, `_COLOR_HEX`, `_PALETTE`, `_MARKERS` defined at module level; imported by panel files that need the hex mapping for color name → hex conversion in `_on_file_color_change` and `_switch_active_file`
+- **Title dblclick detection** — `PlottingMixin._hit_title_area(event, ax, fig)` static method checks both: (a) `ax.title.get_window_extent(renderer).contains(event.x, event.y)` for when title text is visible, and (b) the horizontal strip `ax_bbox.y1 ≤ event.y ≤ fig_bbox.y1` for when title is empty; check is performed **before** the `event.inaxes` guard since the title strip is outside the axes bounding box
+- **Multi E.Chem zoom bar placement** — `right_outer` uses `grid` manager (not `pack`) so the zoom bar row reliably collapses to zero height via `grid_remove()` and appears at the top before the canvas row; mixing `pack` and `grid` on siblings of the same parent is an error in tkinter
+- **Multi E.Chem zoom `columnspan` reset** — `grid(columnspan=2)` during zoom mode persists until explicitly overridden; `_relayout_figures` must pass `columnspan=1` when restoring the normal 2-column grid or files appear merged

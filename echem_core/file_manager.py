@@ -6,6 +6,18 @@ from tkinter import filedialog, messagebox
 import pandas as pd
 
 
+_COLOR_NAMES = ["Blue", "Orange", "Green", "Red", "Purple",
+                "Brown", "Pink", "Gray", "Olive", "Cyan"]
+_COLOR_HEX = {
+    "Blue":   "#1f77b4", "Orange": "#ff7f0e", "Green":  "#2ca02c",
+    "Red":    "#d62728", "Purple": "#9467bd", "Brown":  "#8c564b",
+    "Pink":   "#e377c2", "Gray":   "#7f7f7f", "Olive":  "#bcbd22",
+    "Cyan":   "#17becf",
+}
+_PALETTE = [_COLOR_HEX[n] for n in _COLOR_NAMES]
+_MARKERS = ["o", "s", "^", "D", "v", "P", "*", "X", "h", "p"]
+
+
 class FileManagerMixin:
     """Mixin that provides file load / remove / switch behaviour.
 
@@ -42,6 +54,7 @@ class FileManagerMixin:
                 messagebox.showerror("Load error", f"{base_short}: {exc}")
                 continue
 
+            color_idx = len(self.files)
             self.files[short] = {
                 "path": path,
                 "df_raw": df_raw,
@@ -50,6 +63,11 @@ class FileManagerMixin:
                 "r_sol": 0.0,
                 "e_ref": 0.0,
                 "area": "",
+                "color":          _PALETTE[color_idx % len(_PALETTE)],
+                "marker":         _MARKERS[color_idx % len(_MARKERS)],
+                "cycle_gradient": True,
+                "cycle_reverse":  False,
+                "lightness_step": "0.08",
             }
             self.file_listbox.insert(tk.END, short)
 

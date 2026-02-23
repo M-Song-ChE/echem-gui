@@ -10,7 +10,7 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 
 from .legend_editor import open_legend_editor
-from .file_manager import FileManagerMixin
+from .file_manager import FileManagerMixin, _COLOR_NAMES, _COLOR_HEX
 from .correction import CorrectionMixin
 from .plotting import PlottingMixin
 from .ecsa import ECSAMixin
@@ -97,6 +97,18 @@ class EchemPanel(
         self.file_listbox.pack(side=tk.LEFT, fill=tk.X, expand=True)
         fl_scroll.pack(side=tk.RIGHT, fill=tk.Y)
         self.file_listbox.bind("<<ListboxSelect>>", self._on_file_select)
+
+        # ── File Color ────────────────────────────────────────────────
+        ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=4)
+        ttk.Label(left, text="File Color", font=("", 9, "bold")).pack(anchor=tk.W, padx=4)
+        _fc_row = ttk.Frame(left)
+        _fc_row.pack(fill=tk.X, padx=4, pady=2)
+        ttk.Label(_fc_row, text="Color:").pack(side=tk.LEFT)
+        self.file_color_var = tk.StringVar(value="Blue")
+        _file_color_cb = ttk.Combobox(_fc_row, textvariable=self.file_color_var,
+                                      values=_COLOR_NAMES, state="readonly", width=12)
+        _file_color_cb.pack(side=tk.LEFT, padx=(4, 0))
+        _file_color_cb.bind("<<ComboboxSelected>>", self._on_file_color_change)
 
         # ── Axis selectors + unit conversion ────────────────────────
         _UNIT_DIMS = {
@@ -445,6 +457,29 @@ class EchemPanel(
         ttk.Button(plot_btn_row, text="Plot", command=self._plot).pack(side=tk.LEFT, padx=(0, 4))
         ttk.Button(plot_btn_row, text="Export Excel", command=self._export_excel).pack(side=tk.LEFT)
 
+        # ── Cycle Colors ─────────────────────────────────────────────
+        ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=4)
+        ttk.Label(left, text="Cycle Colors", font=("", 9, "bold")).pack(anchor=tk.W, padx=4)
+        _cc_row1 = ttk.Frame(left)
+        _cc_row1.pack(fill=tk.X, padx=4, pady=2)
+        self.cycle_gradient_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(_cc_row1, text="Gradient", variable=self.cycle_gradient_var,
+                        command=self._on_gradient_change).pack(side=tk.LEFT)
+        self.cycle_reverse_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(_cc_row1, text="Reverse", variable=self.cycle_reverse_var,
+                        command=self._on_gradient_change).pack(side=tk.LEFT, padx=(8, 0))
+        _cc_row2 = ttk.Frame(left)
+        _cc_row2.pack(fill=tk.X, padx=4, pady=(0, 2))
+        ttk.Label(_cc_row2, text="Step:").pack(side=tk.LEFT)
+        self.lightness_step_var = tk.StringVar(value="0.08")
+        _step_spin = ttk.Spinbox(_cc_row2, textvariable=self.lightness_step_var,
+                                  from_=0.01, to=0.30, increment=0.01, width=6)
+        _step_spin.pack(side=tk.LEFT, padx=(4, 0))
+        _step_spin.bind("<<Increment>>", lambda e: self._on_gradient_change())
+        _step_spin.bind("<<Decrement>>", lambda e: self._on_gradient_change())
+        _step_spin.bind("<Return>",      lambda e: self._on_gradient_change())
+        _step_spin.bind("<FocusOut>",    lambda e: self._on_gradient_change())
+
         # ── Optional ECSA section ────────────────────────────────────
         if show_ecsa:
             ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
@@ -627,6 +662,23 @@ class EchemPanel(
         self._reflines_lb.delete(idx)
         self._auto_replot()
 
+    # ── Gradient helper ──────────────────────────────────────────────
+    def _on_gradient_change(self):
+        """Persist gradient settings to the active file's entry, then replot."""
+        if self.active_file and self.active_file in self.files:
+            self.files[self.active_file]["cycle_gradient"] = self.cycle_gradient_var.get()
+            self.files[self.active_file]["cycle_reverse"]  = self.cycle_reverse_var.get()
+            self.files[self.active_file]["lightness_step"] = self.lightness_step_var.get()
+        self._auto_replot()
+
+    # ── File color helper ────────────────────────────────────────────
+    def _on_file_color_change(self, event=None):
+        if not self.active_file:
+            return
+        self.files[self.active_file]["color"] = _COLOR_HEX.get(
+            self.file_color_var.get(), "#1f77b4")
+        self._auto_replot()
+
     # ── J / area helpers ─────────────────────────────────────────────
     def _all_files_have_area(self):
         """True only when every loaded file has a positive electrode area."""
@@ -696,15 +748,32 @@ class EchemPanel(
                 break
 
     def _save_active_state(self):
-        """Extend base save to preserve the current plot view per file."""
+        """Extend base save to preserve the current plot view and gradient settings per file."""
         if self.active_file and self.active_file in self.files:
-            self.files[self.active_file]["view_xlim"] = self.ax.get_xlim()
-            self.files[self.active_file]["view_ylim"] = self.ax.get_ylim()
+            self.files[self.active_file]["view_xlim"]       = self.ax.get_xlim()
+            self.files[self.active_file]["view_ylim"]       = self.ax.get_ylim()
+            self.files[self.active_file]["cycle_gradient"]  = self.cycle_gradient_var.get()
+            self.files[self.active_file]["cycle_reverse"]   = self.cycle_reverse_var.get()
+            self.files[self.active_file]["lightness_step"]  = self.lightness_step_var.get()
         super()._save_active_state()
 
     def _switch_active_file(self, short):
         """Extend base switch to restore per-file zoom/pan state after replot."""
+        # Restore per-file UI vars BEFORE super() calls _auto_replot → _plot →
+        # _save_active_state.  At that point self.active_file is already 'short',
+        # so the UI must already reflect this file's settings or _save_active_state
+        # will overwrite the new file's entry with the old file's values.
+        entry = self.files.get(short, {})
+        color = entry.get("color", "#1f77b4")
+        name  = next((n for n, h in _COLOR_HEX.items() if h == color), "Blue")
+        self.file_color_var.set(name)
+        self.cycle_gradient_var.set(entry.get("cycle_gradient", True))
+        self.cycle_reverse_var.set(entry.get("cycle_reverse", False))
+        self.lightness_step_var.set(entry.get("lightness_step", "0.08"))
+
         super()._switch_active_file(short)
+
+        # Restore zoom/pan view after the replot
         entry = self.files.get(short)
         if entry and "view_xlim" in entry:
             self.ax.set_xlim(entry["view_xlim"])

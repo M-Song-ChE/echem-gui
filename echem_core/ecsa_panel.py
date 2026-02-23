@@ -32,9 +32,9 @@ from tkinter import ttk
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 
-from .file_manager import FileManagerMixin
+from .file_manager import FileManagerMixin, _COLOR_NAMES, _COLOR_HEX
 from .correction import CorrectionMixin
-from .plotting import apply_grid, draw_reflines
+from .plotting import apply_grid, draw_reflines, _cycle_colors
 
 _CYCLE_BG        = "#e8f0fe"
 _CYCLE_ACTIVE_BG = "#cce0ff"
@@ -110,6 +110,18 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         self.file_listbox.pack(side=tk.LEFT, fill=tk.X, expand=True)
         fl_sc.pack(side=tk.RIGHT, fill=tk.Y)
         self.file_listbox.bind("<<ListboxSelect>>", self._on_file_select)
+
+        # ── File Color ────────────────────────────────────────────────
+        ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=4)
+        ttk.Label(left, text="File Color", font=("", 9, "bold")).pack(anchor=tk.W, padx=4)
+        _fc_row = ttk.Frame(left)
+        _fc_row.pack(fill=tk.X, padx=4, pady=2)
+        ttk.Label(_fc_row, text="Color:").pack(side=tk.LEFT)
+        self.file_color_var = tk.StringVar(value="Blue")
+        _file_color_cb = ttk.Combobox(_fc_row, textvariable=self.file_color_var,
+                                      values=_COLOR_NAMES, state="readonly", width=12)
+        _file_color_cb.pack(side=tk.LEFT, padx=(4, 0))
+        _file_color_cb.bind("<<ComboboxSelected>>", self._on_file_color_change)
 
         # ── Axis selectors + unit dropdowns ──────────────────────
         ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
@@ -237,6 +249,29 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             return "break"
         cyc_canvas.bind("<MouseWheel>", _cyc_wheel)
         self._cycle_inner.bind("<MouseWheel>", _cyc_wheel)
+
+        # ── Cycle Colors ─────────────────────────────────────────────
+        ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=4)
+        ttk.Label(left, text="Cycle Colors (CV)", font=("", 9, "bold")).pack(anchor=tk.W, padx=4)
+        _cc_row1 = ttk.Frame(left)
+        _cc_row1.pack(fill=tk.X, padx=4, pady=2)
+        self.cycle_gradient_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(_cc_row1, text="Gradient", variable=self.cycle_gradient_var,
+                        command=self._on_gradient_change).pack(side=tk.LEFT)
+        self.cycle_reverse_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(_cc_row1, text="Reverse", variable=self.cycle_reverse_var,
+                        command=self._on_gradient_change).pack(side=tk.LEFT, padx=(8, 0))
+        _cc_row2 = ttk.Frame(left)
+        _cc_row2.pack(fill=tk.X, padx=4, pady=(0, 2))
+        ttk.Label(_cc_row2, text="Step:").pack(side=tk.LEFT)
+        self.lightness_step_var = tk.StringVar(value="0.08")
+        _step_spin = ttk.Spinbox(_cc_row2, textvariable=self.lightness_step_var,
+                                  from_=0.01, to=0.30, increment=0.01, width=6)
+        _step_spin.pack(side=tk.LEFT, padx=(4, 0))
+        _step_spin.bind("<<Increment>>", lambda e: self._on_gradient_change())
+        _step_spin.bind("<<Decrement>>", lambda e: self._on_gradient_change())
+        _step_spin.bind("<Return>",      lambda e: self._on_gradient_change())
+        _step_spin.bind("<FocusOut>",    lambda e: self._on_gradient_change())
 
         # ── Scan-rate per cycle (8-column grid) ───────────────────
         ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
@@ -649,10 +684,46 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
 
     # ── Press ────────────────────────────────────────────────────────
     def _ei_press(self, event):
+        # Handle dblclick on title strip (may be outside axes)
+        if event.button == 1 and getattr(event, 'dblclick', False):
+            ax = event.inaxes if event.inaxes in (self.ax_cv, self.ax_cdl) else None
+            # Determine which axes the click is near based on y-position
+            if ax is None:
+                for candidate in (self.ax_cv, self.ax_cdl):
+                    try:
+                        canvas = (self.canvas_cv if candidate is self.ax_cv
+                                  else self.canvas_cdl)
+                        r       = canvas.get_renderer()
+                        ax_bbox = candidate.get_window_extent(r)
+                        if ax_bbox.x0 <= event.x <= ax_bbox.x1:
+                            ax = candidate
+                            break
+                    except Exception:
+                        pass
+            if ax is not None:
+                canvas = self.canvas_cv if ax is self.ax_cv else self.canvas_cdl
+                try:
+                    r        = canvas.get_renderer()
+                    ax_bbox  = ax.get_window_extent(r)
+                    fig_bbox = ax.get_figure().get_window_extent(r)
+                    t_bbox   = ax.title.get_window_extent(r)
+                    on_title = (
+                        (t_bbox.width > 2 and t_bbox.contains(event.x, event.y))
+                        or (ax_bbox.x0 <= event.x <= ax_bbox.x1
+                            and ax_bbox.y1 <= event.y <= fig_bbox.y1)
+                    )
+                    if on_title:
+                        self._edit_plot_title(ax, canvas)
+                        return
+                except Exception:
+                    pass
+
         leg, is_cv = self._ei_leg_hit(event)
         if event.button == 1:
             self._pan_moved = False
             if leg is None and event.inaxes in (self.ax_cv, self.ax_cdl):
+                if getattr(event, 'dblclick', False):
+                    return   # dblclick not on title — ignore, don't start pan
                 self._panning   = True
                 self._pan_ax    = event.inaxes
                 self._pan_start = (event.xdata, event.ydata)
@@ -798,6 +869,21 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         self.canvas_cdl.draw()
         self.result_label.config(text="")
 
+    def _on_file_color_change(self, event=None):
+        if not self.active_file:
+            return
+        self.files[self.active_file]["color"] = _COLOR_HEX.get(
+            self.file_color_var.get(), "#1f77b4")
+        self._auto_replot()
+
+    def _on_gradient_change(self):
+        """Persist gradient settings to the active file's entry, then replot."""
+        if self.active_file and self.active_file in self.files:
+            self.files[self.active_file]["cycle_gradient"] = self.cycle_gradient_var.get()
+            self.files[self.active_file]["cycle_reverse"]  = self.cycle_reverse_var.get()
+            self.files[self.active_file]["lightness_step"] = self.lightness_step_var.get()
+        self._auto_replot()
+
     def _save_active_state(self):
         """Extend base save to include all ECSA-panel per-file state."""
         super()._save_active_state()   # saves selected_cycles, r_sol, e_ref
@@ -828,6 +914,9 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             entry["cdl_x_grid_int"] = self.cdl_x_grid_int_var.get()
             entry["cdl_y_grid_int"] = self.cdl_y_grid_int_var.get()
             entry["cdl_grid_style"]    = self.cdl_grid_style_var.get()
+            entry["cycle_gradient"] = self.cycle_gradient_var.get()
+            entry["cycle_reverse"]  = self.cycle_reverse_var.get()
+            entry["lightness_step"] = self.lightness_step_var.get()
             # Preserve current zoom/pan for both plots
             entry["view_xlim_cv"]  = self.ax_cv.get_xlim()
             entry["view_ylim_cv"]  = self.ax_cv.get_ylim()
@@ -867,6 +956,9 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         entry.setdefault("cdl_grid_style",  "dashed")
         entry.setdefault("cv_reflines",      [])
         entry.setdefault("cdl_reflines",     [])
+        entry.setdefault("cycle_gradient", True)
+        entry.setdefault("cycle_reverse",  False)
+        entry.setdefault("lightness_step", "0.08")
 
         df   = entry["df"]
         cols = list(df.columns)
@@ -966,6 +1058,14 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         self._refresh_cv_reflines_lb()
         self._refresh_cdl_reflines_lb()
 
+        # Restore color combobox and gradient controls to match this file's stored settings
+        color = entry.get("color", "#1f77b4")
+        name = next((n for n, h in _COLOR_HEX.items() if h == color), "Blue")
+        self.file_color_var.set(name)
+        self.cycle_gradient_var.set(entry.get("cycle_gradient", True))
+        self.cycle_reverse_var.set(entry.get("cycle_reverse", False))
+        self.lightness_step_var.set(entry.get("lightness_step", "0.08"))
+
     def _auto_replot(self):
         if self._suppress_replot:
             return
@@ -998,19 +1098,30 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         self._legend_cv = None
         self.ax_cv.clear()
 
+        entry_ref = self.files[self.active_file]
+        base_color = entry_ref.get("color", "#1f77b4")
+        _grad  = entry_ref.get("cycle_gradient", True)
+        _rev   = entry_ref.get("cycle_reverse",  False)
+        try:    _step = float(entry_ref.get("lightness_step", "0.08"))
+        except: _step = 0.08
+
         if "cycle number" in df.columns:
             if not selected:
                 # No cycles selected → show placeholder only
                 self._reset_cv_axes_labels()
                 self.canvas_cv.draw()
                 return
-            for c in selected:
+            cycle_cols = (_cycle_colors(base_color, len(selected), _step, _rev)
+                          if _grad else [base_color] * len(selected))
+            for i, c in enumerate(selected):
                 sub = df[df["cycle number"] == c]
                 sr  = self._sr_vars.get(c, tk.StringVar()).get().strip()
                 lbl = f"C{c}" + (f"  ({sr} mV/s)" if sr else "")
-                self.ax_cv.plot(sub[xcol] * x_scale, sub[ycol] * y_scale, label=lbl)
+                self.ax_cv.plot(sub[xcol] * x_scale, sub[ycol] * y_scale,
+                                color=cycle_cols[i], label=lbl)
         else:
-            self.ax_cv.plot(df[xcol] * x_scale, df[ycol] * y_scale)
+            self.ax_cv.plot(df[xcol] * x_scale, df[ycol] * y_scale,
+                            color=base_color)
 
         ref = self.ref_electrode_var.get().strip()
         _x_src = xcol.rsplit("/", 1)[-1].strip() if "/" in xcol else ""
@@ -1594,3 +1705,12 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
 
     def _edit_legend_labels(self):
         pass
+
+    def _edit_plot_title(self, ax, canvas):
+        """Prompt the user to edit a plot title (double-click on title area)."""
+        from tkinter.simpledialog import askstring
+        current = ax.title.get_text()
+        new_title = askstring("Edit Title", "Plot title:", initialvalue=current, parent=self)
+        if new_title is not None:
+            ax.set_title(new_title, fontsize=9)
+            canvas.draw_idle()

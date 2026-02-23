@@ -14,7 +14,7 @@ from tkinter import ttk
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 
-from .file_manager import FileManagerMixin
+from .file_manager import FileManagerMixin, _COLOR_NAMES, _COLOR_HEX
 from .plotting import apply_grid, draw_reflines
 from .legend_editor import open_legend_editor
 
@@ -133,6 +133,18 @@ class EISPanel(FileManagerMixin, ttk.Frame):
         self.file_listbox.pack(side=tk.LEFT, fill=tk.X, expand=True)
         fl_sc.pack(side=tk.RIGHT, fill=tk.Y)
         self.file_listbox.bind("<<ListboxSelect>>", self._on_file_select)
+
+        # ── File Color ────────────────────────────────────────────────
+        ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=4)
+        ttk.Label(left, text="File Color", font=("", 9, "bold")).pack(anchor=tk.W, padx=4)
+        _fc_row = ttk.Frame(left)
+        _fc_row.pack(fill=tk.X, padx=4, pady=2)
+        ttk.Label(_fc_row, text="Color:").pack(side=tk.LEFT)
+        self.file_color_var = tk.StringVar(value="Blue")
+        _file_color_cb = ttk.Combobox(_fc_row, textvariable=self.file_color_var,
+                                      values=_COLOR_NAMES, state="readonly", width=12)
+        _file_color_cb.pack(side=tk.LEFT, padx=(4, 0))
+        _file_color_cb.bind("<<ComboboxSelected>>", self._on_file_color_change)
 
         # ── Columns ───────────────────────────────────────────────
         ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
@@ -466,6 +478,16 @@ class EISPanel(FileManagerMixin, ttk.Frame):
         return 1.0, display_label
 
     # ════════════════════════════════════════════════════════════════
+    # File color helper
+    # ════════════════════════════════════════════════════════════════
+    def _on_file_color_change(self, event=None):
+        if not self.active_file:
+            return
+        self.files[self.active_file]["color"] = _COLOR_HEX.get(
+            self.file_color_var.get(), "#1f77b4")
+        self._auto_replot()
+
+    # ════════════════════════════════════════════════════════════════
     # State save / restore
     # ════════════════════════════════════════════════════════════════
     def _save_active_state(self):
@@ -600,6 +622,11 @@ class EISPanel(FileManagerMixin, ttk.Frame):
 
         self._refresh_reflines_lb()
 
+        # Restore color combobox to match this file's stored color
+        color = entry.get("color", "#1f77b4")
+        name = next((n for n, h in _COLOR_HEX.items() if h == color), "Blue")
+        self.file_color_var.set(name)
+
     # ════════════════════════════════════════════════════════════════
     # Plot
     # ════════════════════════════════════════════════════════════════
@@ -639,23 +666,23 @@ class EISPanel(FileManagerMixin, ttk.Frame):
         self._clear_annotation(redraw=False)
         self.ax.clear()
 
-        marker_style = "o" if show_markers else ""
-        line_style   = "-" if connect_lines else ""
-        # Always show something (fallback to markers if both off)
-        if not marker_style and not line_style:
-            marker_style = "o"
-
         has_data = False
         for short, fentry in self.files.items():
             df = fentry["df"]
             if xcol not in df.columns or ycol not in df.columns:
                 continue
+            base_color   = fentry.get("color",  "#1f77b4")
+            file_marker  = fentry.get("marker", "o") if show_markers else ""
+            file_line    = "-" if connect_lines else ""
+            if not file_marker and not file_line:
+                file_marker = "o"
             self.ax.plot(
                 df[xcol] * x_scale,
                 df[ycol] * y_scale,
-                marker=marker_style,
+                color=base_color,
+                marker=file_marker,
                 markersize=4,
-                linestyle=line_style,
+                linestyle=file_line,
                 linewidth=1.2,
                 label=short,
             )
@@ -761,6 +788,24 @@ class EISPanel(FileManagerMixin, ttk.Frame):
             return False
 
     def _on_press(self, event):
+        # Handle dblclick on title strip even when the click is outside the axes proper
+        if event.button == 1 and getattr(event, "dblclick", False):
+            try:
+                r        = self.canvas.get_renderer()
+                ax_bbox  = self.ax.get_window_extent(r)
+                fig_bbox = self.ax.get_figure().get_window_extent(r)
+                t_bbox   = self.ax.title.get_window_extent(r)
+                on_title = (
+                    (t_bbox.width > 2 and t_bbox.contains(event.x, event.y))
+                    or (ax_bbox.x0 <= event.x <= ax_bbox.x1
+                        and ax_bbox.y1 <= event.y <= fig_bbox.y1)
+                )
+                if on_title:
+                    self._edit_plot_title()
+                    return
+            except Exception:
+                pass
+
         if event.inaxes is not self.ax:
             return
         on_leg = self._event_on_legend(event)
@@ -770,6 +815,8 @@ class EISPanel(FileManagerMixin, ttk.Frame):
                 if getattr(event, "dblclick", False):
                     self._edit_legend_labels()
             else:
+                if getattr(event, "dblclick", False):
+                    return   # dblclick inside axes but not on legend/title — ignore
                 self._panning   = True
                 self._pan_start = (event.xdata, event.ydata)
         elif event.button == 3 and on_leg:
@@ -942,6 +989,15 @@ class EISPanel(FileManagerMixin, ttk.Frame):
                            self._current_legend_size)
         if self._legend_obj is not None:
             self._legend_obj.set_draggable(True)
+
+    def _edit_plot_title(self):
+        """Prompt the user to edit the Nyquist plot title (double-click on title area)."""
+        from tkinter.simpledialog import askstring
+        current = self.ax.title.get_text()
+        new_title = askstring("Edit Title", "Plot title:", initialvalue=current, parent=self)
+        if new_title is not None:
+            self.ax.set_title(new_title)
+            self.canvas.draw_idle()
 
     # ════════════════════════════════════════════════════════════════
     # Reference line helpers  (per active file)

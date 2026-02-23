@@ -1,7 +1,9 @@
 """Plotting, mouse-wheel zoom, pan-drag, legend drag/resize, axis-range, reset view,
 and click-to-annotate with overlap cycling."""
 
+import colorsys
 import numpy as np
+import matplotlib.colors as _mcolors
 from tkinter import messagebox
 
 # Label prefix for internal artists (hidden from legend, excluded from click picking)
@@ -20,6 +22,26 @@ _CURRENT_UNITS = frozenset({"A", "mA", "µA", "nA"})
 _CLICK_CYCLE_PX = 8
 
 _GRID_STYLE_MAP = {"solid": "-", "dashed": "--", "dotted": ":", "dash-dot": "-."}
+
+
+def _cycle_colors(base_color, n, step=0.08, reverse=False):
+    """Return n colors with linearly varying lightness around base_color.
+
+    reverse=False → first=lightest, last=darkest (final cycle most visible).
+    reverse=True  → first=darkest, last=lightest.
+    """
+    if n <= 0:
+        return []
+    r, g, b = _mcolors.to_rgb(base_color)
+    h, l, s = colorsys.rgb_to_hls(r, g, b)
+    colors = []
+    for i in range(n):
+        offset = ((n - 1) / 2 - i) * step   # positive for i=0, negative for i=n-1
+        if reverse:
+            offset = -offset
+        new_l = min(0.85, max(0.15, l + offset))
+        colors.append(colorsys.hls_to_rgb(h, new_l, s))
+    return colors
 
 
 def apply_grid(ax, x_grid, y_grid, x_interval, y_interval, style="dashed"):
@@ -146,8 +168,34 @@ class PlottingMixin:
         self.ax.set_ylim(yd - new_yr * yf, yd + new_yr * (1 - yf))
         self.canvas.draw_idle()
 
+    # ── Title-area hit test (shared by press handlers) ──────────────
+    @staticmethod
+    def _hit_title_area(event, ax, fig):
+        """Return True if the event is on the title text or in the strip above the axes."""
+        try:
+            renderer = event.canvas.get_renderer()
+            t_bbox  = ax.title.get_window_extent(renderer)
+            ax_bbox = ax.get_window_extent(renderer)
+            fig_bbox = fig.get_window_extent(renderer)
+            # Exact title text hit
+            if t_bbox.width > 2 and t_bbox.contains(event.x, event.y):
+                return True
+            # Title strip: above top of axes, within axes x-span, within figure
+            if (ax_bbox.x0 <= event.x <= ax_bbox.x1
+                    and ax_bbox.y1 <= event.y <= fig_bbox.y1):
+                return True
+        except Exception:
+            pass
+        return False
+
     # ── Press / release / motion ────────────────────────────────────
     def _on_press(self, event):
+        # Handle dblclick on title strip even when the click is outside the axes proper
+        if event.button == 1 and getattr(event, 'dblclick', False):
+            if self._hit_title_area(event, self.ax, self.fig):
+                self._edit_plot_title()
+                return
+
         if event.inaxes != self.ax:
             return
 
@@ -161,6 +209,11 @@ class PlottingMixin:
                     self._edit_legend_labels()
                     return
             else:
+                if getattr(event, 'dblclick', False):
+                    # dblclick inside axes but not on legend → check title then ignore
+                    if self._hit_title_area(event, self.ax, self.fig):
+                        self._edit_plot_title()
+                    return
                 self._panning = True
                 self._pan_start = (event.xdata, event.ydata)
 
@@ -453,19 +506,28 @@ class PlottingMixin:
             y_scale = (y_scale_base / _farea if (_y_is_J and _farea > 0)
                        else y_scale_base)
 
+            _grad = entry.get("cycle_gradient", True)
+            _rev  = entry.get("cycle_reverse",  False)
+            try:    _step = float(entry.get("lightness_step", "0.08"))
+            except: _step = 0.08
+            base_color = entry.get("color", "#1f77b4")
             if "cycle number" in df.columns:
                 if not cycles:
                     continue
-                for c in cycles:
-                    sub = df[df["cycle number"] == c]
+                cycle_cols = (_cycle_colors(base_color, len(cycles), _step, _rev)
+                              if _grad else [base_color] * len(cycles))
+                for i, c in enumerate(cycles):
+                    sub   = df[df["cycle number"] == c]
                     label = f"{short} C{c}" if multi else f"Cycle {c}"
                     self.ax.plot(sub[_real_xcol] * x_scale,
-                                sub[_real_ycol] * y_scale, label=label)
+                                 sub[_real_ycol] * y_scale,
+                                 color=cycle_cols[i], label=label)
                 has_legend = True
             else:
                 label = short if multi else None
                 self.ax.plot(df[_real_xcol] * x_scale,
-                            df[_real_ycol] * y_scale, label=label)
+                            df[_real_ycol] * y_scale,
+                            color=base_color, label=label)
                 if label:
                     has_legend = True
 
@@ -584,6 +646,16 @@ class PlottingMixin:
 
         # Can't determine conversion — show data unchanged, update label only
         return 1.0, display_label
+
+    # ── Plot title editor ────────────────────────────────────────────
+    def _edit_plot_title(self):
+        """Prompt the user to edit the main plot title (double-click on title area)."""
+        from tkinter.simpledialog import askstring
+        current = self.ax.title.get_text()
+        new_title = askstring("Edit Title", "Plot title:", initialvalue=current, parent=self)
+        if new_title is not None:
+            self.ax.set_title(new_title)
+            self.canvas.draw_idle()
 
     # ── Axis range helper ───────────────────────────────────────────
     def _apply_axis_range(self):
