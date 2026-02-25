@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environment — each PC creates its own
+.venv/
+
+# PyCharm project files (machine-specific)
+.idea/
+
+# Claude Code local session data
+.claude/
+
+# Output files (not source)
+*.xlsx
+
+# OS
+Thumbs.db
+.DS_Store
+
+# PyInstaller build artifacts
+build/
+dist/
