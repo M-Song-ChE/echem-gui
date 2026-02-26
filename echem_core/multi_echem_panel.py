@@ -1462,7 +1462,8 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             messagebox.showinfo("Info", "Plot data first to create a legend.")
             return
         leg.set_draggable(False)
-        open_legend_editor(self, leg, entry["canvas"], entry.get("leg_size", 8.0))
+        entry["legend"] = open_legend_editor(
+            self, leg, entry["canvas"], entry.get("leg_size", 8.0))
         if entry.get("legend") is not None:
             entry["legend"].set_draggable(True)
 

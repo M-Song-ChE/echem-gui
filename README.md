@@ -85,7 +85,8 @@ Files with a `cycle number` column show a grid of cycle checkboxes.
 - **Frame checkbox** — adds a border around the legend box.
 - **Font size** — adjust legend text size.
 - **Location** — choose legend anchor position, or drag the legend freely with the mouse.
-- **Edit Labels** — opens a dialog to rename individual legend entries.
+- **Edit Labels** — opens a dialog to **rename and reorder** legend entries. Each row has **↑/↓** buttons to move it up or down. Renaming without reordering preserves any drag position; reordering recreates the legend in the new order.
+- **Double-click the legend** directly on the plot to open the same edit dialog instantly.
 
 ### 3.8 Reference Lines
 Add horizontal or vertical guide lines to the plot:
@@ -150,6 +151,7 @@ After selecting cycles, a scan rate input table appears:
 
 ### 5.4 Setting ECSA Parameters
 - **E_std (V)** — the potential at which Δj is measured (the standard potential in the non-Faradaic region). A red dashed vertical line marks this position on the CV plot.
+  - **Rec:** label shown in green next to the entry field — this is the **recommended E_std**, automatically computed as the midpoint of the actual potential range of the currently plotted data: `(E_max + E_min) / 2`. It updates whenever the plot refreshes (file switch, cycle selection change, etc.). Use it as a starting point; adjust manually if needed.
 - **Cs (mF/cm²)** — specific capacitance of the material (default: 0.040 mF/cm² for standard electrolyte). Used to convert Cdl to ECSA.
 
 ### 5.5 Extracting ECSA
@@ -219,7 +221,9 @@ Double-click the title strip to rename the plot.
 | **Left-drag** | Pan the plot |
 | **Left-click** (on a data point) | Annotate that point with its coordinates |
 | **Right-click** | Dismiss the annotation |
+| **Double-click** (legend) | Open the legend label editor (rename + reorder) |
 | **Double-click** (title strip) | Rename the plot title |
+| **Right-drag** (legend) | Resize legend font size |
 
 ### Navigation Toolbar
 Each plot has a toolbar below it:
@@ -238,6 +242,7 @@ Each file remembers its last zoom/pan state. Switching to another file and back 
 - **Per-file independence** — every control in the left panel saves its value to the currently active file. Switch files freely; settings are never mixed up between files.
 - **Gradient for tracking evolution** — turn on Gradient to see how your CV cycles evolve: lightest = earliest, darkest = latest (most evolved).
 - **Cycle order matters** — cycles are plotted in the order they appear in the data file, so the gradient naturally reflects temporal evolution.
+- **E_std (Rec)** — the green **Rec:** value shown next to the E_std field is the midpoint of your data's actual potential range. This is a reliable starting point for the non-Faradaic region. If your CV has visible Faradaic peaks near the edges, move E_std slightly toward the centre.
 - **E_std position** — set E_std to the midpoint of the flat, featureless region of your CV for the most reliable Cdl extraction.
 - **Cs value** — the default 0.040 mF/cm² is appropriate for Pt in 0.1 M HClO₄. Adjust for your material and electrolyte.
 - **Multi E.Chem zoom** — use the zoom feature to inspect a single file in detail without losing the grid view; double-click anywhere on the subplot (not on the title) to zoom.

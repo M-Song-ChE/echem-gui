@@ -21,7 +21,7 @@ echem_gui/
     plotting.py             ← PlottingMixin: plot, zoom, pan, legend drag/resize, reset view, click-annotate; draw_reflines() helper
     ecsa.py                 ← ECSAMixin: legacy ECSA calc (used only by General E.Chem tab)
     export.py               ← ExportMixin: Excel export (raw + corrected sheets)
-    legend_editor.py        ← open_legend_editor(): blocking dialog for renaming legend labels
+    legend_editor.py        ← open_legend_editor(): blocking dialog — rename + ↑/↓ reorder legend entries; returns new legend (recreated when order changes, original when text-only)
 ```
 
 ## Architecture
@@ -72,7 +72,7 @@ Each panel is fully **independent**: its own `files` dict, `active_file`, figure
   - `_switch_active_file` — restores full per-file state, Cdl plot, view limits
   - `_auto_replot` — delegates to `_plot_cv()` only
   - `_plot` — also delegates to `_plot_cv()`
-  - `_edit_legend_labels` — disables legend draggable, opens editor, re-enables draggable
+  - `_edit_legend_labels(leg, is_cv)` — disables legend draggable, opens editor for the specified legend (CV or Cdl), updates `_legend_cv` / `_legend_cdl` with the returned legend object, re-enables draggable; also triggered by double-click on either legend via `_ei_press`
 
 ### EchemGUI (main window)
 - Inherits only `tk.Tk`
@@ -108,6 +108,7 @@ Each panel is fully **independent**: its own `files` dict, `active_file`, figure
 - `self._sr_vars = {cycle_num: StringVar}` — scan rate entry per cycle
 - `self._sr_traces = {cycle_num: (var, trace_id)}` — trace IDs for cleanup before rebuild
 - `self._cv_redraw_id` — `after()` ID for debounced CV replot (300 ms)
+- `self.e_std_rec_var` — `StringVar` for the green "Rec:" label; updated by `_update_e_std_rec()` on every `_plot_cv()` call
 
 ## Key Features
 
@@ -123,7 +124,7 @@ Each panel is fully **independent**: its own `files` dict, `active_file`, figure
 9. **Auto-replot** — updates on cycle selection, correction, file switch; suppressed during load
 10. **Plot range** — blank = auto; triggers replot on Return / FocusOut
 11. **Cycle checkboxes** — 9-column grid, scrollable, "Select All / Deselect All"
-12. **Legend controls** — show/hide, frame toggle, font size, location, "Edit Labels" dialog (blocking; drag disabled during edit), drag to move, right-drag to resize
+12. **Legend controls** — show/hide, frame toggle, font size, location, "Edit Labels" dialog (blocking; drag disabled during edit), drag to move, right-drag to resize; **double-click on legend** opens the same editor; dialog supports both rename and ↑/↓ reorder; text-only edits preserve drag position, reorder recreates the legend
 13. **Per-file zoom/pan preservation** — switching files restores each file's last view state
 14. **Mouse interactions** (PlottingMixin): scroll = zoom, left-drag = pan, left-click = annotate (switches active file), right-click = dismiss
 15. **Reference lines** — add X (vertical) or Y (horizontal) dashed guide lines at typed values; each line has its own style (dashed/dotted/solid/dash-dot) and color; managed via listbox + Remove; selecting a line loads its style/color into the dropdowns for individual editing; panel-level (shared across all overlaid files)
@@ -139,7 +140,7 @@ Each panel is fully **independent**: its own `files` dict, `active_file`, figure
 4. **Click-to-select** — clicking any plot or its toolbar selects that file in the listbox and updates left controls
 5. **Per-file zoom/pan preservation** — switching files or clicking plots restores each file's last view state
 6. **Shared axis/unit UI** — left controls show settings of the currently active (selected) file only
-7. **Legend controls** — per-file show/hide, frame, size, location; legend draggable and font-resizable; "Edit Labels" dialog (blocking; drag disabled during edit)
+7. **Legend controls** — per-file show/hide, frame, size, location; legend draggable and font-resizable; "Edit Labels" / double-click-on-legend dialog (blocking; drag disabled during edit); supports rename + ↑/↓ reorder
 8. **Reference lines** — per-file X/Y guide lines; each line carries its own style and color; listbox refreshes when switching files
 9. **File colors** — per-file base color from palette; overridable via "Color:" combobox
 10. **Cycle color gradient** — per-file gradient/reverse/step settings; same UX as General tab
@@ -152,7 +153,7 @@ Each panel is fully **independent**: its own `files` dict, `active_file`, figure
 3. **Axis selectors + unit dropdowns** — dimension-aware; display only; extraction uses raw column values
 4. **Cycle checkboxes** — 9-column grid, same UX as General tab
 5. **Scan-rate per cycle table** — 8-column grid; each entry has `trace_add("write", …)` triggering debounced (300 ms) CV replot so legend updates as you type
-6. **E_std entry** — red dashed vertical line on CV; immediate save to entry dict + replot on Return/FocusOut
+6. **E_std entry** — red dashed vertical line on CV; immediate save to entry dict + replot on Return/FocusOut; **Rec: label** shown in green next to the entry — auto-computed midpoint `(E_max + E_min) / 2` of the actual plotted X-column data for the selected cycles; updates on every `_plot_cv()` call
 7. **Cs entry** — specific capacitance (default 0.040 mF/cm²); immediate save to entry dict on Return/FocusOut
 8. **Extract Cdl & ECSA** — runs extraction, updates Cdl plot; legend shows fit equation + Cdl + R² + ECSA; results persisted per file for restore on file switch
 9. **Per-file zoom/pan preservation** — CV and Cdl views independently saved/restored per file
@@ -281,6 +282,7 @@ git rm --cached <file>      # unstage without deleting the local file
 - **View preservation timing** — in ECSAPanel, Cdl view is restored immediately after `_replot_cdl()`, CV view after `_auto_replot()`; order matters since both draw to canvas
 - **Area var in file_manager** — `_save_active_state` and `_switch_active_file` handle `area_var` via `getattr(self, "area_var", None)` so panels without it are unaffected
 - **CorrectionMixin column names** — `_apply_correction` looks for `"Ewe/V"` and `"I/mA"`; silently no-ops if columns absent (since recent cleanup of correction.py)
+- **`open_legend_editor` returns the legend object** — if the entry order changed, the legend is recreated via `ax.legend(handles, labels, ...)` and the new object is returned; if only text changed, the original object is returned (Text objects updated in-place to preserve drag position). All callers must assign the return value: `self._legend_obj = open_legend_editor(...)`. The old legend ref is stale after recreation.
 - **`open_legend_editor` must be blocking** — uses `dlg.grab_set()` + `parent.wait_window(dlg)`; without `wait_window`, the function returns immediately and matplotlib's `DraggableLegend` handler stays in "dragging" state (never receives button_release); always call `legend.set_draggable(False)` before opening and re-enable after
 - **`draw_reflines` tuple format** — each entry is a 4-tuple `('x'|'y', float, style, color)`; style is a key into `_GRID_STYLE_MAP`; labels start with `'_'` so they are excluded from the legend automatically; call after `_apply_axis_range()` / `_apply_range()` so reflines don't perturb autoscaling; call before `apply_grid()` / `canvas.draw()`
 - **ECSAPanel `_auto_xlim_cdl` / `_auto_ylim_cdl`** — only set after `canvas_cdl.draw()` completes inside `_replot_cdl` and `_extract_cdl_ecsa`; if either function crashes before that point, the reset-view button will silently do nothing (value stays `None`)

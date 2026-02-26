@@ -35,6 +35,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolb
 from .file_manager import FileManagerMixin, _COLOR_NAMES, _COLOR_HEX
 from .correction import CorrectionMixin
 from .plotting import apply_grid, draw_reflines, _cycle_colors
+from .legend_editor import open_legend_editor
 
 _CYCLE_BG        = "#e8f0fe"
 _CYCLE_ACTIVE_BG = "#cce0ff"
@@ -299,13 +300,19 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         ttk.Label(left, text="ECSA Parameters", font=("", 9, "bold")).pack(anchor=tk.W, padx=4)
 
         estd_f = ttk.Frame(left)
-        estd_f.pack(fill=tk.X, padx=4, pady=2)
+        estd_f.pack(fill=tk.X, padx=4, pady=(2, 0))
         ttk.Label(estd_f, text="E_std (V):").pack(side=tk.LEFT)
         self.e_std_var  = tk.StringVar(value="")
         e_std_entry     = ttk.Entry(estd_f, textvariable=self.e_std_var, width=10)
-        e_std_entry.pack(side=tk.LEFT, padx=4)
-        ttk.Label(estd_f, text="← potential where ja & jc are read",
-                  foreground="gray", font=("", 8)).pack(side=tk.LEFT)
+        e_std_entry.pack(side=tk.LEFT, padx=(4, 0))
+        ttk.Label(estd_f, text="  Rec:").pack(side=tk.LEFT, padx=(8, 0))
+        self.e_std_rec_var = tk.StringVar(value="—")
+        ttk.Label(estd_f, textvariable=self.e_std_rec_var,
+                  foreground="#1a7a30", font=("", 9, "bold")).pack(side=tk.LEFT, padx=(2, 0))
+        ttk.Label(estd_f, text="V", foreground="#1a7a30",
+                  font=("", 8)).pack(side=tk.LEFT, padx=(2, 0))
+        ttk.Label(left, text="  ← ja/jc read here; Rec = mid of plotted data range",
+                  foreground="gray", font=("", 8)).pack(anchor=tk.W, padx=4, pady=(0, 2))
 
         def _on_estd_change(e=None):
             # Persist immediately so file-switch always sees the latest value
@@ -721,6 +728,9 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         leg, is_cv = self._ei_leg_hit(event)
         if event.button == 1:
             self._pan_moved = False
+            if leg is not None and getattr(event, 'dblclick', False):
+                self._edit_legend_labels(leg, is_cv)
+                return
             if leg is None and event.inaxes in (self.ax_cv, self.ax_cdl):
                 if getattr(event, 'dblclick', False):
                     return   # dblclick not on title — ignore, don't start pan
@@ -1089,6 +1099,9 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
 
         df       = self.files[self.active_file]["df"]
         selected = self._selected_cycles()
+
+        # Update recommended E_std (midpoint of actual plotted data range)
+        self._update_e_std_rec()
 
         # Apply unit scaling for display
         x_scale, x_label = self._get_unit_scale(xcol, self.x_unit_var.get())
@@ -1703,8 +1716,58 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
     def _selected_cycles(self):
         return [c for c, v in self._cycle_vars.items() if v.get()]
 
-    def _edit_legend_labels(self):
-        pass
+    def _edit_legend_labels(self, leg=None, is_cv=True):
+        """Open the legend editor for the CV or Cdl legend.
+
+        Called from double-click on legend (leg and is_cv come from _ei_leg_hit)
+        or programmatically (leg=None → defaults to CV legend).
+        """
+        if leg is None:
+            leg   = self._legend_cv if self._legend_cv is not None else self._legend_cdl
+            is_cv = (leg is self._legend_cv)
+        if leg is None:
+            from tkinter import messagebox
+            messagebox.showinfo("Info", "Plot CV first to create a legend.")
+            return
+        canvas    = self.canvas_cv if is_cv else self.canvas_cdl
+        font_size = self._leg_size_cv if is_cv else self._leg_size_cdl
+        leg.set_draggable(False)
+        new_leg = open_legend_editor(self, leg, canvas, font_size)
+        if is_cv:
+            self._legend_cv = new_leg
+        else:
+            self._legend_cdl = new_leg
+        if new_leg is not None:
+            new_leg.set_draggable(True)
+
+    def _update_e_std_rec(self):
+        """Compute and display the recommended E_std (midpoint of plotted data range).
+
+        The recommendation is (E_min + E_max) / 2 across the selected cycles' X-column
+        data.  It is shown in raw column units (same units E_std is entered in).
+        """
+        if not self.active_file or self.active_file not in self.files:
+            self.e_std_rec_var.set("—")
+            return
+        xcol = self.x_var.get()
+        if not xcol:
+            self.e_std_rec_var.set("—")
+            return
+        df       = self.files[self.active_file]["df"]
+        selected = self._selected_cycles()
+        try:
+            if "cycle number" in df.columns and selected:
+                mask   = df["cycle number"].isin(selected)
+                x_data = df.loc[mask, xcol].values.astype(float)
+            else:
+                x_data = df[xcol].values.astype(float)
+            if len(x_data) == 0:
+                self.e_std_rec_var.set("—")
+                return
+            e_mid = (float(x_data.min()) + float(x_data.max())) / 2.0
+            self.e_std_rec_var.set(f"{e_mid:.3f}")
+        except Exception:
+            self.e_std_rec_var.set("—")
 
     def _edit_plot_title(self, ax, canvas):
         """Prompt the user to edit a plot title (double-click on title area)."""
