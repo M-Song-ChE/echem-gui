@@ -242,4 +242,5 @@ Each file remembers its last zoom/pan state. Switching to another file and back 
 - **Cs value** — the default 0.040 mF/cm² is appropriate for Pt in 0.1 M HClO₄. Adjust for your material and electrolyte.
 - **Multi E.Chem zoom** — use the zoom feature to inspect a single file in detail without losing the grid view; double-click anywhere on the subplot (not on the title) to zoom.
 - **Sharing results** — use the toolbar's Save button to export any plot as PNG/PDF, or use Export to Excel (General tab) for the raw and corrected data.
+- **ECSA: loading a new file always clears the CV plot** — switching to a newly loaded file in the ECSA tab immediately clears and redraws the CV plot for that file. If no cycles are selected yet, the CV area will be blank (as expected) until you check at least one cycle.
 - **Rebuilding the exe** — if you update the code and want a fresh exe, run `pyinstaller EchemGUI.spec` from the project folder (with PyInstaller installed).
