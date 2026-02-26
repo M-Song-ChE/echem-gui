@@ -1057,7 +1057,10 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         # Restore result label
         self.result_label.config(text=entry["result_text"])
 
-        self._auto_replot()
+        # Call _plot_cv() directly (not _auto_replot) so the CV plot always
+        # redraws when switching files, even when _suppress_replot is True
+        # (e.g. during _load_files).  The Cdl plot is handled the same way above.
+        self._plot_cv()
 
         # Restore CV zoom/pan if the user had previously modified the view
         if "view_xlim_cv" in entry:
