@@ -605,7 +605,8 @@ class EchemPanel(
             messagebox.showinfo("Info", "Plot data first to create a legend.")
             return
         self._legend_obj.set_draggable(False)
-        open_legend_editor(self, self._legend_obj, self.canvas, self._current_legend_size)
+        self._legend_obj = open_legend_editor(
+            self, self._legend_obj, self.canvas, self._current_legend_size)
         if self._legend_obj is not None:
             self._legend_obj.set_draggable(True)
 
