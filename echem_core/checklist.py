@@ -78,7 +78,7 @@ class CheckableListbox(tk.Frame):
     def _build_row(self, idx, text, *, checked=True):
         """Create the widgets for one row at position *idx* and return the row dict."""
         init_bg = _NORM_BG if checked else _HIDDEN_BG
-        row_frame = tk.Frame(self._inner, background=init_bg, cursor="fleur")
+        row_frame = tk.Frame(self._inner, background=init_bg, cursor="arrow")
         row_frame.grid(row=idx, column=0, sticky="ew", padx=1, pady=0)
         self._inner.columnconfigure(0, weight=1)
 
@@ -88,13 +88,13 @@ class CheckableListbox(tk.Frame):
         cb = ttk.Checkbutton(row_frame, variable=var)
         cb.pack(side=tk.LEFT, padx=(2, 0))
 
-        # ⠿ drag handle — obvious visual affordance
+        # ⠿ drag handle — cursor="fleur" only here; dragging restricted to this widget
         handle = tk.Label(row_frame, text="⠿", background=init_bg,
                           cursor="fleur", font=("", 11))
         handle.pack(side=tk.LEFT, padx=(3, 0))
 
         label = tk.Label(row_frame, text=text, anchor=tk.W,
-                         background=init_bg, cursor="fleur")
+                         background=init_bg, cursor="arrow")
         label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(2, 4))
 
         row = {"text": text, "var": var, "frame": row_frame,
@@ -103,11 +103,13 @@ class CheckableListbox(tk.Frame):
         # Checkbox toggle fires on_check
         var.trace_add("write", lambda *_: self._on_var_write(text, var))
 
-        # Clicking/dragging the handle, label, or row_frame background → select + reorder
-        for widget in (handle, label, row_frame):
-            widget.bind("<Button-1>",        lambda e, t=text: self._on_row_press(e, t))
-            widget.bind("<B1-Motion>",       lambda e, t=text: self._on_row_drag(e, t))
-            widget.bind("<ButtonRelease-1>", lambda e, t=text: self._on_row_release(e, t))
+        # Clicking the label → select only (no drag)
+        label.bind("<Button-1>", lambda e, t=text: self._select_by_text(t))
+
+        # Drag handle → select on press + drag-to-reorder on motion
+        handle.bind("<Button-1>",        lambda e, t=text: self._on_row_press(e, t))
+        handle.bind("<B1-Motion>",       lambda e, t=text: self._on_row_drag(e, t))
+        handle.bind("<ButtonRelease-1>", lambda e, t=text: self._on_row_release(e, t))
 
         # Forward wheel events from every row widget
         for widget in (cb, handle, label, row_frame):
