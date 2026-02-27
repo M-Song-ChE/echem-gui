@@ -177,6 +177,22 @@ class EISPanel(FileManagerMixin, ttk.Frame):
         self.y_combo.bind("<<ComboboxSelected>>", self._on_y_col_change)
         self.y_unit_cb.bind("<<ComboboxSelected>>", lambda e: self._auto_replot())
 
+        def _swap_xy():
+            xc, yc = self.x_var.get(),     self.y_var.get()
+            xu, yu = self.x_unit_var.get(), self.y_unit_var.get()
+            xn, yn = self.x_min_var.get(),  self.y_min_var.get()
+            xx, yx = self.x_max_var.get(),  self.y_max_var.get()
+            xf, yf = self.x_flip_var.get(), self.y_flip_var.get()
+            self.x_var.set(yc);      self.y_var.set(xc)
+            self.x_unit_var.set(yu); self.y_unit_var.set(xu)
+            self.x_min_var.set(yn);  self.y_min_var.set(xn)
+            self.x_max_var.set(yx);  self.y_max_var.set(xx)
+            self.x_flip_var.set(yf); self.y_flip_var.set(xf)
+            self._plot()
+
+        ttk.Button(left, text="⇄  Swap X↔Y", command=_swap_xy).pack(
+            anchor=tk.W, padx=4, pady=(0, 4))
+
         # ── Display ───────────────────────────────────────────────
         ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
         ttk.Label(left, text="Display", font=("", 9, "bold")).pack(anchor=tk.W, padx=4)

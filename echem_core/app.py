@@ -200,6 +200,25 @@ class EchemPanel(
         y_unit_cb.bind("<<ComboboxSelected>>",
                        lambda e: _refresh_unit_after_select(self.y_unit_var, y_unit_cb))
 
+        def _swap_xy():
+            xc, yc = self.x_var.get(),     self.y_var.get()
+            xu, yu = self.x_unit_var.get(), self.y_unit_var.get()
+            xn, yn = self.x_min_var.get(),  self.y_min_var.get()
+            xx, yx = self.x_max_var.get(),  self.y_max_var.get()
+            xf, yf = self.x_flip_var.get(), self.y_flip_var.get()
+            self.x_var.set(yc);      self.y_var.set(xc)
+            self.x_unit_var.set(yu); self.y_unit_var.set(xu)
+            self.x_min_var.set(yn);  self.y_min_var.set(xn)
+            self.x_max_var.set(yx);  self.y_max_var.set(xx)
+            self.x_flip_var.set(yf); self.y_flip_var.set(xf)
+            self._suppress_replot = True
+            _refresh_unit_opts(self.x_var, self.x_unit_var, x_unit_cb)
+            self._suppress_replot = False
+            _refresh_unit_opts(self.y_var, self.y_unit_var, y_unit_cb)
+
+        ttk.Button(left, text="⇄  Swap X↔Y", command=_swap_xy).pack(
+            anchor=tk.W, padx=4, pady=(0, 4))
+
         # Current density (per-file electrode area — unlocks "J" in column combos)
         area_row = ttk.Frame(left)
         area_row.pack(fill=tk.X, padx=4, pady=(2, 0))
