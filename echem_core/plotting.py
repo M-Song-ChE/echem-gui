@@ -691,3 +691,11 @@ class PlottingMixin:
                 y_min if y_min is not None else cur[0],
                 y_max if y_max is not None else cur[1],
             )
+
+        # Flip axes if requested (toggle direction without changing numeric extent)
+        xl = self.ax.get_xlim()
+        if getattr(self, "x_flip_var", None) and self.x_flip_var.get() != (xl[0] > xl[1]):
+            self.ax.set_xlim(xl[1], xl[0])
+        yl = self.ax.get_ylim()
+        if getattr(self, "y_flip_var", None) and self.y_flip_var.get() != (yl[0] > yl[1]):
+            self.ax.set_ylim(yl[1], yl[0])

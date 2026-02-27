@@ -223,6 +223,15 @@ class EISPanel(FileManagerMixin, ttk.Frame):
             _e.bind("<Return>",   lambda e: self._schedule_range_replot())
             _e.bind("<FocusOut>", lambda e: self._schedule_range_replot())
 
+        flip_row = ttk.Frame(left)
+        flip_row.pack(fill=tk.X, padx=4, pady=(0, 2))
+        self.x_flip_var = tk.BooleanVar(value=False)
+        self.y_flip_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(flip_row, text="Flip X", variable=self.x_flip_var,
+                        command=self._plot).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Checkbutton(flip_row, text="Flip Y", variable=self.y_flip_var,
+                        command=self._plot).pack(side=tk.LEFT)
+
         # ── Legend ────────────────────────────────────────────────
         ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
         ttk.Label(left, text="Legend", font=("", 9, "bold")).pack(anchor=tk.W, padx=4)
@@ -732,6 +741,17 @@ class EISPanel(FileManagerMixin, ttk.Frame):
                 changed = True
             except (ValueError, TypeError):
                 pass
+
+        # Flip axes if requested
+        xl = self.ax.get_xlim()
+        if self.x_flip_var.get() != (xl[0] > xl[1]):
+            self.ax.set_xlim(xl[1], xl[0])
+            changed = True
+        yl = self.ax.get_ylim()
+        if self.y_flip_var.get() != (yl[0] > yl[1]):
+            self.ax.set_ylim(yl[1], yl[0])
+            changed = True
+
         if changed:
             self.canvas.draw_idle()
 

@@ -205,6 +205,15 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             _re.bind("<Return>",   lambda e: self._plot_cv())
             _re.bind("<FocusOut>", lambda e: self._plot_cv())
 
+        flip_row = ttk.Frame(left)
+        flip_row.pack(fill=tk.X, padx=4, pady=(0, 2))
+        self.x_flip_var = tk.BooleanVar(value=False)
+        self.y_flip_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(flip_row, text="Flip X", variable=self.x_flip_var,
+                        command=self._plot_cv).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Checkbutton(flip_row, text="Flip Y", variable=self.y_flip_var,
+                        command=self._plot_cv).pack(side=tk.LEFT)
+
         # Reference electrode
         ttk.Label(left, text="Reference Electrode:").pack(anchor=tk.W, padx=4, pady=(4, 0))
         self.ref_electrode_var = tk.StringVar(value="Ag/AgCl")
@@ -1219,6 +1228,17 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             changed = True
         except ValueError:
             pass
+
+        # Flip axes if requested
+        xl = self.ax_cv.get_xlim()
+        if self.x_flip_var.get() != (xl[0] > xl[1]):
+            self.ax_cv.set_xlim(xl[1], xl[0])
+            changed = True
+        yl = self.ax_cv.get_ylim()
+        if self.y_flip_var.get() != (yl[0] > yl[1]):
+            self.ax_cv.set_ylim(yl[1], yl[0])
+            changed = True
+
         if changed:
             self.canvas_cv.draw_idle()
 

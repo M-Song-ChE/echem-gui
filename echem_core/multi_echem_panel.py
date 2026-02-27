@@ -234,6 +234,15 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             _re.bind("<Return>",   lambda e: self._auto_replot())
             _re.bind("<FocusOut>", lambda e: self._auto_replot())
 
+        flip_row = ttk.Frame(left)
+        flip_row.pack(fill=tk.X, padx=4, pady=(0, 2))
+        self.x_flip_var = tk.BooleanVar(value=False)
+        self.y_flip_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(flip_row, text="Flip X", variable=self.x_flip_var,
+                        command=self._auto_replot).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Checkbutton(flip_row, text="Flip Y", variable=self.y_flip_var,
+                        command=self._auto_replot).pack(side=tk.LEFT)
+
         # ── Current density (per-file electrode area — unlocks J units) ──
         area_row = ttk.Frame(left)
         area_row.pack(fill=tk.X, padx=4, pady=(4, 0))
@@ -826,6 +835,8 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         entry["cycle_gradient"] = self.cycle_gradient_var.get()
         entry["cycle_reverse"]  = self.cycle_reverse_var.get()
         entry["lightness_step"] = self.lightness_step_var.get()
+        entry["x_flip"]         = self.x_flip_var.get()
+        entry["y_flip"]         = self.y_flip_var.get()
 
     def _switch_active_file(self, short):
         self.active_file = short
@@ -858,6 +869,8 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         entry.setdefault("cycle_gradient", True)
         entry.setdefault("cycle_reverse",  False)
         entry.setdefault("lightness_step", "0.08")
+        entry.setdefault("x_flip",         False)
+        entry.setdefault("y_flip",         False)
 
         df   = entry["df"]
 
@@ -925,6 +938,8 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         self.cycle_gradient_var.set(entry.get("cycle_gradient", True))
         self.cycle_reverse_var.set(entry.get("cycle_reverse", False))
         self.lightness_step_var.set(entry.get("lightness_step", "0.08"))
+        self.x_flip_var.set(entry.get("x_flip", False))
+        self.y_flip_var.set(entry.get("y_flip", False))
 
         self._auto_replot()
 
@@ -1129,6 +1144,27 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
                 changed = True
             except (ValueError, TypeError):
                 pass
+        # Flip axes if requested (only for the active file whose vars reflect current state)
+        if short == self.active_file:
+            xl = ax.get_xlim()
+            if self.x_flip_var.get() != (xl[0] > xl[1]):
+                ax.set_xlim(xl[1], xl[0])
+                changed = True
+            yl = ax.get_ylim()
+            if self.y_flip_var.get() != (yl[0] > yl[1]):
+                ax.set_ylim(yl[1], yl[0])
+                changed = True
+        else:
+            # Non-active files: apply saved flip state from entry dict
+            xl = ax.get_xlim()
+            if entry.get("x_flip", False) != (xl[0] > xl[1]):
+                ax.set_xlim(xl[1], xl[0])
+                changed = True
+            yl = ax.get_ylim()
+            if entry.get("y_flip", False) != (yl[0] > yl[1]):
+                ax.set_ylim(yl[1], yl[0])
+                changed = True
+
         if changed:
             entry["canvas"].draw_idle()
 

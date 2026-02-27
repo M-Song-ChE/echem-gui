@@ -274,6 +274,15 @@ class EchemPanel(
 
         ttk.Label(left, text="(leave blank for auto)", foreground="gray").pack(anchor=tk.W, padx=4)
 
+        flip_row = ttk.Frame(left)
+        flip_row.pack(fill=tk.X, padx=4, pady=(0, 2))
+        self.x_flip_var = tk.BooleanVar(value=False)
+        self.y_flip_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(flip_row, text="Flip X", variable=self.x_flip_var,
+                        command=self._auto_replot).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Checkbutton(flip_row, text="Flip Y", variable=self.y_flip_var,
+                        command=self._auto_replot).pack(side=tk.LEFT)
+
         # Legend
         ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
         ttk.Label(left, text="Legend", font=("", 9, "bold")).pack(anchor=tk.W, padx=4)
