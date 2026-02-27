@@ -32,7 +32,7 @@ from tkinter import ttk
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 
-from .file_manager import FileManagerMixin, _COLOR_NAMES, _COLOR_HEX
+from .file_manager import FileManagerMixin, _COLOR_NAMES, _COLOR_HEX, _default_xcol, _default_ycol
 from .correction import CorrectionMixin
 from .plotting import apply_grid, draw_reflines, _cycle_colors
 from .legend_editor import open_legend_editor
@@ -981,21 +981,13 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         if x_col and x_col in cols:
             self.x_var.set(x_col)
         else:
-            x_default = next(
-                (c for c in cols if "ewe" in c.lower() or c.lower() in ("e/v", "potential")),
-                cols[1] if len(cols) > 1 else cols[0],
-            )
-            self.x_var.set(x_default)
+            self.x_var.set(_default_xcol(cols))
 
         y_col = entry["y_col"]
         if y_col and y_col in cols:
             self.y_var.set(y_col)
         else:
-            y_default = next(
-                (c for c in cols if "i/ma" in c.lower() or "current" in c.lower()),
-                cols[2] if len(cols) > 2 else cols[0],
-            )
-            self.y_var.set(y_default)
+            self.y_var.set(_default_ycol(cols, self.x_var.get()))
 
         self.x_unit_var.set(entry["x_unit"])
         self.y_unit_var.set(entry["y_unit"])

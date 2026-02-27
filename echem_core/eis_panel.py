@@ -17,6 +17,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolb
 from .file_manager import FileManagerMixin, _COLOR_NAMES, _COLOR_HEX
 from .plotting import apply_grid, draw_reflines
 from .legend_editor import open_legend_editor
+from .checklist import CheckableListbox
 
 
 # ── Unit option lists by physical dimension ──────────────────────────────────
@@ -126,12 +127,9 @@ class EISPanel(FileManagerMixin, ttk.Frame):
 
         flf = ttk.Frame(left)
         flf.pack(fill=tk.X, padx=4, pady=2)
-        self.file_listbox = tk.Listbox(flf, height=5, selectmode=tk.BROWSE,
-                                       exportselection=False)
-        fl_sc = ttk.Scrollbar(flf, orient=tk.VERTICAL, command=self.file_listbox.yview)
-        self.file_listbox.configure(yscrollcommand=fl_sc.set)
-        self.file_listbox.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        fl_sc.pack(side=tk.RIGHT, fill=tk.Y)
+        self.file_listbox = CheckableListbox(flf, height=5,
+                                             on_check=self._on_file_visibility_change)
+        self.file_listbox.pack(fill=tk.X, expand=True)
         self.file_listbox.bind("<<ListboxSelect>>", self._on_file_select)
 
         # ── File Color ────────────────────────────────────────────────
@@ -668,6 +666,8 @@ class EISPanel(FileManagerMixin, ttk.Frame):
 
         has_data = False
         for short, fentry in self.files.items():
+            if fentry.get("hidden", False):
+                continue
             df = fentry["df"]
             if xcol not in df.columns or ycol not in df.columns:
                 continue

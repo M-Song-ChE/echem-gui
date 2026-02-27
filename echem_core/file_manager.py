@@ -6,6 +6,29 @@ from tkinter import filedialog, messagebox
 import pandas as pd
 
 
+def _default_xcol(cols):
+    """Return the best voltage-like column, else cols[1]."""
+    for c in cols:
+        lo = c.lower()
+        if ("ewe" in lo or "ece" in lo or "potential" in lo or "voltage" in lo
+                or lo.startswith("e/")
+                or (lo.endswith("/v") and not lo.endswith(("mv", "µv", "nv")))):
+            return c
+    return cols[1] if len(cols) > 1 else cols[0]
+
+
+def _default_ycol(cols, x_col=""):
+    """Return the best current-like column (skipping x_col), else cols[2]."""
+    for c in cols:
+        if c == x_col:
+            continue
+        lo = c.lower()
+        if (lo.startswith("i/") or "i/ma" in lo or "i/a" in lo
+                or "i/µa" in lo or "current" in lo):
+            return c
+    return cols[2] if len(cols) > 2 else (cols[1] if len(cols) > 1 else cols[0])
+
+
 _COLOR_NAMES = ["Blue", "Orange", "Green", "Red", "Purple",
                 "Brown", "Pink", "Gray", "Olive", "Cyan"]
 _COLOR_HEX = {
@@ -68,6 +91,7 @@ class FileManagerMixin:
                 "cycle_gradient": True,
                 "cycle_reverse":  False,
                 "lightness_step": "0.08",
+                "hidden":         False,
             }
             self.file_listbox.insert(tk.END, short)
 
@@ -114,6 +138,13 @@ class FileManagerMixin:
             self._clear_plot()
             return
 
+        self._auto_replot()
+
+    def _on_file_visibility_change(self, short, visible):
+        """Called when a file's checkbox is toggled in the CheckableListbox."""
+        if short not in self.files:
+            return
+        self.files[short]["hidden"] = not visible
         self._auto_replot()
 
     def _on_file_select(self, event):
@@ -170,9 +201,9 @@ class FileManagerMixin:
         self.x_combo["values"] = cols
         self.y_combo["values"] = cols
         if not self.x_var.get() or self.x_var.get() not in cols:
-            self.x_var.set(cols[1] if len(cols) > 1 else cols[0])
+            self.x_var.set(_default_xcol(cols))
         if not self.y_var.get() or self.y_var.get() not in cols:
-            self.y_var.set(cols[2] if len(cols) > 2 else cols[0])
+            self.y_var.set(_default_ycol(cols, self.x_var.get()))
 
         # Rebuild cycle checkboxes, suppressing auto-replot during update
         old_suppress = self._suppress_replot

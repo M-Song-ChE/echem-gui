@@ -23,10 +23,11 @@ from tkinter import ttk
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 
-from .file_manager import FileManagerMixin, _COLOR_NAMES, _COLOR_HEX
+from .file_manager import FileManagerMixin, _COLOR_NAMES, _COLOR_HEX, _default_xcol, _default_ycol
 from .correction import CorrectionMixin
 from .plotting import apply_grid, draw_reflines, _cycle_colors
 from .legend_editor import open_legend_editor
+from .checklist import CheckableListbox
 
 _CYCLE_BG        = "#e8f0fe"
 
@@ -102,12 +103,9 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
 
         flf = ttk.Frame(left)
         flf.pack(fill=tk.X, padx=4, pady=2)
-        self.file_listbox = tk.Listbox(flf, height=4, selectmode=tk.BROWSE,
-                                       exportselection=False)
-        fl_sc = ttk.Scrollbar(flf, orient=tk.VERTICAL, command=self.file_listbox.yview)
-        self.file_listbox.configure(yscrollcommand=fl_sc.set)
-        self.file_listbox.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        fl_sc.pack(side=tk.RIGHT, fill=tk.Y)
+        self.file_listbox = CheckableListbox(flf, height=4,
+                                             on_check=self._on_file_visibility_change)
+        self.file_listbox.pack(fill=tk.X, expand=True)
         self.file_listbox.bind("<<ListboxSelect>>", self._on_file_select)
 
         # ── File Color ────────────────────────────────────────────────
@@ -679,6 +677,30 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         else:
             self._relayout_figures()
 
+    def _on_file_visibility_change(self, short, visible):
+        """Toggle a file's hidden flag and update the subplot grid."""
+        if short not in self.files:
+            return
+        entry = self.files[short]
+        # Snapshot the current zoom before hiding so it survives the replot on unhide
+        if not visible and "ax" in entry:
+            entry["view_xlim"] = entry["ax"].get_xlim()
+            entry["view_ylim"] = entry["ax"].get_ylim()
+        entry["hidden"] = not visible
+        # If hiding the currently zoomed file, exit zoom mode
+        if not visible and self._zoom_file == short:
+            self._zoom_file = None
+            self._zoom_bar.grid_remove()
+            self._right_canvas.itemconfig(self._plots_win, height=0)
+        self._relayout_figures()
+        if visible:
+            self._plot_file(short)
+            # Restore zoom/pan after the replot resets the view to auto-scale
+            if "view_xlim" in entry and "ax" in entry:
+                entry["ax"].set_xlim(entry["view_xlim"])
+                entry["ax"].set_ylim(entry["view_ylim"])
+                entry["canvas"].draw_idle()
+
     def _on_right_canvas_configure(self, event):
         """Keep the plots frame width in sync with the canvas; fill height when zoomed."""
         self._right_canvas.itemconfig(self._plots_win, width=event.width)
@@ -691,7 +713,8 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         """
         MAX_COLS = 2
         valid = [(s, self.files[s]) for s in self.files
-                 if "plot_frame" in self.files[s]]
+                 if "plot_frame" in self.files[s]
+                 and not self.files[s].get("hidden", False)]
 
         # ── Zoom mode: one subplot fills the whole canvas area ───────
         if self._zoom_file and any(s == self._zoom_file for s, _ in valid):
@@ -705,8 +728,11 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             return
 
         # ── Normal grid layout ───────────────────────────────────────
-        for _, entry in valid:
-            entry["plot_frame"].grid_remove()
+        # Remove all frames (including hidden ones) before re-placing visible ones
+        for s in self.files:
+            pf = self.files[s].get("plot_frame")
+            if pf is not None:
+                pf.grid_remove()
         for i, (short, entry) in enumerate(valid):
             row = i // MAX_COLS
             col = i % MAX_COLS
@@ -821,21 +847,13 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         if x_col and x_col in cols:
             self.x_var.set(x_col)
         else:
-            x_default = next(
-                (c for c in cols if "ewe" in c.lower() or c.lower() in ("e/v", "potential")),
-                cols[1] if len(cols) > 1 else cols[0],
-            )
-            self.x_var.set(x_default)
+            self.x_var.set(_default_xcol(cols))
 
         y_col = entry["y_col"]
         if y_col and y_col in cols:
             self.y_var.set(y_col)
         else:
-            y_default = next(
-                (c for c in cols if "i/ma" in c.lower() or "current" in c.lower()),
-                cols[2] if len(cols) > 2 else cols[0],
-            )
-            self.y_var.set(y_default)
+            self.y_var.set(_default_ycol(cols, self.x_var.get()))
         self.ref_electrode_var.set(entry["ref_electrode"])
         self.legend_show_var.set(entry["legend_show"])
         self.legend_frame_var.set(entry["legend_frame"])

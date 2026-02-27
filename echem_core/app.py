@@ -10,6 +10,7 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 
 from .legend_editor import open_legend_editor
+from .checklist import CheckableListbox
 from .file_manager import FileManagerMixin, _COLOR_NAMES, _COLOR_HEX
 from .correction import CorrectionMixin
 from .plotting import PlottingMixin
@@ -91,11 +92,9 @@ class EchemPanel(
 
         file_list_frame = ttk.Frame(left)
         file_list_frame.pack(fill=tk.X, padx=4, pady=2)
-        self.file_listbox = tk.Listbox(file_list_frame, height=5, selectmode=tk.BROWSE, exportselection=False)
-        fl_scroll = ttk.Scrollbar(file_list_frame, orient=tk.VERTICAL, command=self.file_listbox.yview)
-        self.file_listbox.configure(yscrollcommand=fl_scroll.set)
-        self.file_listbox.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        fl_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.file_listbox = CheckableListbox(file_list_frame, height=5,
+                                             on_check=self._on_file_visibility_change)
+        self.file_listbox.pack(fill=tk.X, expand=True)
         self.file_listbox.bind("<<ListboxSelect>>", self._on_file_select)
 
         # ── File Color ────────────────────────────────────────────────

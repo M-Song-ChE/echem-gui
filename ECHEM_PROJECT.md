@@ -16,12 +16,13 @@ echem_gui/
     multi_echem_panel.py    ← MultiEchemPanel class (Multi E.Chem tab)
     ecsa_panel.py           ← ECSAPanel class (dedicated ECSA Calc tab)
     eis_panel.py            ← EISPanel class (Nyquist Plot tab)
-    file_manager.py         ← FileManagerMixin: load/remove/switch files
+    file_manager.py         ← FileManagerMixin: load/remove/switch files; _default_xcol/_default_ycol helpers; _on_file_visibility_change
     correction.py           ← CorrectionMixin: IR compensation + RHE conversion
     plotting.py             ← PlottingMixin: plot, zoom, pan, legend drag/resize, reset view, click-annotate; draw_reflines() helper
     ecsa.py                 ← ECSAMixin: legacy ECSA calc (used only by General E.Chem tab)
     export.py               ← ExportMixin: Excel export (raw + corrected sheets)
     legend_editor.py        ← open_legend_editor(): blocking dialog — rename + ↑/↓ reorder legend entries; returns new legend (recreated when order changes, original when text-only)
+    checklist.py            ← CheckableListbox: tk.Frame subclass; [checkbox][label] rows; Listbox-compatible API (insert/delete/selection_set/curselection/get/size/see); fires <<ListboxSelect>> on label click and on_check(text, visible) on checkbox toggle; internal Canvas+Scrollbar; used by General/Multi/EIS tabs
 ```
 
 ## Architecture
@@ -81,10 +82,11 @@ Each panel is fully **independent**: its own `files` dict, `active_file`, figure
 
 ### Data model (per panel instance)
 - `self.files = OrderedDict[str, dict]` keyed by short filename
-  - Base fields set on load: `{"path", "df_raw", "df", "selected_cycles", "r_sol", "e_ref", "area"}`
+  - Base fields set on load: `{"path", "df_raw", "df", "selected_cycles", "r_sol", "e_ref", "area", "hidden"}`
   - `df_raw` = original parsed data; `df` = corrected working copy
   - `selected_cycles` is always `[]` on first load; user picks manually
   - `area` = electrode area string (cm²); used for J density calculation
+  - `hidden` = bool (default `False`); set by `_on_file_visibility_change`; plot loops skip entries where `hidden=True`
   - `view_xlim`, `view_ylim` = saved axis limits for zoom/pan preservation (set on first file switch away)
   - **Color/marker fields** (set in `file_manager._load_files`): `"color"` (hex string from Tab10-like palette), `"marker"` (matplotlib marker string); palette cycles through 10 named colors so successive files auto-differentiate
   - **Per-file gradient fields** (defaulted in `_switch_active_file`): `"cycle_gradient"` (bool, default `True`), `"cycle_reverse"` (bool, default `False`), `"lightness_step"` (str float, default `"0.08"`); saved by `_save_active_state` / `_on_gradient_change`
@@ -113,7 +115,7 @@ Each panel is fully **independent**: its own `files` dict, `active_file`, figure
 ## Key Features
 
 ### General E.Chem tab
-1. **Multi-file support** — load multiple `.txt` files, manage in listbox, overlay on single plot
+1. **Multi-file support** — load multiple `.txt` files, manage in CheckableListbox, overlay on single plot; checkbox hides/shows a file's contribution without losing any settings (cycles, corrections, zoom, colors, etc.)
 2. **Axis selectors + unit dropdowns** — X and Y each have a column selector and a unit combobox with dimension-aware filtering (I/E/t/J families)
 3. **J (current density) column** — virtual column; requires all files to have area > 0; computes I/area per file at plot time; density unit range: A/cm², mA/cm², µA/cm², nA/cm²
 4. **Unit conversion** — `_get_axis_unit_scale(col, target)` returns `(scale_factor, display_label)`; label format is `col (unit)` e.g. `I (mA)`, `Ewe (V)`
@@ -134,7 +136,7 @@ Each panel is fully **independent**: its own `files` dict, `active_file`, figure
 19. **Editable plot title** — double-click anywhere in the title strip (above the top spine) to open a rename dialog; title persists across replots
 
 ### Multi E.Chem tab
-1. **One plot per file** — each loaded file gets its own labelled figure; all visible simultaneously in a 2-column grid
+1. **One plot per file** — each loaded file gets its own labelled figure; CheckableListbox checkbox hides/shows a file's subplot in the grid without losing settings; zoom/pan state is preserved across hide/unhide
 2. **Per-file settings** — axis columns, units, plot range, reference electrode, IR/RHE correction, cycle selection, legend options all independent per file
 3. **J (current density) column** — per-file check: "J" added to combos only when active file has area > 0
 4. **Click-to-select** — clicking any plot or its toolbar selects that file in the listbox and updates left controls
@@ -165,7 +167,7 @@ Each panel is fully **independent**: its own `files` dict, `active_file`, figure
 15. **Editable plot titles** — double-click the title strip on either the CV or Cdl plot to rename it
 
 ### Nyquist Plot tab
-1. **EIS / impedance data** — loads tab-separated `.txt` files with Re(Z) and -Im(Z) columns
+1. **EIS / impedance data** — loads tab-separated `.txt` files with Re(Z) and -Im(Z) columns; CheckableListbox checkbox hides/shows individual file traces
 2. **Axis selectors + unit dropdowns** — X and Y each independently configurable
 3. **Multi-file overlay** — all loaded files shown on a single Nyquist plot; each file uses its auto-assigned palette color and unique marker shape from `entry["color"]` / `entry["marker"]`
 4. **Connect lines toggle** — show/hide connecting line between data points
@@ -260,6 +262,7 @@ git rm --cached <file>      # unstage without deleting the local file
 ## Important Design Decisions
 - File loading does NOT auto-replot (preserves current plot)
 - Newly loaded files have `selected_cycles = []` — no cycles pre-checked
+- **ECSA Calc uses a plain `tk.Listbox`** (no hide/show) — the tab shows only the active file's CV so hiding is not meaningful; the plain listbox avoids zoom-state complications from the shared `ax_cv` axes
 - Plot skips files with `cycle number` column but no selected cycles
 - Export only exports the active file; blocks if no cycles selected
 - `constrained_layout=True` on Figure prevents subplot title/label overlap
@@ -289,6 +292,9 @@ git rm --cached <file>      # unstage without deleting the local file
 - **`_switch_active_file` UI-restore ordering (critical)** — `FileManagerMixin._switch_active_file` sets `self.active_file = short` and then calls `_auto_replot()`; `_auto_replot` → `_plot/_plot_file` → `_save_active_state` will immediately write the current UI var values into `self.files[short]` (the new file). If UI vars still hold the old file's values at that moment, the new file's settings are clobbered. **Fix:** always restore per-file UI vars (color, gradient, etc.) **before** calling `super()._switch_active_file()` in any panel override.
 - **`_cycle_colors(base_color, n, step, reverse)`** (module-level in `plotting.py`) — converts the base color to HLS, offsets lightness linearly across `n` cycles. `reverse=False` → first cycle lightest, last darkest (most recently evolved = most visible). `reverse=True` flips. Clamps lightness to [0.15, 0.85]. Uses `colorsys` + `matplotlib.colors`; returns a list of `(r, g, b)` tuples.
 - **`file_manager` palette constants** — `_COLOR_NAMES`, `_COLOR_HEX`, `_PALETTE`, `_MARKERS` defined at module level; imported by panel files that need the hex mapping for color name → hex conversion in `_on_file_color_change` and `_switch_active_file`
+- **`_default_xcol(cols)` / `_default_ycol(cols, x_col)`** — module-level helpers in `file_manager.py`; scan column names for voltage-like (`ewe`, `ece`, `potential`, `voltage`, starts with `e/`, ends with `/v` but not `mv`/`µv`/`nv`) and current-like (`starts with i/`, `i/ma`, `i/a`, `i/µa`, `current`) patterns; fall back to `cols[1]`/`cols[2]` if no match; used by base `_switch_active_file` and imported by Multi/ECSA panels
+- **`CheckableListbox` hide/show guard** — `_on_file_visibility_change` is defined in `FileManagerMixin` (calls `_auto_replot`) and overridden in `MultiEchemPanel` (also snapshots/restores per-file zoom); ECSA Calc does NOT override it and does NOT use `CheckableListbox`, so `hidden` flag is never set in that panel
+- **Multi E.Chem zoom preservation on hide/unhide** — snapshot is taken from `entry["ax"].get_xlim/ylim()` only when `not ae.get("hidden")` to avoid clobbering the saved zoom with the 0–1 range that appears when axes are cleared
 - **Title dblclick detection** — `PlottingMixin._hit_title_area(event, ax, fig)` static method checks both: (a) `ax.title.get_window_extent(renderer).contains(event.x, event.y)` for when title text is visible, and (b) the horizontal strip `ax_bbox.y1 ≤ event.y ≤ fig_bbox.y1` for when title is empty; check is performed **before** the `event.inaxes` guard since the title strip is outside the axes bounding box
 - **Multi E.Chem zoom bar placement** — `right_outer` uses `grid` manager (not `pack`) so the zoom bar row reliably collapses to zero height via `grid_remove()` and appears at the top before the canvas row; mixing `pack` and `grid` on siblings of the same parent is an error in tkinter
 - **Multi E.Chem zoom `columnspan` reset** — `grid(columnspan=2)` during zoom mode persists until explicitly overridden; `_relayout_figures` must pass `columnspan=1` when restoring the normal 2-column grid or files appear merged

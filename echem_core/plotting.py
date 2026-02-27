@@ -490,6 +490,8 @@ class PlottingMixin:
         has_legend = False
 
         for short, entry in self.files.items():
+            if entry.get("hidden", False):
+                continue
             df = entry["df"]
             if _real_xcol not in df.columns or _real_ycol not in df.columns:
                 continue

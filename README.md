@@ -48,8 +48,10 @@ Use this tab to load one or more data files and overlay them all on a single plo
 
 ### 3.1 Loading Files
 1. Click **Load File(s)** to open a file browser. Select one or more `.txt` files.
-2. Loaded files appear in the **file listbox**. Click a filename to make it the active file — all left-panel controls reflect that file's settings.
-3. To remove a file, select it and click **Remove File**.
+2. Loaded files appear in the **file list**. Each row has a **checkbox** and a filename label.
+   - **Click the filename** to make it the active file — all left-panel controls reflect that file's settings.
+   - **Uncheck the checkbox** to hide that file's curves from the plot without removing it. All settings (cycles, corrections, zoom, colors, etc.) are fully preserved. Re-check to bring it back instantly.
+3. To remove a file, select it and click **Remove**.
 
 ### 3.2 Axis Settings
 - **X / Y column selectors** — choose which data column to plot on each axis.
@@ -113,8 +115,9 @@ Use this tab to view all loaded files **side by side** in a 2-column grid, each 
 
 ### 4.1 Loading and Selecting Files
 - Load files the same way as in the General tab.
+- Each row in the file list has a **checkbox** — uncheck it to collapse that file's subplot from the grid; re-check to restore it. All per-file settings and zoom state are preserved.
 - Click any subplot (or its toolbar) to make that file **active** — the left panel updates to show that file's settings.
-- Alternatively, click the filename in the listbox.
+- Alternatively, click the filename in the file list.
 
 ### 4.2 Per-File Settings
 Every control in the left panel (axis columns, units, range, cycles, correction, colors, gradient, legend, reference lines) applies **only to the active file**. Each file remembers its own settings independently.
@@ -205,7 +208,7 @@ Load `.txt` files that contain impedance columns (e.g. `Re(Z)/Ohm` and `-Im(Z)/O
 - **Show markers** — shows point markers at each data point.
 
 ### 6.4 Multiple Files
-All loaded files are overlaid on the same Nyquist plot. Each file is automatically assigned a **distinct color** and a **unique marker shape** so they can be told apart even without a legend.
+All loaded files are overlaid on the same Nyquist plot. Each file is automatically assigned a **distinct color** and a **unique marker shape** so they can be told apart even without a legend. Use the **checkbox** next to each filename to hide or show individual traces without losing any settings.
 
 ### 6.5 Editable Plot Title
 Double-click the title strip to rename the plot.
@@ -240,6 +243,8 @@ Each file remembers its last zoom/pan state. Switching to another file and back 
 ## 8. Tips and Shortcuts
 
 - **Per-file independence** — every control in the left panel saves its value to the currently active file. Switch files freely; settings are never mixed up between files.
+- **Hide without losing settings** — unchecking a file in the file list removes it from the plot instantly. All cycles, corrections, zoom state, colors, and gradient settings are preserved. Re-check to restore the exact same view. Use this to compare a subset of files without having to reload anything. *(Not available in the ECSA Calc tab.)*
+- **Smart axis defaults** — when loading a file for the first time, the app automatically selects the voltage column (e.g. `Ewe/V`) for X and the current column (e.g. `I/mA`) for Y. In the Nyquist Plot tab it selects `Re(Z)` and `-Im(Z)` automatically.
 - **Gradient for tracking evolution** — turn on Gradient to see how your CV cycles evolve: lightest = earliest, darkest = latest (most evolved).
 - **Cycle order matters** — cycles are plotted in the order they appear in the data file, so the gradient naturally reflects temporal evolution.
 - **E_std (Rec)** — the green **Rec:** value shown next to the E_std field is the midpoint of your data's actual potential range. This is a reliable starting point for the non-Faradaic region. If your CV has visible Faradaic peaks near the edges, move E_std slightly toward the centre.
