@@ -582,15 +582,29 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
 
         panel_ref = self
 
-        frame = ttk.LabelFrame(self._plots_frame, text=f"  {short}  ", padding=4)
+        # Outer bordered frame (replaces LabelFrame so we can add a visible drag strip)
+        _HDR_BG = "#c0cfe4"
+        frame = tk.Frame(self._plots_frame, relief="groove", bd=2)
         # Placement is handled by _relayout_figures(); do not pack/grid here
+
+        # ── Header strip: drag handle + filename ────────────────────
+        header = tk.Frame(frame, bg=_HDR_BG, cursor="fleur")
+        header.pack(fill=tk.X, side=tk.TOP)
+        handle_lbl = tk.Label(header, text=f"⠿  {short}",
+                              bg=_HDR_BG, cursor="fleur",
+                              font=("", 9, "bold"), anchor=tk.W)
+        handle_lbl.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=6, pady=3)
+
+        # ── Content area (canvas + toolbar) ─────────────────────────
+        inner = ttk.Frame(frame, padding=(4, 2, 4, 2))
+        inner.pack(fill=tk.BOTH, expand=True)
 
         fig = Figure(figsize=(5, 3.8), dpi=100, constrained_layout=True)
         ax  = fig.add_subplot(111)
-        canvas = FigureCanvasTkAgg(fig, master=frame)
+        canvas = FigureCanvasTkAgg(fig, master=inner)
         canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
-        tb_frame = ttk.Frame(frame)
+        tb_frame = ttk.Frame(inner)
         tb_frame.pack(fill=tk.X)
 
         class _Toolbar(NavigationToolbar2Tk):
@@ -599,13 +613,14 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
 
         _Toolbar(canvas, tb_frame).update()
 
-        # Forward mouse-wheel on the LabelFrame and toolbar (not the canvas) to
+        # Forward mouse-wheel on the frame and toolbar (not the canvas) to
         # the right-side scroll panel.  The canvas widget must NOT forward wheel
         # events so that matplotlib's scroll-to-zoom handler works undisturbed.
         def _fwd_scroll(e):
             self._right_canvas.yview_scroll(-1 * (e.delta // 120), "units")
 
         frame.bind("<MouseWheel>", _fwd_scroll)
+        header.bind("<MouseWheel>", _fwd_scroll)
         tb_frame.bind("<MouseWheel>", _fwd_scroll)
 
         # Click on the frame / toolbar → select this file in the listbox
@@ -614,10 +629,11 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         frame.bind("<Button-1>",    _activate, add="+")
         tb_frame.bind("<Button-1>", _activate, add="+")
 
-        # Drag on the LabelFrame border/title → reorder subplots
-        frame.bind("<ButtonPress-1>",   lambda e, s=short: self._on_frame_press(e, s),   add="+")
-        frame.bind("<B1-Motion>",       lambda e, s=short: self._on_frame_drag(e, s),    add="+")
-        frame.bind("<ButtonRelease-1>", lambda e, s=short: self._on_frame_release(e, s), add="+")
+        # Drag on the header strip → reorder subplots
+        for _w in (header, handle_lbl):
+            _w.bind("<ButtonPress-1>",   lambda e, s=short: self._on_frame_press(e, s))
+            _w.bind("<B1-Motion>",       lambda e, s=short: self._on_frame_drag(e, s))
+            _w.bind("<ButtonRelease-1>", lambda e, s=short: self._on_frame_release(e, s))
 
         # Per-figure matplotlib interactions
         canvas.mpl_connect("scroll_event",         lambda ev: self._on_scroll(ev, short))
@@ -1485,9 +1501,6 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             if abs(event.x_root - drag["start_x"]) + abs(event.y_root - drag["start_y"]) < 6:
                 return
             drag["active"] = True
-            pf = self.files.get(short, {}).get("plot_frame")
-            if pf:
-                pf.configure(cursor="fleur")
 
         # Detect which visible frame the cursor is over
         target = None
@@ -1526,9 +1539,6 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         drag = self._drag
         self._drag = None
         self._drop_line.place_forget()
-        pf = self.files.get(short, {}).get("plot_frame")
-        if pf and pf.winfo_exists():
-            pf.configure(cursor="")
         if drag is None or not drag["active"]:
             return
         target = drag.get("target")
