@@ -4,12 +4,14 @@ import tkinter as tk
 from tkinter import ttk
 
 _MAX_ENTRIES_HEIGHT = 380   # px — dialog entries area is capped at this height
+_SEL_BG  = "#cce8ff"
+_NORM_BG = "#f0f0f0"
 
 
 def open_legend_editor(parent, legend_obj, canvas, font_size):
     """Open a popup dialog to rename and reorder legend entries.
 
-    Each row shows ↑/↓ buttons to swap order and an editable text field.
+    Each row shows a ⠿ drag handle to reorder and an editable text field.
 
     On OK:
     - If the entry order changed, the legend is recreated via ax.legend(handles, labels, ...)
@@ -37,9 +39,8 @@ def open_legend_editor(parent, legend_obj, canvas, font_size):
     dlg.resizable(True, True)
     dlg.grab_set()
 
-    ttk.Label(dlg, text="Edit labels · ↑/↓ to reorder:", font=("", 9, "bold")).pack(
-        anchor=tk.W, padx=10, pady=(10, 4)
-    )
+    ttk.Label(dlg, text="Drag ⠿ to reorder · click label to edit:",
+              font=("", 9, "bold")).pack(anchor=tk.W, padx=10, pady=(10, 4))
 
     # ── Scrollable entries area ──────────────────────────────────────
     ent_outer = ttk.Frame(dlg)
@@ -49,7 +50,7 @@ def open_legend_editor(parent, legend_obj, canvas, font_size):
     ent_scroll = ttk.Scrollbar(ent_outer, orient=tk.VERTICAL, command=ent_canvas.yview)
     ent_canvas.configure(yscrollcommand=ent_scroll.set)
 
-    inner = ttk.Frame(ent_canvas)
+    inner = tk.Frame(ent_canvas, background=_NORM_BG)
     inner_win = ent_canvas.create_window((0, 0), window=inner, anchor=tk.NW)
 
     def _on_inner_cfg(e):
@@ -74,25 +75,95 @@ def open_legend_editor(parent, legend_obj, canvas, font_size):
     items = [[h, tk.StringVar(value=t.get_text())]
              for h, t in zip(handles_orig, texts_orig)]
 
+    # ── Drag-to-reorder state ────────────────────────────────────────
+    drag = {"idx": None, "start_y": 0, "active": False,
+            "target_idx": None, "target_top": True}
+
+    drop_line = tk.Frame(inner, bg="#1a73e8", height=2)
+
     def _rebuild_rows():
         for w in inner.winfo_children():
-            w.destroy()
+            if w is not drop_line:
+                w.destroy()
+        inner.columnconfigure(0, weight=1)
         for idx in range(len(items)):
-            row = ttk.Frame(inner)
-            row.pack(fill=tk.X, pady=1)
-            ttk.Button(row, text="↑", width=2,
-                       command=lambda i=idx: _move(i, -1)).pack(side=tk.LEFT, padx=(0, 1))
-            ttk.Button(row, text="↓", width=2,
-                       command=lambda i=idx: _move(i, +1)).pack(side=tk.LEFT, padx=(0, 4))
+            row = tk.Frame(inner, background=_NORM_BG, cursor="arrow")
+            row.grid(row=idx, column=0, sticky="ew", pady=1)
+
+            handle = tk.Label(row, text="⠿", background=_NORM_BG,
+                              cursor="fleur", font=("", 11))
+            handle.pack(side=tk.LEFT, padx=(4, 2))
+
             ent = ttk.Entry(row, textvariable=items[idx][1], width=36)
-            ent.pack(side=tk.LEFT, fill=tk.X, expand=True)
+            ent.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4))
             ent.bind("<MouseWheel>", _on_wheel)
 
-    def _move(idx, direction):
-        target = idx + direction
-        if target < 0 or target >= len(items):
+            # Bind drag to the handle
+            handle.bind("<Button-1>",        lambda e, i=idx: _on_press(e, i))
+            handle.bind("<B1-Motion>",       lambda e, i=idx: _on_drag(e, i))
+            handle.bind("<ButtonRelease-1>", lambda e, i=idx: _on_release(e, i))
+            handle.bind("<MouseWheel>", _on_wheel)
+            row.bind("<MouseWheel>", _on_wheel)
+
+    def _on_press(event, idx):
+        drag["idx"]     = idx
+        drag["start_y"] = event.y_root
+        drag["active"]  = False
+        drag["target_idx"] = None
+        drag["target_top"] = True
+
+    def _on_drag(event, idx):
+        if drag["idx"] != idx:
             return
-        items[idx], items[target] = items[target], items[idx]
+        if not drag["active"]:
+            if abs(event.y_root - drag["start_y"]) < 5:
+                return
+            drag["active"] = True
+
+        # Identify target row
+        rows = [w for w in inner.winfo_children() if isinstance(w, tk.Frame) and w is not drop_line]
+        target_idx = None
+        target_top = True
+        for i, row in enumerate(rows):
+            y0 = row.winfo_rooty()
+            h  = row.winfo_height()
+            if h > 0 and y0 <= event.y_root <= y0 + h:
+                target_idx = i
+                target_top = (event.y_root - y0) < h / 2
+                break
+
+        drag["target_idx"] = target_idx
+        drag["target_top"] = target_top
+
+        if target_idx is not None and target_idx != idx:
+            row = rows[target_idx]
+            ry  = row.winfo_y()
+            rh  = row.winfo_height()
+            rw  = inner.winfo_width()
+            line_y = ry if target_top else ry + rh - 2
+            drop_line.place(x=0, y=line_y, width=rw, height=2)
+            drop_line.lift()
+        else:
+            drop_line.place_forget()
+
+    def _on_release(event, idx):
+        drop_line.place_forget()
+        if not drag["active"]:
+            drag["idx"] = None
+            return
+        from_idx   = drag["idx"]
+        target_idx = drag["target_idx"]
+        target_top = drag["target_top"]
+        drag["idx"] = None
+        if from_idx is None or target_idx is None or target_idx == from_idx:
+            return
+        # Reorder items list
+        item = items.pop(from_idx)
+        ti = target_idx
+        if from_idx < ti:
+            ti -= 1
+        to_idx = ti if target_top else ti + 1
+        items.insert(to_idx, item)
         _rebuild_rows()
 
     _rebuild_rows()

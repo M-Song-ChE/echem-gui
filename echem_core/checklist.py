@@ -2,11 +2,13 @@
 
 Each row shows  [checkbox]  [filename label].
 Clicking the checkbox toggles visibility and fires on_check(text, visible).
-Clicking the label selects/activates the file and fires <<ListboxSelect>>.
+Clicking/dragging the label selects the file and fires <<ListboxSelect>>;
+dragging also reorders rows and fires on_reorder(new_texts_list).
 
 Public API (mirrors tk.Listbox):
-    insert(END, text)
+    insert(END, text, *, checked=True)
     delete(idx)
+    clear()
     selection_clear(start, end)
     selection_set(idx)       → also fires <<ListboxSelect>>
     curselection()           → (idx,) or ()
@@ -20,22 +22,26 @@ from tkinter import ttk
 
 _SEL_BG   = "#cce8ff"   # selected-row highlight
 _NORM_BG  = "white"     # normal row background
+_HIDDEN_BG = "#f0f0f0"  # dimmed background for hidden files
 
 
 class CheckableListbox(tk.Frame):
-    """Listbox-compatible widget with a visibility checkbox on each row."""
+    """Listbox-compatible widget with a visibility checkbox and drag-to-reorder on each row."""
 
-    def __init__(self, master, *, height=5, on_check=None, **kw):
+    def __init__(self, master, *, height=5, on_check=None, on_reorder=None, **kw):
         """
         Parameters
         ----------
-        height   : visible rows (used to set the canvas height in pixels)
-        on_check : callable(text: str, visible: bool) — called when a checkbox changes
+        height     : visible rows (used to set the canvas height in pixels)
+        on_check   : callable(text, visible) — called when a checkbox changes
+        on_reorder : callable(new_texts_list) — called after rows are drag-reordered
         """
         super().__init__(master, **kw)
-        self._on_check = on_check
-        self._rows = []           # list of dicts: {text, var, frame, cb, label}
+        self._on_check   = on_check
+        self._on_reorder = on_reorder
+        self._rows       = []           # list of dicts: {text, var, frame, cb, label}
         self._selected_idx = None
+        self._rdrag      = None         # drag-to-reorder state
 
         # ── Internal canvas + scrollbar ──────────────────────────────
         self._canvas = tk.Canvas(self, background=_NORM_BG,
@@ -55,6 +61,9 @@ class CheckableListbox(tk.Frame):
         self._canvas.bind("<Configure>", self._on_canvas_configure)
         self._canvas.bind("<MouseWheel>", self._on_wheel)
 
+        # Drop indicator line (placed on top of the grid with place())
+        self._drop_line = tk.Frame(self._inner, bg="#1a73e8", height=2)
+
     # ── Layout callbacks ─────────────────────────────────────────────
     def _on_inner_configure(self, _e):
         self._canvas.configure(scrollregion=self._canvas.bbox("all"))
@@ -66,19 +75,21 @@ class CheckableListbox(tk.Frame):
         self._canvas.yview_scroll(-1 * (e.delta // 120), "units")
 
     # ── Row building ─────────────────────────────────────────────────
-    def _build_row(self, idx, text):
+    def _build_row(self, idx, text, *, checked=True):
         """Create the widgets for one row at position *idx* and return the row dict."""
-        row_frame = tk.Frame(self._inner, background=_NORM_BG, cursor="arrow")
+        init_bg = _NORM_BG if checked else _HIDDEN_BG
+        row_frame = tk.Frame(self._inner, background=init_bg, cursor="arrow")
         row_frame.grid(row=idx, column=0, sticky="ew", padx=1, pady=0)
         self._inner.columnconfigure(0, weight=1)
 
-        var = tk.BooleanVar(value=True)
+        # Set value BEFORE adding the trace so the trace doesn't fire on construction
+        var = tk.BooleanVar(value=checked)
 
         cb = ttk.Checkbutton(row_frame, variable=var)
         cb.pack(side=tk.LEFT, padx=(2, 0))
 
         label = tk.Label(row_frame, text=text, anchor=tk.W,
-                         background=_NORM_BG, cursor="arrow")
+                         background=init_bg, cursor="arrow")
         label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(2, 4))
 
         row = {"text": text, "var": var, "frame": row_frame, "cb": cb, "label": label}
@@ -86,9 +97,11 @@ class CheckableListbox(tk.Frame):
         # Checkbox toggle fires on_check
         var.trace_add("write", lambda *_: self._on_var_write(text, var))
 
-        # Clicking the label selects the file
+        # Clicking/dragging the label or row_frame: select + drag-to-reorder
         for widget in (label, row_frame):
-            widget.bind("<Button-1>", lambda e, t=text: self._select_by_text(t))
+            widget.bind("<Button-1>",        lambda e, t=text: self._on_row_press(e, t))
+            widget.bind("<B1-Motion>",       lambda e, t=text: self._on_row_drag(e, t))
+            widget.bind("<ButtonRelease-1>", lambda e, t=text: self._on_row_release(e, t))
 
         # Forward wheel events from every row widget
         for widget in (cb, label, row_frame):
@@ -96,19 +109,20 @@ class CheckableListbox(tk.Frame):
 
         return row
 
+    # ── Checkbox callback ─────────────────────────────────────────────
     def _on_var_write(self, text, var):
         visible = var.get()
         if self._on_check is not None:
             self._on_check(text, visible)
-        # Update row background to dim hidden files slightly
         row = next((r for r in self._rows if r["text"] == text), None)
         if row is None:
             return
         is_sel = (self._rows.index(row) == self._selected_idx)
-        bg = _SEL_BG if is_sel else (_NORM_BG if visible else "#f0f0f0")
+        bg = _SEL_BG if is_sel else (_NORM_BG if visible else _HIDDEN_BG)
         row["frame"].configure(background=bg)
         row["label"].configure(background=bg)
 
+    # ── Selection ─────────────────────────────────────────────────────
     def _select_by_text(self, text):
         idx = next((i for i, r in enumerate(self._rows) if r["text"] == text), None)
         if idx is None:
@@ -116,16 +130,14 @@ class CheckableListbox(tk.Frame):
         self._set_selection(idx, fire_event=True)
 
     def _set_selection(self, idx, *, fire_event=False):
-        # Clear old highlight
         if self._selected_idx is not None and self._selected_idx < len(self._rows):
             old = self._rows[self._selected_idx]
             vis = old["var"].get()
-            old["frame"].configure(background=_NORM_BG if vis else "#f0f0f0")
-            old["label"].configure(background=_NORM_BG if vis else "#f0f0f0")
+            old["frame"].configure(background=_NORM_BG if vis else _HIDDEN_BG)
+            old["label"].configure(background=_NORM_BG if vis else _HIDDEN_BG)
 
         self._selected_idx = idx
 
-        # Apply new highlight
         if idx is not None and idx < len(self._rows):
             row = self._rows[idx]
             row["frame"].configure(background=_SEL_BG)
@@ -134,11 +146,99 @@ class CheckableListbox(tk.Frame):
         if fire_event:
             self.event_generate("<<ListboxSelect>>")
 
+    # ── Drag-to-reorder ───────────────────────────────────────────────
+    def _on_row_press(self, event, text):
+        """Button press on a row: select immediately + begin tracking drag."""
+        self._select_by_text(text)
+        idx = next((i for i, r in enumerate(self._rows) if r["text"] == text), None)
+        self._rdrag = {"idx": idx, "text": text,
+                       "start_y": event.y_root, "active": False,
+                       "target_idx": None, "target_top": True}
+
+    def _on_row_drag(self, event, text):
+        d = self._rdrag
+        if d is None or d["text"] != text:
+            return
+
+        if not d["active"]:
+            if abs(event.y_root - d["start_y"]) < 6:
+                return
+            d["active"] = True
+
+        # Find which row the cursor is over
+        target_idx = None
+        target_top = True
+        for i, r in enumerate(self._rows):
+            y0 = r["frame"].winfo_rooty()
+            h  = r["frame"].winfo_height()
+            if h > 0 and y0 <= event.y_root <= y0 + h:
+                target_idx = i
+                target_top = (event.y_root - y0) < h / 2
+                break
+
+        d["target_idx"] = target_idx
+        d["target_top"] = target_top
+
+        if target_idx is not None and target_idx != d["idx"]:
+            r = self._rows[target_idx]
+            ry = r["frame"].winfo_y()
+            rh = r["frame"].winfo_height()
+            rw = self._inner.winfo_width()
+            line_y = ry if target_top else ry + rh - 2
+            self._drop_line.place(x=0, y=line_y, width=rw, height=2)
+            self._drop_line.lift()
+        else:
+            self._drop_line.place_forget()
+
+    def _on_row_release(self, event, text):
+        self._drop_line.place_forget()
+        d = self._rdrag
+        self._rdrag = None
+        if d is None or not d["active"]:
+            return
+        from_idx   = d["idx"]
+        target_idx = d["target_idx"]
+        target_top = d["target_top"]
+        if target_idx is None or target_idx == from_idx:
+            return
+        self._do_reorder_rows(from_idx, target_idx, target_top)
+
+    def _do_reorder_rows(self, from_idx, target_idx, target_top):
+        # Note selected row text before reordering
+        sel_text = (self._rows[self._selected_idx]["text"]
+                    if self._selected_idx is not None and self._selected_idx < len(self._rows)
+                    else None)
+
+        row = self._rows.pop(from_idx)
+        if from_idx < target_idx:
+            target_idx -= 1
+        to_idx = target_idx if target_top else target_idx + 1
+        self._rows.insert(to_idx, row)
+
+        # Re-grid all rows
+        for i, r in enumerate(self._rows):
+            r["frame"].grid(row=i, column=0, sticky="ew", padx=1, pady=0)
+
+        # Restore selected_idx to follow the selected row
+        if sel_text is not None:
+            self._selected_idx = next(
+                (i for i, r in enumerate(self._rows) if r["text"] == sel_text), None)
+
+        if self._on_reorder is not None:
+            self._on_reorder([r["text"] for r in self._rows])
+
     # ── Public Listbox-compatible API ────────────────────────────────
-    def insert(self, _pos, text):
+    def clear(self):
+        """Remove all rows without firing any callbacks."""
+        for row in self._rows:
+            row["frame"].destroy()
+        self._rows.clear()
+        self._selected_idx = None
+
+    def insert(self, _pos, text, *, checked=True):
         """Append a new row (END is the only supported position)."""
         idx = len(self._rows)
-        row = self._build_row(idx, text)
+        row = self._build_row(idx, text, checked=checked)
         self._rows.append(row)
 
     def delete(self, idx):
@@ -147,13 +247,11 @@ class CheckableListbox(tk.Frame):
             return
         row = self._rows.pop(idx)
         row["frame"].destroy()
-        # Adjust selected index
         if self._selected_idx is not None:
             if self._selected_idx == idx:
                 self._selected_idx = None
             elif self._selected_idx > idx:
                 self._selected_idx -= 1
-        # Re-grid remaining rows
         for i, r in enumerate(self._rows):
             r["frame"].grid(row=i, column=0, sticky="ew", padx=1, pady=0)
 
@@ -187,5 +285,4 @@ class CheckableListbox(tk.Frame):
         if not self._rows or idx < 0 or idx >= len(self._rows):
             return
         total = len(self._rows)
-        # Scroll the canvas so the row is visible
         self._canvas.yview_moveto(idx / total)

@@ -128,7 +128,8 @@ class EISPanel(FileManagerMixin, ttk.Frame):
         flf = ttk.Frame(left)
         flf.pack(fill=tk.X, padx=4, pady=2)
         self.file_listbox = CheckableListbox(flf, height=5,
-                                             on_check=self._on_file_visibility_change)
+                                             on_check=self._on_file_visibility_change,
+                                             on_reorder=self._on_file_reorder)
         self.file_listbox.pack(fill=tk.X, expand=True)
         self.file_listbox.bind("<<ListboxSelect>>", self._on_file_select)
 

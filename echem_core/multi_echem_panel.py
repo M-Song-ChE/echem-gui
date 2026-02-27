@@ -67,6 +67,7 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         self._loading_files   = False
         self._cycle_vars      = {}
         self._zoom_file       = None
+        self._drag            = None   # drag-to-reorder state
         self._build_panel()
 
     # ════════════════════════════════════════════════════════════════
@@ -104,7 +105,8 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         flf = ttk.Frame(left)
         flf.pack(fill=tk.X, padx=4, pady=2)
         self.file_listbox = CheckableListbox(flf, height=4,
-                                             on_check=self._on_file_visibility_change)
+                                             on_check=self._on_file_visibility_change,
+                                             on_reorder=self._on_file_reorder)
         self.file_listbox.pack(fill=tk.X, expand=True)
         self.file_listbox.bind("<<ListboxSelect>>", self._on_file_select)
 
@@ -521,6 +523,9 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         for _c in range(2):
             self._plots_frame.columnconfigure(_c, weight=1, uniform="col")
 
+        # Drop indicator: a thin colored bar shown during drag-to-reorder
+        self._drop_line = tk.Frame(self._plots_frame, bg="#1a73e8", height=3)
+
         # Placeholder shown when no files are loaded (uses grid like everything else)
         self._placeholder = ttk.Label(
             self._plots_frame,
@@ -608,6 +613,11 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             self._activate_file(short)
         frame.bind("<Button-1>",    _activate, add="+")
         tb_frame.bind("<Button-1>", _activate, add="+")
+
+        # Drag on the LabelFrame border/title → reorder subplots
+        frame.bind("<ButtonPress-1>",   lambda e, s=short: self._on_frame_press(e, s),   add="+")
+        frame.bind("<B1-Motion>",       lambda e, s=short: self._on_frame_drag(e, s),    add="+")
+        frame.bind("<ButtonRelease-1>", lambda e, s=short: self._on_frame_release(e, s), add="+")
 
         # Per-figure matplotlib interactions
         canvas.mpl_connect("scroll_event",         lambda ev: self._on_scroll(ev, short))
@@ -700,6 +710,19 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
                 entry["ax"].set_xlim(entry["view_xlim"])
                 entry["ax"].set_ylim(entry["view_ylim"])
                 entry["canvas"].draw_idle()
+
+    def _on_file_reorder(self, new_order):
+        """Called when the file list is drag-reordered; rebuilds self.files and re-layouts."""
+        from collections import OrderedDict
+        new_files = OrderedDict()
+        for name in new_order:
+            if name in self.files:
+                new_files[name] = self.files[name]
+        for name, entry in self.files.items():
+            if name not in new_files:
+                new_files[name] = entry
+        self.files = new_files
+        self._relayout_figures()
 
     def _on_right_canvas_configure(self, event):
         """Keep the plots frame width in sync with the canvas; fill height when zoomed."""
@@ -1440,6 +1463,106 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
 
     def _selected_cycles(self):
         return [c for c, v in self._cycle_vars.items() if v.get()]
+
+    # ════════════════════════════════════════════════════════════════
+    # Drag-to-reorder: drag a subplot frame to change grid order
+    # ════════════════════════════════════════════════════════════════
+    def _on_frame_press(self, event, short):
+        self._drag = {
+            "short":      short,
+            "start_x":    event.x_root,
+            "start_y":    event.y_root,
+            "active":     False,
+            "target":     None,
+            "target_top": True,
+        }
+
+    def _on_frame_drag(self, event, short):
+        drag = self._drag
+        if drag is None or drag["short"] != short:
+            return
+        if not drag["active"]:
+            if abs(event.x_root - drag["start_x"]) + abs(event.y_root - drag["start_y"]) < 6:
+                return
+            drag["active"] = True
+            pf = self.files.get(short, {}).get("plot_frame")
+            if pf:
+                pf.configure(cursor="fleur")
+
+        # Detect which visible frame the cursor is over
+        target = None
+        target_top = True
+        for s, entry in self.files.items():
+            if s == short or entry.get("hidden"):
+                continue
+            pf = entry.get("plot_frame")
+            if pf is None:
+                continue
+            x0 = pf.winfo_rootx()
+            y0 = pf.winfo_rooty()
+            w  = pf.winfo_width()
+            h  = pf.winfo_height()
+            if x0 <= event.x_root <= x0 + w and y0 <= event.y_root <= y0 + h:
+                target = s
+                target_top = (event.y_root - y0) < h / 2
+                break
+        drag["target"]     = target
+        drag["target_top"] = target_top
+
+        # Move / show the drop-indicator line
+        if target is not None:
+            pf = self.files[target]["plot_frame"]
+            rx = pf.winfo_x()
+            ry = pf.winfo_y()
+            rw = pf.winfo_width()
+            rh = pf.winfo_height()
+            line_y = ry if target_top else ry + rh - 3
+            self._drop_line.place(x=rx, y=line_y, width=rw, height=3)
+            self._drop_line.lift()
+        else:
+            self._drop_line.place_forget()
+
+    def _on_frame_release(self, event, short):
+        drag = self._drag
+        self._drag = None
+        self._drop_line.place_forget()
+        pf = self.files.get(short, {}).get("plot_frame")
+        if pf and pf.winfo_exists():
+            pf.configure(cursor="")
+        if drag is None or not drag["active"]:
+            return
+        target = drag.get("target")
+        if target is None or target == short:
+            return
+        self._reorder_files(short, target, before=drag.get("target_top", True))
+
+    def _reorder_files(self, from_short, to_short, *, before=True):
+        """Move from_short to just before (or after) to_short in self.files."""
+        keys = list(self.files.keys())
+        if from_short not in keys or to_short not in keys:
+            return
+        keys.remove(from_short)
+        to_idx = keys.index(to_short)
+        keys.insert(to_idx if before else to_idx + 1, from_short)
+        self.files = OrderedDict((k, self.files[k]) for k in keys)
+        self._rebuild_listbox()
+        # Restore active-file highlight without triggering _on_file_select
+        if self.active_file in self.files:
+            idx = list(self.files.keys()).index(self.active_file)
+            self.file_listbox.selection_clear(0, tk.END)
+            self._loading_files = True
+            try:
+                self.file_listbox.selection_set(idx)
+            finally:
+                self._loading_files = False
+        self._relayout_figures()
+
+    def _rebuild_listbox(self):
+        """Rebuild CheckableListbox rows to match current self.files order."""
+        self.file_listbox.clear()
+        for short, entry in self.files.items():
+            self.file_listbox.insert(tk.END, short,
+                                     checked=not entry.get("hidden", False))
 
     # ════════════════════════════════════════════════════════════════
     # Click-to-select: clicking any plot selects that file

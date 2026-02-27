@@ -3,6 +3,7 @@
 import os
 import tkinter as tk
 from tkinter import filedialog, messagebox
+from collections import OrderedDict
 import pandas as pd
 
 
@@ -145,6 +146,19 @@ class FileManagerMixin:
         if short not in self.files:
             return
         self.files[short]["hidden"] = not visible
+        self._auto_replot()
+
+    def _on_file_reorder(self, new_order):
+        """Called when the file list is drag-reordered. Rebuilds self.files in new order."""
+        new_files = OrderedDict()
+        for name in new_order:
+            if name in self.files:
+                new_files[name] = self.files[name]
+        # Keep any entries not in new_order (safety)
+        for name, entry in self.files.items():
+            if name not in new_files:
+                new_files[name] = entry
+        self.files = new_files
         self._auto_replot()
 
     def _on_file_select(self, event):
