@@ -16,13 +16,13 @@ echem_gui/
     multi_echem_panel.py    ← MultiEchemPanel class (Multi E.Chem tab)
     ecsa_panel.py           ← ECSAPanel class (dedicated ECSA Calc tab)
     eis_panel.py            ← EISPanel class (Nyquist Plot tab)
-    file_manager.py         ← FileManagerMixin: load/remove/switch files; _default_xcol/_default_ycol helpers; _on_file_visibility_change
+    file_manager.py         ← FileManagerMixin: load/remove/switch files; _default_xcol/_default_ycol helpers; _on_file_visibility_change; _on_file_reorder (rebuilds files OrderedDict + _auto_replot)
     correction.py           ← CorrectionMixin: IR compensation + RHE conversion
     plotting.py             ← PlottingMixin: plot, zoom, pan, legend drag/resize, reset view, click-annotate; draw_reflines() helper
     ecsa.py                 ← ECSAMixin: legacy ECSA calc (used only by General E.Chem tab)
     export.py               ← ExportMixin: Excel export (raw + corrected sheets)
-    legend_editor.py        ← open_legend_editor(): blocking dialog — rename + ↑/↓ reorder legend entries; returns new legend (recreated when order changes, original when text-only)
-    checklist.py            ← CheckableListbox: tk.Frame subclass; [checkbox][label] rows; Listbox-compatible API (insert/delete/selection_set/curselection/get/size/see); fires <<ListboxSelect>> on label click and on_check(text, visible) on checkbox toggle; internal Canvas+Scrollbar; used by General/Multi/EIS tabs
+    legend_editor.py        ← open_legend_editor(): blocking dialog — rename + ⠿ drag-handle reorder legend entries; returns new legend (recreated when order changes, original when text-only)
+    checklist.py            ← CheckableListbox: tk.Frame subclass; [checkbox][⠿ handle][label] rows; Listbox-compatible API (insert/delete/selection_set/curselection/get/size/see); fires <<ListboxSelect>> on label click, on_check(text, visible) on checkbox toggle, and on_reorder(new_texts_list) after drag-to-reorder; ⠿ handle has cursor="fleur" + all drag bindings; row_frame and label have cursor="arrow" + selection only; internal Canvas+Scrollbar; used by General/Multi/EIS tabs (ECSA uses plain tk.Listbox)
 ```
 
 ## Architecture
@@ -48,7 +48,7 @@ Each panel is fully **independent**: its own `files` dict, `active_file`, figure
 ### MultiEchemPanel (Multi E.Chem)
 - Inherits: `FileManagerMixin, CorrectionMixin, ttk.Frame`
 - Left panel: shared axis/unit controls, plot range, reference electrode, IR/RHE correction, cycle checkboxes, legend options — all apply to the **active file only**
-- Right panel: scrollable canvas holding one `LabelFrame + Figure` per loaded file, arranged in a 2-column grid; figures remain visible simultaneously
+- Right panel: scrollable canvas holding one `tk.Frame + Figure` per loaded file, arranged in a 2-column grid; each frame has a blue-gray `⠿  {short}` header strip (`cursor="fleur"`) that serves as both a visual label and a drag handle for reordering; figures remain visible simultaneously
 - **Click-to-select**: clicking anywhere on a file's plot or toolbar frame calls `_activate_file(short)`, which updates the listbox selection and switches the left panel to that file
 - **J virtual column**: per-file check — "J" appears in column comboboxes only when the active file has area > 0; each file's J is computed with its own stored area
 - **Per-file view preservation**: `_save_active_state` saves each file's `ax.get_xlim()/get_ylim()` to `entry["view_xlim"/"view_ylim"]`; `_switch_active_file` restores them after replot
@@ -115,7 +115,7 @@ Each panel is fully **independent**: its own `files` dict, `active_file`, figure
 ## Key Features
 
 ### General E.Chem tab
-1. **Multi-file support** — load multiple `.txt` files, manage in CheckableListbox, overlay on single plot; checkbox hides/shows a file's contribution without losing any settings (cycles, corrections, zoom, colors, etc.)
+1. **Multi-file support** — load multiple `.txt` files, manage in CheckableListbox, overlay on single plot; checkbox hides/shows a file's contribution without losing any settings (cycles, corrections, zoom, colors, etc.); ⠿ drag handle in each row reorders files (fires `_on_file_reorder`)
 2. **Axis selectors + unit dropdowns** — X and Y each have a column selector and a unit combobox with dimension-aware filtering (I/E/t/J families)
 3. **J (current density) column** — virtual column; requires all files to have area > 0; computes I/area per file at plot time; density unit range: A/cm², mA/cm², µA/cm², nA/cm²
 4. **Unit conversion** — `_get_axis_unit_scale(col, target)` returns `(scale_factor, display_label)`; label format is `col (unit)` e.g. `I (mA)`, `Ewe (V)`
@@ -126,8 +126,10 @@ Each panel is fully **independent**: its own `files` dict, `active_file`, figure
 9. **Auto-replot** — updates on cycle selection, correction, file switch; suppressed during load
 10. **Plot range** — blank = auto; triggers replot on Return / FocusOut
 11. **Cycle checkboxes** — 9-column grid, scrollable, "Select All / Deselect All"
-12. **Legend controls** — show/hide, frame toggle, font size, location, "Edit Labels" dialog (blocking; drag disabled during edit), drag to move, right-drag to resize; **double-click on legend** opens the same editor; dialog supports both rename and ↑/↓ reorder; text-only edits preserve drag position, reorder recreates the legend
+12. **Legend controls** — show/hide, frame toggle, font size, location, "Edit Labels" dialog (blocking; drag disabled during edit), drag to move, right-drag to resize; **double-click on legend** opens the same editor; dialog supports both rename and ⠿ drag-handle reorder; text-only edits preserve drag position, reorder recreates the legend
 13. **Per-file zoom/pan preservation** — switching files restores each file's last view state
+20. **Flip X / Flip Y** — `x_flip_var` / `y_flip_var` BooleanVars; applied at end of `_apply_axis_range()` via `ax.set_xlim/ylim` reversal; fire `_auto_replot` on toggle
+21. **Swap X↔Y** — `_swap_xy` closure swaps x_var↔y_var, x_unit_var↔y_unit_var, x_min/max↔y_min/max, x_flip↔y_flip; suppresses first `_refresh_unit_opts` replot to avoid double replot
 14. **Mouse interactions** (PlottingMixin): scroll = zoom, left-drag = pan, left-click = annotate (switches active file), right-click = dismiss
 15. **Reference lines** — add X (vertical) or Y (horizontal) dashed guide lines at typed values; each line has its own style (dashed/dotted/solid/dash-dot) and color; managed via listbox + Remove; selecting a line loads its style/color into the dropdowns for individual editing; panel-level (shared across all overlaid files)
 16. **Excel export** — active file only; "Raw" and "Corrected" sheets, cycles side-by-side
@@ -136,13 +138,15 @@ Each panel is fully **independent**: its own `files` dict, `active_file`, figure
 19. **Editable plot title** — double-click anywhere in the title strip (above the top spine) to open a rename dialog; title persists across replots
 
 ### Multi E.Chem tab
-1. **One plot per file** — each loaded file gets its own labelled figure; CheckableListbox checkbox hides/shows a file's subplot in the grid without losing settings; zoom/pan state is preserved across hide/unhide
+1. **One plot per file** — each loaded file gets its own figure with a blue-gray ⠿ drag-handle header strip; CheckableListbox checkbox hides/shows a file's subplot in the grid without losing settings; zoom/pan state is preserved across hide/unhide; both the file list ⠿ handle and the subplot header strip support drag-to-reorder (file list fires `_on_file_reorder` which calls `_relayout_figures`; subplot drag calls `_on_frame_press/drag/release` directly)
 2. **Per-file settings** — axis columns, units, plot range, reference electrode, IR/RHE correction, cycle selection, legend options all independent per file
 3. **J (current density) column** — per-file check: "J" added to combos only when active file has area > 0
 4. **Click-to-select** — clicking any plot or its toolbar selects that file in the listbox and updates left controls
 5. **Per-file zoom/pan preservation** — switching files or clicking plots restores each file's last view state
 6. **Shared axis/unit UI** — left controls show settings of the currently active (selected) file only
-7. **Legend controls** — per-file show/hide, frame, size, location; legend draggable and font-resizable; "Edit Labels" / double-click-on-legend dialog (blocking; drag disabled during edit); supports rename + ↑/↓ reorder
+7. **Legend controls** — per-file show/hide, frame, size, location; legend draggable and font-resizable; "Edit Labels" / double-click-on-legend dialog (blocking; drag disabled during edit); supports rename + ⠿ drag-handle reorder
+12. **Flip X / Flip Y** — per-file `x_flip`/`y_flip` saved in entry dict; active file uses vars, non-active files read from `entry.get("x_flip/y_flip", False)` during full relayout
+13. **Swap X↔Y** — same `_swap_xy` pattern as General tab; per-file state saved/restored
 8. **Reference lines** — per-file X/Y guide lines; each line carries its own style and color; listbox refreshes when switching files
 9. **File colors** — per-file base color from palette; overridable via "Color:" combobox
 10. **Cycle color gradient** — per-file gradient/reverse/step settings; same UX as General tab
@@ -165,15 +169,19 @@ Each panel is fully **independent**: its own `files` dict, `active_file`, figure
 13. **File colors** — per-file base color from palette; overridable via "Color:" combobox; applies to CV cycles
 14. **Cycle color gradient** — per-file gradient/reverse/step settings; gradient applied to CV cycles only; Cdl scatter/fit plot remains fixed colors (steelblue/tomato)
 15. **Editable plot titles** — double-click the title strip on either the CV or Cdl plot to rename it
+16. **Flip X / Flip Y** — `x_flip_var` / `y_flip_var` on CV plot; applied in `_apply_cv_range()`; fire `_plot_cv()` on toggle
+17. **Swap X↔Y** — `_swap_xy` closure swaps all CV axis state; calls `_refresh_unit_opts` + `_plot_cv()`
 
 ### Nyquist Plot tab
-1. **EIS / impedance data** — loads tab-separated `.txt` files with Re(Z) and -Im(Z) columns; CheckableListbox checkbox hides/shows individual file traces
+1. **EIS / impedance data** — loads tab-separated `.txt` files with Re(Z) and -Im(Z) columns; CheckableListbox checkbox hides/shows individual file traces; ⠿ drag handle reorders files
 2. **Axis selectors + unit dropdowns** — X and Y each independently configurable
 3. **Multi-file overlay** — all loaded files shown on a single Nyquist plot; each file uses its auto-assigned palette color and unique marker shape from `entry["color"]` / `entry["marker"]`
 4. **Connect lines toggle** — show/hide connecting line between data points
 5. **Show markers toggle** — show/hide point markers
 6. **Per-file zoom/pan preservation** — same mechanism as other tabs
 7. **Editable plot title** — double-click the title strip to rename
+8. **Flip X / Flip Y** — `x_flip_var` / `y_flip_var`; applied in `_apply_range()`; fire `self._plot()` on toggle
+9. **Swap X↔Y** — `_swap_xy` closure; no unit-refresh needed (both axes use ohm-family units); calls `self._plot()` directly
 
 ## ECSA Physics (Cdl extraction)
 ```
@@ -285,7 +293,7 @@ git rm --cached <file>      # unstage without deleting the local file
 - **View preservation timing** — in ECSAPanel, Cdl view is restored immediately after `_replot_cdl()`, CV view after `_auto_replot()`; order matters since both draw to canvas
 - **Area var in file_manager** — `_save_active_state` and `_switch_active_file` handle `area_var` via `getattr(self, "area_var", None)` so panels without it are unaffected
 - **CorrectionMixin column names** — `_apply_correction` looks for `"Ewe/V"` and `"I/mA"`; silently no-ops if columns absent (since recent cleanup of correction.py)
-- **`open_legend_editor` returns the legend object** — if the entry order changed, the legend is recreated via `ax.legend(handles, labels, ...)` and the new object is returned; if only text changed, the original object is returned (Text objects updated in-place to preserve drag position). All callers must assign the return value: `self._legend_obj = open_legend_editor(...)`. The old legend ref is stale after recreation.
+- **`open_legend_editor` returns the legend object** — if the entry order changed, the legend is recreated via `ax.legend(handles, labels, ...)` and the new object is returned; if only text changed, the original object is returned (Text objects updated in-place to preserve drag position). All callers must assign the return value: `self._legend_obj = open_legend_editor(...)`. The old legend ref is stale after recreation. The dialog uses ⠿ drag handles (not ↑/↓ buttons) — `_on_press/_on_drag/_on_release` handlers, `drop_line` indicator, same pattern as `CheckableListbox`.
 - **`open_legend_editor` must be blocking** — uses `dlg.grab_set()` + `parent.wait_window(dlg)`; without `wait_window`, the function returns immediately and matplotlib's `DraggableLegend` handler stays in "dragging" state (never receives button_release); always call `legend.set_draggable(False)` before opening and re-enable after
 - **`draw_reflines` tuple format** — each entry is a 4-tuple `('x'|'y', float, style, color)`; style is a key into `_GRID_STYLE_MAP`; labels start with `'_'` so they are excluded from the legend automatically; call after `_apply_axis_range()` / `_apply_range()` so reflines don't perturb autoscaling; call before `apply_grid()` / `canvas.draw()`
 - **ECSAPanel `_auto_xlim_cdl` / `_auto_ylim_cdl`** — only set after `canvas_cdl.draw()` completes inside `_replot_cdl` and `_extract_cdl_ecsa`; if either function crashes before that point, the reset-view button will silently do nothing (value stays `None`)
@@ -294,6 +302,9 @@ git rm --cached <file>      # unstage without deleting the local file
 - **`file_manager` palette constants** — `_COLOR_NAMES`, `_COLOR_HEX`, `_PALETTE`, `_MARKERS` defined at module level; imported by panel files that need the hex mapping for color name → hex conversion in `_on_file_color_change` and `_switch_active_file`
 - **`_default_xcol(cols)` / `_default_ycol(cols, x_col)`** — module-level helpers in `file_manager.py`; scan column names for voltage-like (`ewe`, `ece`, `potential`, `voltage`, starts with `e/`, ends with `/v` but not `mv`/`µv`/`nv`) and current-like (`starts with i/`, `i/ma`, `i/a`, `i/µa`, `current`) patterns; fall back to `cols[1]`/`cols[2]` if no match; used by base `_switch_active_file` and imported by Multi/ECSA panels
 - **`CheckableListbox` hide/show guard** — `_on_file_visibility_change` is defined in `FileManagerMixin` (calls `_auto_replot`) and overridden in `MultiEchemPanel` (also snapshots/restores per-file zoom); ECSA Calc does NOT override it and does NOT use `CheckableListbox`, so `hidden` flag is never set in that panel
+- **`_on_file_reorder` pattern** — base in `FileManagerMixin`: rebuild `self.files` as a new `OrderedDict` in new order (iterate `new_order`, fallback for any missing names), then call `_auto_replot()`. Override in `MultiEchemPanel`: same rebuild but call `_relayout_figures()` instead (figure objects already exist; no need to replot all data).
+- **Flip X/Y implementation** — after `ax.set_xlim/ylim(lo, hi)`, check `xl = ax.get_xlim(); xl[0] > xl[1]` to detect current direction; toggle with `ax.set_xlim(xl[1], xl[0])` only when `flip_var.get() != (xl[0] > xl[1])`. In Multi E.Chem, non-active files read from `entry.get("x_flip/y_flip", False)` instead of the UI var.
+- **Swap X↔Y double-replot prevention** — `_refresh_unit_opts` calls `_auto_replot` internally; set `_suppress_replot = True` before first call and `False` before second so only the second triggers a replot
 - **Multi E.Chem zoom preservation on hide/unhide** — snapshot is taken from `entry["ax"].get_xlim/ylim()` only when `not ae.get("hidden")` to avoid clobbering the saved zoom with the 0–1 range that appears when axes are cleared
 - **Title dblclick detection** — `PlottingMixin._hit_title_area(event, ax, fig)` static method checks both: (a) `ax.title.get_window_extent(renderer).contains(event.x, event.y)` for when title text is visible, and (b) the horizontal strip `ax_bbox.y1 ≤ event.y ≤ fig_bbox.y1` for when title is empty; check is performed **before** the `event.inaxes` guard since the title strip is outside the axes bounding box
 - **Multi E.Chem zoom bar placement** — `right_outer` uses `grid` manager (not `pack`) so the zoom bar row reliably collapses to zero height via `grid_remove()` and appears at the top before the canvas row; mixing `pack` and `grid` on siblings of the same parent is an error in tkinter
