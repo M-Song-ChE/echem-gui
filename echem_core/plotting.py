@@ -44,7 +44,8 @@ def _cycle_colors(base_color, n, step=0.08, reverse=False):
     return colors
 
 
-def apply_grid(ax, x_grid, y_grid, x_interval, y_interval, style="dashed"):
+def apply_grid(ax, x_grid, y_grid, x_interval, y_interval, style="dashed",
+               linewidth=0.8, color="gray"):
     """Apply X/Y grid lines to *ax* with optional fixed tick interval.
 
     Parameters
@@ -55,9 +56,15 @@ def apply_grid(ax, x_grid, y_grid, x_interval, y_interval, style="dashed"):
     x_interval : str or float – tick spacing for X; 0 or blank = auto
     y_interval : str or float – tick spacing for Y; 0 or blank = auto
     style      : one of "solid", "dashed", "dotted", "dash-dot"
+    linewidth  : grid line width (default 0.8)
+    color      : grid line color (default "gray")
     """
     from matplotlib.ticker import MultipleLocator, AutoLocator
     ls = _GRID_STYLE_MAP.get(style, "--")
+    try:
+        lw = float(linewidth)
+    except (ValueError, TypeError):
+        lw = 0.8
     ax.xaxis.set_major_locator(AutoLocator())
     ax.yaxis.set_major_locator(AutoLocator())
     ax.grid(False)
@@ -69,7 +76,7 @@ def apply_grid(ax, x_grid, y_grid, x_interval, y_interval, style="dashed"):
         except (ValueError, TypeError):
             pass
         ax.grid(True, axis="x", which="major", linestyle=ls,
-                alpha=0.4, color="gray", linewidth=0.8)
+                alpha=0.4, color=color, linewidth=lw)
     if y_grid:
         try:
             yi = float(y_interval)
@@ -78,24 +85,29 @@ def apply_grid(ax, x_grid, y_grid, x_interval, y_interval, style="dashed"):
         except (ValueError, TypeError):
             pass
         ax.grid(True, axis="y", which="major", linestyle=ls,
-                alpha=0.4, color="gray", linewidth=0.8)
+                alpha=0.4, color=color, linewidth=lw)
 
 
 def draw_reflines(ax, reflines):
     """Draw vertical (X) and horizontal (Y) reference lines on ax.
 
-    reflines = list of ('x'|'y', float, style, color) tuples.
-    Each line carries its own style and color.  Labels start with '_' so
-    they are excluded from the legend automatically.
+    reflines = list of ('x'|'y', float, style, color[, linewidth]) tuples.
+    linewidth is optional (defaults to 1.0 for backward compatibility).
+    Labels start with '_' so they are excluded from the legend automatically.
     """
-    for axis, val, style, color in reflines:
+    for entry in reflines:
+        axis, val, style, color = entry[:4]
+        try:
+            lw = float(entry[4]) if len(entry) > 4 else 1.0
+        except (ValueError, TypeError):
+            lw = 1.0
         ls = _GRID_STYLE_MAP.get(style, '--')
         if axis == 'x':
             ax.axvline(val, color=color, linestyle=ls,
-                       linewidth=1.0, alpha=0.7, label='_xref')
+                       linewidth=lw, alpha=0.7, label='_xref')
         else:
             ax.axhline(val, color=color, linestyle=ls,
-                       linewidth=1.0, alpha=0.7, label='_yref')
+                       linewidth=lw, alpha=0.7, label='_yref')
 
 
 class PlottingMixin:
@@ -591,6 +603,8 @@ class PlottingMixin:
 
         _xgv = getattr(self, 'x_grid_var', None)
         if _xgv is not None:
+            _glw_v = getattr(self, 'grid_linewidth_var', None)
+            _gcol_v = getattr(self, 'grid_color_var', None)
             apply_grid(
                 self.ax,
                 _xgv.get(),
@@ -598,6 +612,8 @@ class PlottingMixin:
                 getattr(self, 'x_grid_int_var').get(),
                 getattr(self, 'y_grid_int_var').get(),
                 getattr(self, 'grid_style_var').get(),
+                linewidth=_glw_v.get() if _glw_v else "0.8",
+                color=_gcol_v.get() if _gcol_v else "gray",
             )
 
         self.canvas.draw()

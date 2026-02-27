@@ -318,8 +318,23 @@ class EISPanel(FileManagerMixin, ttk.Frame):
         _gscb = ttk.Combobox(grid_style_row, textvariable=self.grid_style_var,
                               values=["dashed", "dotted", "solid", "dash-dot"],
                               state="readonly", width=9)
-        _gscb.pack(side=tk.LEFT, padx=4)
+        _gscb.pack(side=tk.LEFT, padx=(2, 6))
         _gscb.bind("<<ComboboxSelected>>", lambda e: self._auto_replot())
+        ttk.Label(grid_style_row, text="Color:").pack(side=tk.LEFT)
+        self.grid_color_var = tk.StringVar(value="gray")
+        _gcol_cb = ttk.Combobox(grid_style_row, textvariable=self.grid_color_var,
+                                 values=["gray", "black", "red", "blue", "green",
+                                         "orange", "purple", "crimson", "royalblue",
+                                         "darkorange", "teal"],
+                                 state="readonly", width=9)
+        _gcol_cb.pack(side=tk.LEFT, padx=(2, 6))
+        _gcol_cb.bind("<<ComboboxSelected>>", lambda e: self._auto_replot())
+        ttk.Label(grid_style_row, text="Width:").pack(side=tk.LEFT)
+        self.grid_linewidth_var = tk.StringVar(value="0.8")
+        _glw = ttk.Entry(grid_style_row, textvariable=self.grid_linewidth_var, width=4)
+        _glw.pack(side=tk.LEFT, padx=(2, 0))
+        _glw.bind("<Return>",   lambda e: self._auto_replot())
+        _glw.bind("<FocusOut>", lambda e: self._auto_replot())
 
         # ── Reference Lines ───────────────────────────────────────
         ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
@@ -367,11 +382,17 @@ class EISPanel(FileManagerMixin, ttk.Frame):
                                             "orange", "purple", "crimson", "royalblue",
                                             "darkorange", "teal", "saddlebrown"],
                                     state="readonly", width=10)
-        _rl_color_cb.pack(side=tk.LEFT, padx=2)
+        _rl_color_cb.pack(side=tk.LEFT, padx=(2, 6))
+        ttk.Label(ref_opt_row, text="Width:").pack(side=tk.LEFT)
+        self._refline_linewidth_var = tk.StringVar(value="1.0")
+        _rl_lw = ttk.Entry(ref_opt_row, textvariable=self._refline_linewidth_var, width=4)
+        _rl_lw.pack(side=tk.LEFT, padx=(2, 0))
         _rl_style_cb.bind("<<ComboboxSelected>>",
                           lambda e: self._on_refline_style_color_change())
         _rl_color_cb.bind("<<ComboboxSelected>>",
                           lambda e: self._on_refline_style_color_change())
+        _rl_lw.bind("<Return>",   lambda e: self._on_refline_style_color_change())
+        _rl_lw.bind("<FocusOut>", lambda e: self._on_refline_style_color_change())
 
         # ── Plot button ───────────────────────────────────────────
         ttk.Button(left, text="Plot",
@@ -542,6 +563,8 @@ class EISPanel(FileManagerMixin, ttk.Frame):
         entry["x_grid_int"]    = self.x_grid_int_var.get()
         entry["y_grid_int"]    = self.y_grid_int_var.get()
         entry["grid_style"]    = self.grid_style_var.get()
+        entry["grid_color"]     = self.grid_color_var.get()
+        entry["grid_linewidth"] = self.grid_linewidth_var.get()
         # Persist current view so it can be restored after a file switch
         entry["view_xlim"] = self.ax.get_xlim()
         entry["view_ylim"] = self.ax.get_ylim()
@@ -572,6 +595,8 @@ class EISPanel(FileManagerMixin, ttk.Frame):
         entry.setdefault("x_grid_int",    "0")
         entry.setdefault("y_grid_int",    "0")
         entry.setdefault("grid_style",    "dashed")
+        entry.setdefault("grid_color",     "gray")
+        entry.setdefault("grid_linewidth", "0.8")
         entry.setdefault("reflines",      [])
 
         cols = list(df.columns)
@@ -633,6 +658,8 @@ class EISPanel(FileManagerMixin, ttk.Frame):
         self.x_grid_int_var.set(entry["x_grid_int"])
         self.y_grid_int_var.set(entry["y_grid_int"])
         self.grid_style_var.set(entry["grid_style"])
+        self.grid_color_var.set(entry["grid_color"])
+        self.grid_linewidth_var.set(entry["grid_linewidth"])
 
         self._suppress_replot = old
 
@@ -733,6 +760,8 @@ class EISPanel(FileManagerMixin, ttk.Frame):
             self.x_grid_var.get(), self.y_grid_var.get(),
             self.x_grid_int_var.get(), self.y_grid_int_var.get(),
             self.grid_style_var.get(),
+            linewidth=self.grid_linewidth_var.get(),
+            color=self.grid_color_var.get(),
         )
 
         if show_leg and has_data:
@@ -1048,8 +1077,9 @@ class EISPanel(FileManagerMixin, ttk.Frame):
             return
         style = self._refline_style_var.get()
         color = self._refline_color_var.get()
+        lw    = self._refline_linewidth_var.get()
         self.files[self.active_file].setdefault("reflines", []).append(
-            ("x", v, style, color))
+            ("x", v, style, color, lw))
         self._reflines_lb.insert(tk.END, f"X = {v:.4g}")
         self._auto_replot()
 
@@ -1062,8 +1092,9 @@ class EISPanel(FileManagerMixin, ttk.Frame):
             return
         style = self._refline_style_var.get()
         color = self._refline_color_var.get()
+        lw    = self._refline_linewidth_var.get()
         self.files[self.active_file].setdefault("reflines", []).append(
-            ("y", v, style, color))
+            ("y", v, style, color, lw))
         self._reflines_lb.insert(tk.END, f"Y = {v:.4g}")
         self._auto_replot()
 
@@ -1080,8 +1111,8 @@ class EISPanel(FileManagerMixin, ttk.Frame):
         self._reflines_lb.delete(0, tk.END)
         if not self.active_file:
             return
-        for axis, val, _, _ in (self.files.get(self.active_file, {})
-                                 .get("reflines", [])):
+        for axis, val, *_ in (self.files.get(self.active_file, {})
+                               .get("reflines", [])):
             self._reflines_lb.insert(
                 tk.END, f"{'X' if axis == 'x' else 'Y'} = {val:.4g}")
 
@@ -1092,9 +1123,10 @@ class EISPanel(FileManagerMixin, ttk.Frame):
         reflines = self.files.get(self.active_file, {}).get("reflines", [])
         if sel[0] >= len(reflines):
             return
-        _, _, style, color = reflines[sel[0]]
-        self._refline_style_var.set(style)
-        self._refline_color_var.set(color)
+        entry = reflines[sel[0]]
+        self._refline_style_var.set(entry[2])
+        self._refline_color_var.set(entry[3])
+        self._refline_linewidth_var.set(str(entry[4]) if len(entry) > 4 else "1.0")
 
     def _on_refline_style_color_change(self):
         sel = self._reflines_lb.curselection()
@@ -1104,8 +1136,9 @@ class EISPanel(FileManagerMixin, ttk.Frame):
         idx = sel[0]
         if idx >= len(reflines):
             return
-        axis, val, _, _ = reflines[idx]
+        axis, val = reflines[idx][:2]
         reflines[idx] = (axis, val,
                          self._refline_style_var.get(),
-                         self._refline_color_var.get())
+                         self._refline_color_var.get(),
+                         self._refline_linewidth_var.get())
         self._auto_replot()
