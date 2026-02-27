@@ -556,6 +556,11 @@ class PlottingMixin:
         ylabel = f"{y_label}  (vs {ref_text})" if (ref_text and _y_is_V) else y_label
         self.ax.set_ylabel(ylabel)
 
+        # Restore user-set plot title (persists across ax.clear() calls)
+        _title_var = getattr(self, "plot_title_var", None)
+        if _title_var is not None:
+            self.ax.set_title(_title_var.get())
+
         # Store auto-scaled limits before user overrides
         self.fig.tight_layout()
         self.canvas.draw()
@@ -658,6 +663,10 @@ class PlottingMixin:
         if new_title is not None:
             self.ax.set_title(new_title)
             self.canvas.draw_idle()
+            # Sync back to the left-panel title entry if present
+            _title_var = getattr(self, "plot_title_var", None)
+            if _title_var is not None:
+                _title_var.set(new_title)
 
     # ── Axis range helper ───────────────────────────────────────────
     def _apply_axis_range(self):

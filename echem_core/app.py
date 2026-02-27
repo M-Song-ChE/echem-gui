@@ -302,6 +302,21 @@ class EchemPanel(
         ttk.Checkbutton(flip_row, text="Flip Y", variable=self.y_flip_var,
                         command=self._auto_replot).pack(side=tk.LEFT)
 
+        # Plot title
+        title_row = ttk.Frame(left)
+        title_row.pack(fill=tk.X, padx=4, pady=(2, 2))
+        ttk.Label(title_row, text="Title:").pack(side=tk.LEFT)
+        self.plot_title_var = tk.StringVar()
+        _title_entry = ttk.Entry(title_row, textvariable=self.plot_title_var)
+        _title_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
+
+        def _on_title_change(e=None):
+            self.ax.set_title(self.plot_title_var.get())
+            self.canvas.draw_idle()
+
+        _title_entry.bind("<Return>",   _on_title_change)
+        _title_entry.bind("<FocusOut>", _on_title_change)
+
         # Legend
         ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
         ttk.Label(left, text="Legend", font=("", 9, "bold")).pack(anchor=tk.W, padx=4)
