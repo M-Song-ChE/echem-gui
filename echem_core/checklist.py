@@ -1,8 +1,8 @@
 """CheckableListbox — a Listbox-compatible widget with per-row checkboxes.
 
-Each row shows  [checkbox]  [filename label].
+Each row shows  [checkbox]  [⠿ handle]  [filename label].
 Clicking the checkbox toggles visibility and fires on_check(text, visible).
-Clicking/dragging the label selects the file and fires <<ListboxSelect>>;
+Clicking/dragging the handle or label selects the file and fires <<ListboxSelect>>;
 dragging also reorders rows and fires on_reorder(new_texts_list).
 
 Public API (mirrors tk.Listbox):
@@ -20,9 +20,9 @@ Public API (mirrors tk.Listbox):
 import tkinter as tk
 from tkinter import ttk
 
-_SEL_BG   = "#cce8ff"   # selected-row highlight
-_NORM_BG  = "white"     # normal row background
-_HIDDEN_BG = "#f0f0f0"  # dimmed background for hidden files
+_SEL_BG    = "#cce8ff"   # selected-row highlight
+_NORM_BG   = "white"     # normal row background
+_HIDDEN_BG = "#f0f0f0"   # dimmed background for hidden files
 
 
 class CheckableListbox(tk.Frame):
@@ -39,9 +39,9 @@ class CheckableListbox(tk.Frame):
         super().__init__(master, **kw)
         self._on_check   = on_check
         self._on_reorder = on_reorder
-        self._rows       = []           # list of dicts: {text, var, frame, cb, label}
+        self._rows       = []   # list of dicts: {text, var, frame, handle, cb, label}
         self._selected_idx = None
-        self._rdrag      = None         # drag-to-reorder state
+        self._rdrag      = None   # drag-to-reorder state
 
         # ── Internal canvas + scrollbar ──────────────────────────────
         self._canvas = tk.Canvas(self, background=_NORM_BG,
@@ -78,7 +78,7 @@ class CheckableListbox(tk.Frame):
     def _build_row(self, idx, text, *, checked=True):
         """Create the widgets for one row at position *idx* and return the row dict."""
         init_bg = _NORM_BG if checked else _HIDDEN_BG
-        row_frame = tk.Frame(self._inner, background=init_bg, cursor="arrow")
+        row_frame = tk.Frame(self._inner, background=init_bg, cursor="fleur")
         row_frame.grid(row=idx, column=0, sticky="ew", padx=1, pady=0)
         self._inner.columnconfigure(0, weight=1)
 
@@ -88,26 +88,38 @@ class CheckableListbox(tk.Frame):
         cb = ttk.Checkbutton(row_frame, variable=var)
         cb.pack(side=tk.LEFT, padx=(2, 0))
 
+        # ⠿ drag handle — obvious visual affordance
+        handle = tk.Label(row_frame, text="⠿", background=init_bg,
+                          cursor="fleur", font=("", 11))
+        handle.pack(side=tk.LEFT, padx=(3, 0))
+
         label = tk.Label(row_frame, text=text, anchor=tk.W,
-                         background=init_bg, cursor="arrow")
+                         background=init_bg, cursor="fleur")
         label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(2, 4))
 
-        row = {"text": text, "var": var, "frame": row_frame, "cb": cb, "label": label}
+        row = {"text": text, "var": var, "frame": row_frame,
+               "handle": handle, "cb": cb, "label": label}
 
         # Checkbox toggle fires on_check
         var.trace_add("write", lambda *_: self._on_var_write(text, var))
 
-        # Clicking/dragging the label or row_frame: select + drag-to-reorder
-        for widget in (label, row_frame):
+        # Clicking/dragging the handle, label, or row_frame background → select + reorder
+        for widget in (handle, label, row_frame):
             widget.bind("<Button-1>",        lambda e, t=text: self._on_row_press(e, t))
             widget.bind("<B1-Motion>",       lambda e, t=text: self._on_row_drag(e, t))
             widget.bind("<ButtonRelease-1>", lambda e, t=text: self._on_row_release(e, t))
 
         # Forward wheel events from every row widget
-        for widget in (cb, label, row_frame):
+        for widget in (cb, handle, label, row_frame):
             widget.bind("<MouseWheel>", self._on_wheel)
 
         return row
+
+    # ── Background helpers ────────────────────────────────────────────
+    def _set_row_bg(self, row, bg):
+        row["frame"].configure(background=bg)
+        row["handle"].configure(background=bg)
+        row["label"].configure(background=bg)
 
     # ── Checkbox callback ─────────────────────────────────────────────
     def _on_var_write(self, text, var):
@@ -119,8 +131,7 @@ class CheckableListbox(tk.Frame):
             return
         is_sel = (self._rows.index(row) == self._selected_idx)
         bg = _SEL_BG if is_sel else (_NORM_BG if visible else _HIDDEN_BG)
-        row["frame"].configure(background=bg)
-        row["label"].configure(background=bg)
+        self._set_row_bg(row, bg)
 
     # ── Selection ─────────────────────────────────────────────────────
     def _select_by_text(self, text):
@@ -133,15 +144,12 @@ class CheckableListbox(tk.Frame):
         if self._selected_idx is not None and self._selected_idx < len(self._rows):
             old = self._rows[self._selected_idx]
             vis = old["var"].get()
-            old["frame"].configure(background=_NORM_BG if vis else _HIDDEN_BG)
-            old["label"].configure(background=_NORM_BG if vis else _HIDDEN_BG)
+            self._set_row_bg(old, _NORM_BG if vis else _HIDDEN_BG)
 
         self._selected_idx = idx
 
         if idx is not None and idx < len(self._rows):
-            row = self._rows[idx]
-            row["frame"].configure(background=_SEL_BG)
-            row["label"].configure(background=_SEL_BG)
+            self._set_row_bg(self._rows[idx], _SEL_BG)
 
         if fire_event:
             self.event_generate("<<ListboxSelect>>")
@@ -161,7 +169,7 @@ class CheckableListbox(tk.Frame):
             return
 
         if not d["active"]:
-            if abs(event.y_root - d["start_y"]) < 6:
+            if abs(event.y_root - d["start_y"]) < 4:
                 return
             d["active"] = True
 
@@ -183,9 +191,9 @@ class CheckableListbox(tk.Frame):
             r = self._rows[target_idx]
             ry = r["frame"].winfo_y()
             rh = r["frame"].winfo_height()
-            rw = self._inner.winfo_width()
             line_y = ry if target_top else ry + rh - 2
-            self._drop_line.place(x=0, y=line_y, width=rw, height=2)
+            # relwidth=1.0 fills the parent (_inner) width robustly
+            self._drop_line.place(x=0, y=line_y, relwidth=1.0, height=2)
             self._drop_line.lift()
         else:
             self._drop_line.place_forget()
