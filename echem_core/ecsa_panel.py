@@ -33,6 +33,7 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 
 from .file_manager import FileManagerMixin, _COLOR_NAMES, _COLOR_HEX, _default_xcol, _default_ycol
+from .checklist import CheckableListbox
 from .correction import CorrectionMixin
 from .plotting import apply_grid, draw_reflines, _cycle_colors
 from .legend_editor import open_legend_editor
@@ -105,11 +106,9 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         ttk.Button(fb, text="Remove",       command=self._remove_file).pack(side=tk.LEFT)
         flf = ttk.Frame(left)
         flf.pack(fill=tk.X, padx=4, pady=2)
-        self.file_listbox = tk.Listbox(flf, height=4, selectmode=tk.BROWSE, exportselection=False)
-        fl_sc = ttk.Scrollbar(flf, orient=tk.VERTICAL, command=self.file_listbox.yview)
-        self.file_listbox.configure(yscrollcommand=fl_sc.set)
-        self.file_listbox.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        fl_sc.pack(side=tk.RIGHT, fill=tk.Y)
+        self.file_listbox = CheckableListbox(flf, height=4, show_checkboxes=False,
+                                             on_reorder=self._on_file_reorder)
+        self.file_listbox.pack(fill=tk.X, expand=True)
         self.file_listbox.bind("<<ListboxSelect>>", self._on_file_select)
 
         # ── File Color ────────────────────────────────────────────────
@@ -894,6 +893,17 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
     # ════════════════════════════════════════════════════════════════
     # FileManagerMixin overrides
     # ════════════════════════════════════════════════════════════════
+    def _on_file_reorder(self, new_order):
+        """Rebuild self.files in the dragged order (no replot needed — ECSA shows one file)."""
+        new_files = OrderedDict()
+        for name in new_order:
+            if name in self.files:
+                new_files[name] = self.files[name]
+        for name, entry in self.files.items():
+            if name not in new_files:
+                new_files[name] = entry
+        self.files = new_files
+
     def _clear_plot(self):
         """Clear both plots when all files are removed."""
         self._ei_clear_ann(redraw=False)

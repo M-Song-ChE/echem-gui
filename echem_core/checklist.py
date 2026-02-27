@@ -28,18 +28,21 @@ _HIDDEN_BG = "#f0f0f0"   # dimmed background for hidden files
 class CheckableListbox(tk.Frame):
     """Listbox-compatible widget with a visibility checkbox and drag-to-reorder on each row."""
 
-    def __init__(self, master, *, height=5, on_check=None, on_reorder=None, **kw):
+    def __init__(self, master, *, height=5, on_check=None, on_reorder=None,
+                 show_checkboxes=True, **kw):
         """
         Parameters
         ----------
-        height     : visible rows (used to set the canvas height in pixels)
-        on_check   : callable(text, visible) — called when a checkbox changes
-        on_reorder : callable(new_texts_list) — called after rows are drag-reordered
+        height          : visible rows (used to set the canvas height in pixels)
+        on_check        : callable(text, visible) — called when a checkbox changes
+        on_reorder      : callable(new_texts_list) — called after rows are drag-reordered
+        show_checkboxes : if False, the checkbox column is hidden (drag-to-reorder only)
         """
         super().__init__(master, **kw)
-        self._on_check   = on_check
-        self._on_reorder = on_reorder
-        self._rows       = []   # list of dicts: {text, var, frame, handle, cb, label}
+        self._on_check        = on_check
+        self._on_reorder      = on_reorder
+        self._show_checkboxes = show_checkboxes
+        self._rows            = []   # list of dicts: {text, var, frame, handle, cb, label}
         self._selected_idx = None
         self._rdrag      = None   # drag-to-reorder state
 
@@ -86,7 +89,8 @@ class CheckableListbox(tk.Frame):
         var = tk.BooleanVar(value=checked)
 
         cb = ttk.Checkbutton(row_frame, variable=var)
-        cb.pack(side=tk.LEFT, padx=(2, 0))
+        if self._show_checkboxes:
+            cb.pack(side=tk.LEFT, padx=(2, 0))
 
         # ⠿ drag handle — cursor="fleur" only here; dragging restricted to this widget
         handle = tk.Label(row_frame, text="⠿", background=init_bg,
