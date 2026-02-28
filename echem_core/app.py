@@ -11,7 +11,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolb
 
 from .legend_editor import open_legend_editor
 from .checklist import CheckableListbox
-from .file_manager import FileManagerMixin, _COLOR_NAMES, _COLOR_HEX
+from .file_manager import FileManagerMixin, _COLOR_NAMES, _COLOR_HEX, _is_impedance_col
 from .correction import CorrectionMixin
 from .plotting import PlottingMixin
 from .ecsa import ECSAMixin
@@ -109,18 +109,30 @@ class EchemPanel(
                                       values=_COLOR_NAMES, state="readonly", width=12)
         _file_color_cb.pack(side=tk.LEFT, padx=(4, 0))
         _file_color_cb.bind("<<ComboboxSelected>>", self._on_file_color_change)
+        ttk.Label(_fc_row, text="Width:").pack(side=tk.LEFT, padx=(8, 0))
+        self.linewidth_var = tk.StringVar(value="1.5")
+        _lw_e = ttk.Entry(_fc_row, textvariable=self.linewidth_var, width=4)
+        _lw_e.pack(side=tk.LEFT, padx=(2, 0))
+        _lw_e.bind("<Return>",   lambda e: self._auto_replot())
+        _lw_e.bind("<FocusOut>", lambda e: self._auto_replot())
 
         # ── Axis selectors + unit conversion ────────────────────────
         _UNIT_DIMS = {
             "A": "I",  "mA": "I",  "µA": "I",  "nA": "I",
             "V": "E",  "mV": "E",  "µV": "E",  "nV": "E",
             "s": "t",  "ms": "t",  "µs": "t",  "min": "t", "h": "t",
+            "Ohm": "Z", "Ω": "Z", "mΩ": "Z", "kΩ": "Z", "MΩ": "Z",
+            "Hz": "f",  "kHz": "f", "MHz": "f",
+            "deg": "φ", "rad": "φ",
         }
         _DIM_OPTS = {
             "I": ["(auto)", "A",  "mA",  "µA",  "nA"],
             "E": ["(auto)", "V",  "mV",  "µV",  "nV"],
             "t": ["(auto)", "s",  "ms",  "µs",  "min", "h"],
             "J": ["(auto)", "A/cm²", "mA/cm²", "µA/cm²", "nA/cm²"],
+            "Z": ["(auto)", "mΩ", "Ω",  "kΩ",  "MΩ"],
+            "f": ["(auto)", "Hz", "kHz", "MHz"],
+            "φ": ["(auto)", "deg", "rad"],
         }
         _ALL_UNITS = ["(auto)",
                       "A", "mA", "µA", "nA",
@@ -200,6 +212,24 @@ class EchemPanel(
         y_unit_cb.bind("<<ComboboxSelected>>",
                        lambda e: _refresh_unit_after_select(self.y_unit_var, y_unit_cb))
 
+        def _do_refresh_unit_combos():
+            """Silently update unit combobox options to match current column selections."""
+            for col_var, unit_var, cb in (
+                (self.x_var, self.x_unit_var, x_unit_cb),
+                (self.y_var, self.y_unit_var, y_unit_cb),
+            ):
+                col = col_var.get()
+                if col == "J":
+                    dim = "J"
+                else:
+                    raw_unit = col.rsplit("/", 1)[-1].strip() if "/" in col else ""
+                    dim = _UNIT_DIMS.get(raw_unit)
+                opts = list(_DIM_OPTS.get(dim, ["(auto)"]))
+                cb["values"] = opts
+                if unit_var.get() not in opts:
+                    unit_var.set("(auto)")
+        self._do_refresh_unit_combos = _do_refresh_unit_combos
+
         def _swap_xy():
             xc, yc = self.x_var.get(),     self.y_var.get()
             xu, yu = self.x_unit_var.get(), self.y_unit_var.get()
@@ -269,27 +299,39 @@ class EchemPanel(
         xrange_frame.pack(fill=tk.X, padx=4, pady=2)
         ttk.Label(xrange_frame, text="X min:").pack(side=tk.LEFT)
         self.x_min_var = tk.StringVar()
-        _xmin = ttk.Entry(xrange_frame, textvariable=self.x_min_var, width=8)
-        _xmin.pack(side=tk.LEFT, padx=(2, 6))
+        _xmin = ttk.Entry(xrange_frame, textvariable=self.x_min_var, width=7)
+        _xmin.pack(side=tk.LEFT, padx=(2, 4))
         _bind_range(_xmin)
         ttk.Label(xrange_frame, text="X max:").pack(side=tk.LEFT)
         self.x_max_var = tk.StringVar()
-        _xmax = ttk.Entry(xrange_frame, textvariable=self.x_max_var, width=8)
-        _xmax.pack(side=tk.LEFT, padx=2)
+        _xmax = ttk.Entry(xrange_frame, textvariable=self.x_max_var, width=7)
+        _xmax.pack(side=tk.LEFT, padx=(2, 4))
         _bind_range(_xmax)
+        ttk.Label(xrange_frame, text="Int:").pack(side=tk.LEFT)
+        self.x_grid_int_var = tk.StringVar(value="0")
+        _xgi = ttk.Entry(xrange_frame, textvariable=self.x_grid_int_var, width=5)
+        _xgi.pack(side=tk.LEFT, padx=(2, 0))
+        _xgi.bind("<Return>",   lambda e: self._auto_replot())
+        _xgi.bind("<FocusOut>", lambda e: self._auto_replot())
 
         yrange_frame = ttk.Frame(left)
         yrange_frame.pack(fill=tk.X, padx=4, pady=2)
         ttk.Label(yrange_frame, text="Y min:").pack(side=tk.LEFT)
         self.y_min_var = tk.StringVar()
-        _ymin = ttk.Entry(yrange_frame, textvariable=self.y_min_var, width=8)
-        _ymin.pack(side=tk.LEFT, padx=(2, 6))
+        _ymin = ttk.Entry(yrange_frame, textvariable=self.y_min_var, width=7)
+        _ymin.pack(side=tk.LEFT, padx=(2, 4))
         _bind_range(_ymin)
         ttk.Label(yrange_frame, text="Y max:").pack(side=tk.LEFT)
         self.y_max_var = tk.StringVar()
-        _ymax = ttk.Entry(yrange_frame, textvariable=self.y_max_var, width=8)
-        _ymax.pack(side=tk.LEFT, padx=2)
+        _ymax = ttk.Entry(yrange_frame, textvariable=self.y_max_var, width=7)
+        _ymax.pack(side=tk.LEFT, padx=(2, 4))
         _bind_range(_ymax)
+        ttk.Label(yrange_frame, text="Int:").pack(side=tk.LEFT)
+        self.y_grid_int_var = tk.StringVar(value="0")
+        _ygi = ttk.Entry(yrange_frame, textvariable=self.y_grid_int_var, width=5)
+        _ygi.pack(side=tk.LEFT, padx=(2, 0))
+        _ygi.bind("<Return>",   lambda e: self._auto_replot())
+        _ygi.bind("<FocusOut>", lambda e: self._auto_replot())
 
         ttk.Label(left, text="(leave blank for auto)", foreground="gray").pack(anchor=tk.W, padx=4)
 
@@ -363,20 +405,9 @@ class EchemPanel(
         self.x_grid_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(grid_xy_row, text="X", variable=self.x_grid_var,
                         command=self._auto_replot).pack(side=tk.LEFT)
-        ttk.Label(grid_xy_row, text="Interval:").pack(side=tk.LEFT, padx=(6, 0))
-        self.x_grid_int_var = tk.StringVar(value="0")
-        _xgi = ttk.Entry(grid_xy_row, textvariable=self.x_grid_int_var, width=5)
-        _xgi.pack(side=tk.LEFT, padx=(2, 0))
         self.y_grid_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(grid_xy_row, text="Y", variable=self.y_grid_var,
                         command=self._auto_replot).pack(side=tk.LEFT, padx=(10, 0))
-        ttk.Label(grid_xy_row, text="Interval:").pack(side=tk.LEFT, padx=(6, 0))
-        self.y_grid_int_var = tk.StringVar(value="0")
-        _ygi = ttk.Entry(grid_xy_row, textvariable=self.y_grid_int_var, width=5)
-        _ygi.pack(side=tk.LEFT, padx=(2, 0))
-        for _gi in (_xgi, _ygi):
-            _gi.bind("<Return>",   lambda e: self._auto_replot())
-            _gi.bind("<FocusOut>", lambda e: self._auto_replot())
         grid_style_row = ttk.Frame(left)
         grid_style_row.pack(fill=tk.X, padx=4, pady=(0, 2))
         ttk.Label(grid_style_row, text="Style:").pack(side=tk.LEFT)
@@ -401,6 +432,43 @@ class EchemPanel(
         _glw.pack(side=tk.LEFT, padx=(2, 0))
         _glw.bind("<Return>",   lambda e: self._auto_replot())
         _glw.bind("<FocusOut>", lambda e: self._auto_replot())
+
+        # Font
+        ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
+        ttk.Label(left, text="Font", font=("", 9, "bold")).pack(anchor=tk.W, padx=4)
+        self.font_title_size_var = tk.StringVar(value="10")
+        self.font_title_bold_var = tk.BooleanVar(value=False)
+        self.font_label_size_var = tk.StringVar(value="10")
+        self.font_label_bold_var = tk.BooleanVar(value=False)
+        self.font_tick_size_var  = tk.StringVar(value="8")
+        self.font_tick_bold_var  = tk.BooleanVar(value=False)
+        _font_title_row = ttk.Frame(left)
+        _font_title_row.pack(fill=tk.X, padx=4, pady=(2, 0))
+        ttk.Label(_font_title_row, text="Title:      Size").pack(side=tk.LEFT)
+        _fts_e = ttk.Entry(_font_title_row, textvariable=self.font_title_size_var, width=4)
+        _fts_e.pack(side=tk.LEFT, padx=(2, 4))
+        _fts_e.bind("<Return>",   lambda e: self._auto_replot())
+        _fts_e.bind("<FocusOut>", lambda e: self._auto_replot())
+        ttk.Checkbutton(_font_title_row, text="Bold", variable=self.font_title_bold_var,
+                        command=self._auto_replot).pack(side=tk.LEFT)
+        _font_label_row = ttk.Frame(left)
+        _font_label_row.pack(fill=tk.X, padx=4, pady=(2, 0))
+        ttk.Label(_font_label_row, text="Axis Lbl: Size").pack(side=tk.LEFT)
+        _fls_e = ttk.Entry(_font_label_row, textvariable=self.font_label_size_var, width=4)
+        _fls_e.pack(side=tk.LEFT, padx=(2, 4))
+        _fls_e.bind("<Return>",   lambda e: self._auto_replot())
+        _fls_e.bind("<FocusOut>", lambda e: self._auto_replot())
+        ttk.Checkbutton(_font_label_row, text="Bold", variable=self.font_label_bold_var,
+                        command=self._auto_replot).pack(side=tk.LEFT)
+        _font_tick_row = ttk.Frame(left)
+        _font_tick_row.pack(fill=tk.X, padx=4, pady=(2, 0))
+        ttk.Label(_font_tick_row, text="Tick Nos: Size").pack(side=tk.LEFT)
+        _fks_e = ttk.Entry(_font_tick_row, textvariable=self.font_tick_size_var, width=4)
+        _fks_e.pack(side=tk.LEFT, padx=(2, 4))
+        _fks_e.bind("<Return>",   lambda e: self._auto_replot())
+        _fks_e.bind("<FocusOut>", lambda e: self._auto_replot())
+        ttk.Checkbutton(_font_tick_row, text="Bold", variable=self.font_tick_bold_var,
+                        command=self._auto_replot).pack(side=tk.LEFT)
 
         # Reference Lines
         ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
@@ -529,7 +597,7 @@ class EchemPanel(
         self.cycle_gradient_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(_cc_row1, text="Gradient", variable=self.cycle_gradient_var,
                         command=self._on_gradient_change).pack(side=tk.LEFT)
-        self.cycle_reverse_var = tk.BooleanVar(value=False)
+        self.cycle_reverse_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(_cc_row1, text="Reverse", variable=self.cycle_reverse_var,
                         command=self._on_gradient_change).pack(side=tk.LEFT, padx=(8, 0))
         _cc_row2 = ttk.Frame(left)
@@ -740,6 +808,34 @@ class EchemPanel(
             self.files[self.active_file]["lightness_step"] = self.lightness_step_var.get()
         self._auto_replot()
 
+    # ── Font helpers ─────────────────────────────────────────────────
+    def _read_font(self):
+        def _f(v, d):
+            try:
+                return float(v.get())
+            except Exception:
+                return d
+        return (
+            _f(self.font_title_size_var, 10.0),
+            'bold' if self.font_title_bold_var.get() else 'normal',
+            _f(self.font_label_size_var, 10.0),
+            'bold' if self.font_label_bold_var.get() else 'normal',
+            _f(self.font_tick_size_var,  8.0),
+            self.font_tick_bold_var.get(),
+        )
+
+    def _apply_font_to_ax(self, ax, canvas):
+        ts, tb, ls, lb, ks, kb = self._read_font()
+        ax.set_title(ax.get_title(),   fontsize=ts, fontweight=tb)
+        ax.set_xlabel(ax.get_xlabel(), fontsize=ls, fontweight=lb)
+        ax.set_ylabel(ax.get_ylabel(), fontsize=ls, fontweight=lb)
+        ax.tick_params(axis='both', labelsize=ks)
+        canvas.draw()
+        if kb:
+            for lbl in ax.get_xticklabels() + ax.get_yticklabels():
+                lbl.set_fontweight('bold')
+            canvas.draw_idle()
+
     # ── File color helper ────────────────────────────────────────────
     def _on_file_color_change(self, event=None):
         if not self.active_file:
@@ -769,9 +865,9 @@ class EchemPanel(
         return True
 
     def _get_column_list(self, df):
-        """Append virtual 'J' column when all files have area set."""
-        cols = list(df.columns)
-        if self._all_files_have_area():
+        """Append virtual 'J' column when all files have area set (non-EIS only)."""
+        cols = super()._get_column_list(df)
+        if self._all_files_have_area() and not any(_is_impedance_col(c) for c in cols):
             cols.append("J")
         return cols
 
@@ -816,6 +912,12 @@ class EchemPanel(
                     self.ax.set_ylim(ylim)
                 break
 
+    def _on_columns_changed(self):
+        """Refresh unit combobox options whenever x_var/y_var are updated."""
+        fn = getattr(self, '_do_refresh_unit_combos', None)
+        if fn:
+            fn()
+
     def _save_active_state(self):
         """Extend base save to preserve the current plot view and gradient settings per file."""
         if self.active_file and self.active_file in self.files:
@@ -837,7 +939,7 @@ class EchemPanel(
         name  = next((n for n, h in _COLOR_HEX.items() if h == color), "Blue")
         self.file_color_var.set(name)
         self.cycle_gradient_var.set(entry.get("cycle_gradient", True))
-        self.cycle_reverse_var.set(entry.get("cycle_reverse", False))
+        self.cycle_reverse_var.set(entry.get("cycle_reverse", True))
         self.lightness_step_var.set(entry.get("lightness_step", "0.08"))
 
         super()._switch_active_file(short)

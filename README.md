@@ -20,7 +20,7 @@
 
 ### Supported File Formats
 The app reads two file types:
-- **BioLogic `.mpr` binary files** — loaded directly from EC-Lab without any manual export step. Requires the `galvani` package (`pip install galvani`).
+- **BioLogic `.mpr` binary files** — loaded directly from EC-Lab without any manual export step. Requires the `galvani` package (`pip install galvani`). Files created with newer EC-Lab firmware versions that contain unrecognised column types are handled automatically — those extra columns are skipped and the recognised data loads normally.
 - **Tab-separated `.txt` files** — as exported by EC-Lab (BioLogic) and similar potentiostats.
 
 Column names are recognized automatically (e.g. `Ewe/V`, `I/mA`, `time/s`, `cycle number`, `Re(Z)/Ohm`, `-Im(Z)/Ohm`). Both file types can be mixed within the same tab and session.
@@ -59,8 +59,18 @@ Use this tab to load one or more data files and overlay them all on a single plo
 3. To remove a file, select it and click **Remove**.
 
 ### 3.2 Axis Settings
-- **X / Y column selectors** — choose which data column to plot on each axis.
-- **Unit dropdowns** — select the display unit (e.g. V, mV, mA, µA, A/cm²). The data is scaled automatically.
+- **X / Y column selectors** — choose which data column to plot on each axis. The available columns are filtered by data type: if the file contains EIS impedance data, only the impedance-related columns (`Re(Z)/Ohm`, `-Im(Z)/Ohm`, `freq/Hz`, `Phase(Z)/deg`) are shown; for CV/OCV files all columns are shown.
+- **Smart defaults** — when a file is first loaded the app automatically selects sensible defaults based on data type:
+  - **EIS** (impedance data): X = `Re(Z)/Ohm`, Y = `-Im(Z)/Ohm`
+  - **OCV / time-series** (voltage + time, no current): X = `time/s`, Y = `Ewe/V`
+  - **CV / LSV** (voltage + current): X = `Ewe/V`, Y = `I/mA`
+- **Unit dropdowns** — select the display unit. The available units match the column type:
+  - Voltage: V, mV, µV, nV
+  - Current: A, mA, µA, nA
+  - Time: s, ms, µs, min, h
+  - Impedance: mΩ, Ω, kΩ, MΩ
+  - Frequency: Hz, kHz, MHz
+  - Phase: deg, rad
 - **J (current density)** — if you enter a positive electrode area (cm²) for each file, a virtual "J" column appears in the column dropdowns. Selecting it plots current density (I ÷ area).
 
 ### 3.3 Corrections
@@ -132,7 +142,7 @@ Use this tab to view all loaded files **side by side** in a 2-column grid, each 
 - Each subplot has a **⠿ header strip** at the top showing the filename. Drag this strip to reorder subplots within the grid.
 
 ### 4.2 Per-File Settings
-Every control in the left panel (axis columns, units, range, cycles, correction, colors, gradient, legend, reference lines) applies **only to the active file**. Each file remembers its own settings independently.
+Every control in the left panel (axis columns, units, range, cycles, correction, colors, gradient, legend, reference lines) applies **only to the active file**. Each file remembers its own settings independently. Axis column dropdowns and unit choices (including EIS impedance units mΩ/kΩ/MΩ, frequency units Hz/kHz/MHz, and phase deg/rad) behave the same as in the General tab.
 
 ### 4.3 Subplot Zoom
 - **Double-click** any subplot to expand it to fill the entire right panel.
@@ -271,7 +281,9 @@ Each file remembers its last zoom/pan state. Switching to another file and back 
 - **Hide without losing settings** — unchecking a file in the file list removes it from the plot instantly. All cycles, corrections, zoom state, colors, and gradient settings are preserved. Re-check to restore the exact same view. Use this to compare a subset of files without having to reload anything. *(Not available in the ECSA Calc tab.)*
 - **Drag to reorder** — grab the **⠿** handle in the file list to drag files up or down. In Multi E.Chem you can also drag the **⠿ header strip** on each subplot to reorder the grid. The legend editor uses the same drag-handle pattern.
 - **Axis swap shortcut** — use **⇄ Swap X↔Y** to instantly swap axes when you want to flip between, e.g., E vs. I and I vs. E without manually changing each dropdown.
-- **Smart axis defaults** — when loading a file for the first time, the app automatically selects the voltage column (e.g. `Ewe/V`) for X and the current column (e.g. `I/mA`) for Y. In the Nyquist Plot tab it selects `Re(Z)` and `-Im(Z)` automatically.
+- **Smart axis defaults** — when loading a file for the first time, the app detects its data type and picks appropriate column defaults: **EIS** files → `Re(Z)` vs `-Im(Z)`; **OCV/time-series** files → `time/s` vs `Ewe/V`; **CV/LSV** files → `Ewe/V` vs `I/mA`. EIS files also filter the column dropdowns to show only impedance columns, keeping the selector clean.
+- **EIS units** — when plotting EIS data in the General or Multi E.Chem tab, the unit dropdowns offer impedance units (mΩ, Ω, kΩ, MΩ), frequency units (Hz, kHz, MHz), and phase units (deg, rad). Data is scaled automatically when you switch.
+- **Newer EC-Lab firmware files** — `.mpr` files that contain column types not yet known to galvani now load automatically; unrecognised columns are silently skipped.
 - **Gradient for tracking evolution** — turn on Gradient to see how your CV cycles evolve: lightest = earliest, darkest = latest (most evolved).
 - **Cycle order matters** — cycles are plotted in the order they appear in the data file, so the gradient naturally reflects temporal evolution.
 - **E_std (Rec)** — the green **Rec:** value shown next to the E_std field is the midpoint of your data's actual potential range. This is a reliable starting point for the non-Faradaic region. If your CV has visible Faradaic peaks near the edges, move E_std slightly toward the centre.

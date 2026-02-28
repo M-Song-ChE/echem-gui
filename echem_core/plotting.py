@@ -2,6 +2,7 @@
 and click-to-annotate with overlap cycling."""
 
 import colorsys
+import math
 import numpy as np
 import matplotlib.colors as _mcolors
 from tkinter import messagebox
@@ -67,23 +68,24 @@ def apply_grid(ax, x_grid, y_grid, x_interval, y_interval, style="dashed",
         lw = 0.8
     ax.xaxis.set_major_locator(AutoLocator())
     ax.yaxis.set_major_locator(AutoLocator())
+    # Always apply interval as tick spacing (even when grid is off)
+    try:
+        xi = float(x_interval)
+        if xi > 0:
+            ax.xaxis.set_major_locator(MultipleLocator(xi))
+    except (ValueError, TypeError):
+        pass
+    try:
+        yi = float(y_interval)
+        if yi > 0:
+            ax.yaxis.set_major_locator(MultipleLocator(yi))
+    except (ValueError, TypeError):
+        pass
     ax.grid(False)
     if x_grid:
-        try:
-            xi = float(x_interval)
-            if xi > 0:
-                ax.xaxis.set_major_locator(MultipleLocator(xi))
-        except (ValueError, TypeError):
-            pass
         ax.grid(True, axis="x", which="major", linestyle=ls,
                 alpha=0.4, color=color, linewidth=lw)
     if y_grid:
-        try:
-            yi = float(y_interval)
-            if yi > 0:
-                ax.yaxis.set_major_locator(MultipleLocator(yi))
-        except (ValueError, TypeError):
-            pass
         ax.grid(True, axis="y", which="major", linestyle=ls,
                 alpha=0.4, color=color, linewidth=lw)
 
@@ -501,6 +503,12 @@ class PlottingMixin:
         multi = len(self.files) > 1
         has_legend = False
 
+        _lw_v = getattr(self, 'linewidth_var', None)
+        try:
+            _lw = float(_lw_v.get()) if _lw_v else 1.5
+        except (ValueError, TypeError):
+            _lw = 1.5
+
         for short, entry in self.files.items():
             if entry.get("hidden", False):
                 continue
@@ -535,13 +543,13 @@ class PlottingMixin:
                     label = f"{short} C{c}" if multi else f"Cycle {c}"
                     self.ax.plot(sub[_real_xcol] * x_scale,
                                  sub[_real_ycol] * y_scale,
-                                 color=cycle_cols[i], label=label)
+                                 color=cycle_cols[i], label=label, linewidth=_lw)
                 has_legend = True
             else:
                 label = short if multi else None
                 self.ax.plot(df[_real_xcol] * x_scale,
                             df[_real_ycol] * y_scale,
-                            color=base_color, label=label)
+                            color=base_color, label=label, linewidth=_lw)
                 if label:
                     has_legend = True
 
@@ -616,7 +624,11 @@ class PlottingMixin:
                 color=_gcol_v.get() if _gcol_v else "gray",
             )
 
-        self.canvas.draw()
+        _font_fn = getattr(self, '_apply_font_to_ax', None)
+        if _font_fn is not None:
+            _font_fn(self.ax, self.canvas)
+        else:
+            self.canvas.draw()
 
     # ── Unit conversion helper ───────────────────────────────────────
     def _get_axis_unit_scale(self, col, target_unit):
@@ -642,12 +654,22 @@ class PlottingMixin:
             "V":   1.0,    "mV":  1e-3,   "µV":  1e-6,   "nV":  1e-9,
             "s":   1.0,    "ms":  1e-3,   "µs":  1e-6,
             "min": 60.0,   "h":   3600.0,
+            # Impedance (base = Ω)
+            "Ohm": 1.0,    "Ω":   1.0,    "mΩ":  1e-3,
+            "kΩ":  1e3,    "MΩ":  1e6,
+            # Frequency (base = Hz)
+            "Hz":  1.0,    "kHz": 1e3,    "MHz": 1e6,
+            # Phase angle (base = rad)
+            "rad": 1.0,    "deg": math.pi / 180.0,
         }
         # Physical dimension tags (conversion only allowed within same tag)
         _DIMS = {
             "A": "I", "mA": "I", "µA": "I", "nA": "I",
             "V": "E", "mV": "E", "µV": "E", "nV": "E",
             "s": "t", "ms": "t", "µs": "t", "min": "t", "h": "t",
+            "Ohm": "Z", "Ω": "Z", "mΩ": "Z", "kΩ": "Z", "MΩ": "Z",
+            "Hz": "f", "kHz": "f", "MHz": "f",
+            "rad": "φ", "deg": "φ",
         }
 
         # Extract source unit and base name from column name (e.g. "Ewe/V" → "V", "Ewe")

@@ -92,6 +92,11 @@ class CheckableListbox(tk.Frame):
         if self._show_checkboxes:
             cb.pack(side=tk.LEFT, padx=(2, 0))
 
+        num_label = tk.Label(row_frame, text=str(idx + 1),
+                             background=init_bg, cursor="arrow",
+                             width=2, anchor=tk.E, font=("", 8))
+        num_label.pack(side=tk.LEFT, padx=(2, 1))
+
         # ⠿ drag handle — cursor="fleur" only here; dragging restricted to this widget
         handle = tk.Label(row_frame, text="⠿", background=init_bg,
                           cursor="fleur", font=("", 11))
@@ -102,7 +107,7 @@ class CheckableListbox(tk.Frame):
         label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(2, 4))
 
         row = {"text": text, "var": var, "frame": row_frame,
-               "handle": handle, "cb": cb, "label": label}
+               "handle": handle, "cb": cb, "label": label, "num": num_label}
 
         # Checkbox toggle fires on_check
         var.trace_add("write", lambda *_: self._on_var_write(text, var))
@@ -116,7 +121,7 @@ class CheckableListbox(tk.Frame):
         handle.bind("<ButtonRelease-1>", lambda e, t=text: self._on_row_release(e, t))
 
         # Forward wheel events from every row widget
-        for widget in (cb, handle, label, row_frame):
+        for widget in (cb, num_label, handle, label, row_frame):
             widget.bind("<MouseWheel>", self._on_wheel)
 
         return row
@@ -124,6 +129,7 @@ class CheckableListbox(tk.Frame):
     # ── Background helpers ────────────────────────────────────────────
     def _set_row_bg(self, row, bg):
         row["frame"].configure(background=bg)
+        row["num"].configure(background=bg)
         row["handle"].configure(background=bg)
         row["label"].configure(background=bg)
 
@@ -232,6 +238,7 @@ class CheckableListbox(tk.Frame):
         # Re-grid all rows
         for i, r in enumerate(self._rows):
             r["frame"].grid(row=i, column=0, sticky="ew", padx=1, pady=0)
+        self._refresh_row_numbers()
 
         # Restore selected_idx to follow the selected row
         if sel_text is not None:
@@ -240,6 +247,10 @@ class CheckableListbox(tk.Frame):
 
         if self._on_reorder is not None:
             self._on_reorder([r["text"] for r in self._rows])
+
+    def _refresh_row_numbers(self):
+        for i, row in enumerate(self._rows):
+            row["num"].configure(text=str(i + 1))
 
     # ── Public Listbox-compatible API ────────────────────────────────
     def clear(self):
@@ -254,6 +265,7 @@ class CheckableListbox(tk.Frame):
         idx = len(self._rows)
         row = self._build_row(idx, text, checked=checked)
         self._rows.append(row)
+        self._refresh_row_numbers()
 
     def delete(self, idx):
         """Remove the row at *idx*."""
@@ -268,6 +280,7 @@ class CheckableListbox(tk.Frame):
                 self._selected_idx -= 1
         for i, r in enumerate(self._rows):
             r["frame"].grid(row=i, column=0, sticky="ew", padx=1, pady=0)
+        self._refresh_row_numbers()
 
     def selection_clear(self, start, end):  # noqa: ARG002
         """Clear the current selection (start/end ignored; only single-select)."""

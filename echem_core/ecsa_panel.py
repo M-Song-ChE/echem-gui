@@ -122,6 +122,12 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
                                       values=_COLOR_NAMES, state="readonly", width=12)
         _file_color_cb.pack(side=tk.LEFT, padx=(4, 0))
         _file_color_cb.bind("<<ComboboxSelected>>", self._on_file_color_change)
+        ttk.Label(_fc_row, text="Width:").pack(side=tk.LEFT, padx=(8, 0))
+        self.linewidth_var = tk.StringVar(value="1.5")
+        _lw_e = ttk.Entry(_fc_row, textvariable=self.linewidth_var, width=4)
+        _lw_e.pack(side=tk.LEFT, padx=(2, 0))
+        _lw_e.bind("<Return>",   lambda e: self._on_linewidth_change())
+        _lw_e.bind("<FocusOut>", lambda e: self._on_linewidth_change())
 
         # ── Axis selectors + unit dropdowns ──────────────────────
         ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
@@ -202,21 +208,33 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         ttk.Label(xr_f, text="X min:").pack(side=tk.LEFT)
         self.x_min_var = tk.StringVar()
         _xmin = ttk.Entry(xr_f, textvariable=self.x_min_var, width=7)
-        _xmin.pack(side=tk.LEFT, padx=(2, 6))
+        _xmin.pack(side=tk.LEFT, padx=(2, 4))
         ttk.Label(xr_f, text="X max:").pack(side=tk.LEFT)
         self.x_max_var = tk.StringVar()
         _xmax = ttk.Entry(xr_f, textvariable=self.x_max_var, width=7)
-        _xmax.pack(side=tk.LEFT, padx=2)
+        _xmax.pack(side=tk.LEFT, padx=(2, 4))
+        ttk.Label(xr_f, text="Int:").pack(side=tk.LEFT)
+        self.cv_x_grid_int_var = tk.StringVar(value="0")
+        _cvxgi = ttk.Entry(xr_f, textvariable=self.cv_x_grid_int_var, width=5)
+        _cvxgi.pack(side=tk.LEFT, padx=(2, 0))
+        _cvxgi.bind("<Return>",   lambda e: self._auto_replot())
+        _cvxgi.bind("<FocusOut>", lambda e: self._auto_replot())
         yr_f = ttk.Frame(left)
         yr_f.pack(fill=tk.X, padx=4, pady=(1, 0))
         ttk.Label(yr_f, text="Y min:").pack(side=tk.LEFT)
         self.y_min_var = tk.StringVar()
         _ymin = ttk.Entry(yr_f, textvariable=self.y_min_var, width=7)
-        _ymin.pack(side=tk.LEFT, padx=(2, 6))
+        _ymin.pack(side=tk.LEFT, padx=(2, 4))
         ttk.Label(yr_f, text="Y max:").pack(side=tk.LEFT)
         self.y_max_var = tk.StringVar()
         _ymax = ttk.Entry(yr_f, textvariable=self.y_max_var, width=7)
-        _ymax.pack(side=tk.LEFT, padx=2)
+        _ymax.pack(side=tk.LEFT, padx=(2, 4))
+        ttk.Label(yr_f, text="Int:").pack(side=tk.LEFT)
+        self.cv_y_grid_int_var = tk.StringVar(value="0")
+        _cvygi = ttk.Entry(yr_f, textvariable=self.cv_y_grid_int_var, width=5)
+        _cvygi.pack(side=tk.LEFT, padx=(2, 0))
+        _cvygi.bind("<Return>",   lambda e: self._auto_replot())
+        _cvygi.bind("<FocusOut>", lambda e: self._auto_replot())
         ttk.Label(left, text="(blank = auto)", foreground="gray",
                   font=("", 8)).pack(anchor=tk.W, padx=4)
         for _re in (_xmin, _xmax, _ymin, _ymax):
@@ -286,7 +304,7 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         self.cycle_gradient_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(_cc_row1, text="Gradient", variable=self.cycle_gradient_var,
                         command=self._on_gradient_change).pack(side=tk.LEFT)
-        self.cycle_reverse_var = tk.BooleanVar(value=False)
+        self.cycle_reverse_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(_cc_row1, text="Reverse", variable=self.cycle_reverse_var,
                         command=self._on_gradient_change).pack(side=tk.LEFT, padx=(8, 0))
         _cc_row2 = ttk.Frame(left)
@@ -398,20 +416,9 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         self.cv_x_grid_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(cv_grid_row, text="X", variable=self.cv_x_grid_var,
                         command=self._auto_replot).pack(side=tk.LEFT)
-        ttk.Label(cv_grid_row, text="Interval:").pack(side=tk.LEFT, padx=(6, 0))
-        self.cv_x_grid_int_var = tk.StringVar(value="0")
-        _cvxgi = ttk.Entry(cv_grid_row, textvariable=self.cv_x_grid_int_var, width=5)
-        _cvxgi.pack(side=tk.LEFT, padx=(2, 0))
         self.cv_y_grid_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(cv_grid_row, text="Y", variable=self.cv_y_grid_var,
                         command=self._auto_replot).pack(side=tk.LEFT, padx=(8, 0))
-        ttk.Label(cv_grid_row, text="Interval:").pack(side=tk.LEFT, padx=(6, 0))
-        self.cv_y_grid_int_var = tk.StringVar(value="0")
-        _cvygi = ttk.Entry(cv_grid_row, textvariable=self.cv_y_grid_int_var, width=5)
-        _cvygi.pack(side=tk.LEFT, padx=(2, 0))
-        for _gi in (_cvxgi, _cvygi):
-            _gi.bind("<Return>",   lambda e: self._auto_replot())
-            _gi.bind("<FocusOut>", lambda e: self._auto_replot())
         cv_grid_style_row = ttk.Frame(left)
         cv_grid_style_row.pack(fill=tk.X, padx=4, pady=(0, 2))
         ttk.Label(cv_grid_style_row, text="Style:").pack(side=tk.LEFT)
@@ -584,6 +591,43 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         _cdlrl_color_cb.bind("<<ComboboxSelected>>", lambda e: self._on_cdl_refline_style_color_change())
         _cdlrl_lw.bind("<Return>",   lambda e: self._on_cdl_refline_style_color_change())
         _cdlrl_lw.bind("<FocusOut>", lambda e: self._on_cdl_refline_style_color_change())
+
+        # Font
+        ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=4)
+        ttk.Label(left, text="Font", font=("", 9, "bold")).pack(anchor=tk.W, padx=4)
+        self.font_title_size_var = tk.StringVar(value="10")
+        self.font_title_bold_var = tk.BooleanVar(value=False)
+        self.font_label_size_var = tk.StringVar(value="10")
+        self.font_label_bold_var = tk.BooleanVar(value=False)
+        self.font_tick_size_var  = tk.StringVar(value="8")
+        self.font_tick_bold_var  = tk.BooleanVar(value=False)
+        _font_title_row = ttk.Frame(left)
+        _font_title_row.pack(fill=tk.X, padx=4, pady=(2, 0))
+        ttk.Label(_font_title_row, text="Title:      Size").pack(side=tk.LEFT)
+        _fts_e = ttk.Entry(_font_title_row, textvariable=self.font_title_size_var, width=4)
+        _fts_e.pack(side=tk.LEFT, padx=(2, 4))
+        _fts_e.bind("<Return>",   lambda e: self._auto_replot())
+        _fts_e.bind("<FocusOut>", lambda e: self._auto_replot())
+        ttk.Checkbutton(_font_title_row, text="Bold", variable=self.font_title_bold_var,
+                        command=self._auto_replot).pack(side=tk.LEFT)
+        _font_label_row = ttk.Frame(left)
+        _font_label_row.pack(fill=tk.X, padx=4, pady=(2, 0))
+        ttk.Label(_font_label_row, text="Axis Lbl: Size").pack(side=tk.LEFT)
+        _fls_e = ttk.Entry(_font_label_row, textvariable=self.font_label_size_var, width=4)
+        _fls_e.pack(side=tk.LEFT, padx=(2, 4))
+        _fls_e.bind("<Return>",   lambda e: self._auto_replot())
+        _fls_e.bind("<FocusOut>", lambda e: self._auto_replot())
+        ttk.Checkbutton(_font_label_row, text="Bold", variable=self.font_label_bold_var,
+                        command=self._auto_replot).pack(side=tk.LEFT)
+        _font_tick_row = ttk.Frame(left)
+        _font_tick_row.pack(fill=tk.X, padx=4, pady=(2, 0))
+        ttk.Label(_font_tick_row, text="Tick Nos: Size").pack(side=tk.LEFT)
+        _fks_e = ttk.Entry(_font_tick_row, textvariable=self.font_tick_size_var, width=4)
+        _fks_e.pack(side=tk.LEFT, padx=(2, 4))
+        _fks_e.bind("<Return>",   lambda e: self._auto_replot())
+        _fks_e.bind("<FocusOut>", lambda e: self._auto_replot())
+        ttk.Checkbutton(_font_tick_row, text="Bold", variable=self.font_tick_bold_var,
+                        command=self._auto_replot).pack(side=tk.LEFT)
 
         self.result_label = ttk.Label(left, text="", wraplength=290, justify=tk.LEFT)
         self.result_label.pack(anchor=tk.W, padx=4, pady=2)
@@ -966,6 +1010,11 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             self.file_color_var.get(), "#1f77b4")
         self._auto_replot()
 
+    def _on_linewidth_change(self):
+        if self.active_file and self.active_file in self.files:
+            self.files[self.active_file]["linewidth"] = self.linewidth_var.get()
+        self._auto_replot()
+
     def _on_gradient_change(self):
         """Persist gradient settings to the active file's entry, then replot."""
         if self.active_file and self.active_file in self.files:
@@ -1011,6 +1060,7 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             entry["cycle_gradient"] = self.cycle_gradient_var.get()
             entry["cycle_reverse"]  = self.cycle_reverse_var.get()
             entry["lightness_step"] = self.lightness_step_var.get()
+            entry["linewidth"]      = self.linewidth_var.get()
             # Preserve current zoom/pan for both plots
             entry["view_xlim_cv"]  = self.ax_cv.get_xlim()
             entry["view_ylim_cv"]  = self.ax_cv.get_ylim()
@@ -1055,8 +1105,9 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         entry.setdefault("cv_reflines",      [])
         entry.setdefault("cdl_reflines",     [])
         entry.setdefault("cycle_gradient", True)
-        entry.setdefault("cycle_reverse",  False)
+        entry.setdefault("cycle_reverse",  True)
         entry.setdefault("lightness_step", "0.08")
+        entry.setdefault("linewidth",      "1.5")
 
         df   = entry["df"]
         cols = list(df.columns)
@@ -1160,8 +1211,9 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         name = next((n for n, h in _COLOR_HEX.items() if h == color), "Blue")
         self.file_color_var.set(name)
         self.cycle_gradient_var.set(entry.get("cycle_gradient", True))
-        self.cycle_reverse_var.set(entry.get("cycle_reverse", False))
+        self.cycle_reverse_var.set(entry.get("cycle_reverse", True))
         self.lightness_step_var.set(entry.get("lightness_step", "0.08"))
+        self.linewidth_var.set(entry.get("linewidth", "1.5"))
 
     def _auto_replot(self):
         if self._suppress_replot:
@@ -1172,6 +1224,36 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
 
     def _plot(self):
         self._plot_cv()
+
+    # ════════════════════════════════════════════════════════════════
+    # Font helpers
+    # ════════════════════════════════════════════════════════════════
+    def _read_font(self):
+        def _f(v, d):
+            try:
+                return float(v.get())
+            except Exception:
+                return d
+        return (
+            _f(self.font_title_size_var, 10.0),
+            'bold' if self.font_title_bold_var.get() else 'normal',
+            _f(self.font_label_size_var, 10.0),
+            'bold' if self.font_label_bold_var.get() else 'normal',
+            _f(self.font_tick_size_var,  8.0),
+            self.font_tick_bold_var.get(),
+        )
+
+    def _apply_font_to_ax(self, ax, canvas):
+        ts, tb, ls, lb, ks, kb = self._read_font()
+        ax.set_title(ax.get_title(),   fontsize=ts, fontweight=tb)
+        ax.set_xlabel(ax.get_xlabel(), fontsize=ls, fontweight=lb)
+        ax.set_ylabel(ax.get_ylabel(), fontsize=ls, fontweight=lb)
+        ax.tick_params(axis='both', labelsize=ks)
+        canvas.draw()
+        if kb:
+            for lbl in ax.get_xticklabels() + ax.get_yticklabels():
+                lbl.set_fontweight('bold')
+            canvas.draw_idle()
 
     # ════════════════════════════════════════════════════════════════
     # CV plot (upper figure)
@@ -1201,9 +1283,14 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         entry_ref = self.files[self.active_file]
         base_color = entry_ref.get("color", "#1f77b4")
         _grad  = entry_ref.get("cycle_gradient", True)
-        _rev   = entry_ref.get("cycle_reverse",  False)
+        _rev   = entry_ref.get("cycle_reverse",  True)
         try:    _step = float(entry_ref.get("lightness_step", "0.08"))
         except: _step = 0.08
+
+        try:
+            _cv_lw = float(self.files[self.active_file].get("linewidth", "1.5"))
+        except (ValueError, TypeError):
+            _cv_lw = 1.5
 
         if "cycle number" in df.columns:
             if not selected:
@@ -1218,10 +1305,10 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
                 sr  = self._sr_vars.get(c, tk.StringVar()).get().strip()
                 lbl = f"C{c}" + (f"  ({sr} mV/s)" if sr else "")
                 self.ax_cv.plot(sub[xcol] * x_scale, sub[ycol] * y_scale,
-                                color=cycle_cols[i], label=lbl)
+                                color=cycle_cols[i], label=lbl, linewidth=_cv_lw)
         else:
             self.ax_cv.plot(df[xcol] * x_scale, df[ycol] * y_scale,
-                            color=base_color)
+                            color=base_color, linewidth=_cv_lw)
 
         ref = self.ref_electrode_var.get().strip()
         _x_src = xcol.rsplit("/", 1)[-1].strip() if "/" in xcol else ""
@@ -1261,7 +1348,7 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
                    self.cv_grid_style_var.get(),
                    linewidth=self.cv_grid_linewidth_var.get(),
                    color=self.cv_grid_color_var.get())
-        self.canvas_cv.draw()
+        self._apply_font_to_ax(self.ax_cv, self.canvas_cv)
         self._auto_xlim_cv = self.ax_cv.get_xlim()
         self._auto_ylim_cv = self.ax_cv.get_ylim()
         self._apply_cv_range()
@@ -1356,9 +1443,14 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         if ecsa is not None:
             _fit_label += f"\nECSA = {ecsa:.2f} cm²"
 
+        try:
+            _cdl_lw = float(self.files[self.active_file].get("linewidth", "1.5"))
+        except (ValueError, TypeError):
+            _cdl_lw = 1.5
+
         self.ax_cdl.scatter(sr_arr, dj_arr, color="steelblue", zorder=5, label="Data")
         self.ax_cdl.plot(
-            sr_fit, dj_fit, color="tomato", linewidth=1.5,
+            sr_fit, dj_fit, color="tomato", linewidth=_cdl_lw,
             label=_fit_label,
         )
         self.ax_cdl.axhline(0, color="gray", linewidth=0.5, linestyle="--")
@@ -1381,7 +1473,7 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
                    self.cdl_grid_style_var.get(),
                    linewidth=self.cdl_grid_linewidth_var.get(),
                    color=self.cdl_grid_color_var.get())
-        self.canvas_cdl.draw()
+        self._apply_font_to_ax(self.ax_cdl, self.canvas_cdl)
         self._auto_xlim_cdl = self.ax_cdl.get_xlim()
         self._auto_ylim_cdl = self.ax_cdl.get_ylim()
 
@@ -1558,9 +1650,14 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         dj_fit = np.polyval(coeffs, sr_fit)
         y_unit = ycol.split("/")[-1] if "/" in ycol else ycol
 
+        try:
+            _cdl_lw2 = float(self.files[self.active_file].get("linewidth", "1.5"))
+        except (ValueError, TypeError):
+            _cdl_lw2 = 1.5
+
         self.ax_cdl.scatter(sr_arr, dj_arr, color="steelblue", zorder=5, label="Data")
         self.ax_cdl.plot(
-            sr_fit, dj_fit, color="tomato", linewidth=1.5,
+            sr_fit, dj_fit, color="tomato", linewidth=_cdl_lw2,
             label=(f"y = {slope:.4g}x + {intercept:.4g}\n"
                    f"Cdl = {cdl_mF:.4f} mF    R² = {r_sq:.4f}\n"
                    f"ECSA = {ecsa:.2f} cm²"),
@@ -1584,7 +1681,7 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
                    self.cdl_grid_style_var.get(),
                    linewidth=self.cdl_grid_linewidth_var.get(),
                    color=self.cdl_grid_color_var.get())
-        self.canvas_cdl.draw()
+        self._apply_font_to_ax(self.ax_cdl, self.canvas_cdl)
         self._auto_xlim_cdl = self.ax_cdl.get_xlim()
         self._auto_ylim_cdl = self.ax_cdl.get_ylim()
 

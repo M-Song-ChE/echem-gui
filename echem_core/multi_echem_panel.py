@@ -15,6 +15,7 @@ Right (scrollable):
 """
 
 from collections import OrderedDict
+import math
 
 import numpy as np
 import tkinter as tk
@@ -42,12 +43,18 @@ _UNIT_DIMS = {
     "A": "I",  "mA": "I",  "µA": "I",  "nA": "I",
     "V": "E",  "mV": "E",  "µV": "E",  "nV": "E",
     "s": "t",  "ms": "t",  "µs": "t",  "min": "t", "h": "t",
+    "Ohm": "Z", "Ω": "Z", "mΩ": "Z", "kΩ": "Z", "MΩ": "Z",
+    "Hz": "f",  "kHz": "f", "MHz": "f",
+    "deg": "φ", "rad": "φ",
 }
 _DIM_OPTS = {
     "I": ["(auto)", "A",  "mA",  "µA",  "nA"],
     "E": ["(auto)", "V",  "mV",  "µV",  "nV"],
     "t": ["(auto)", "s",  "ms",  "µs",  "min", "h"],
     "J": ["(auto)", "A/cm²", "mA/cm²", "µA/cm²", "nA/cm²"],
+    "Z": ["(auto)", "mΩ", "Ω",  "kΩ",  "MΩ"],
+    "f": ["(auto)", "Hz", "kHz", "MHz"],
+    "φ": ["(auto)", "deg", "rad"],
 }
 _ALL_UNITS = ["(auto)", "A", "mA", "µA", "nA",
               "V", "mV", "µV", "nV", "s", "ms", "µs", "min", "h"]
@@ -121,6 +128,12 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
                                       values=_COLOR_NAMES, state="readonly", width=12)
         _file_color_cb.pack(side=tk.LEFT, padx=(4, 0))
         _file_color_cb.bind("<<ComboboxSelected>>", self._on_file_color_change)
+        ttk.Label(_fc_row, text="Width:").pack(side=tk.LEFT, padx=(8, 0))
+        self.linewidth_var = tk.StringVar(value="1.5")
+        _lw_e = ttk.Entry(_fc_row, textvariable=self.linewidth_var, width=4)
+        _lw_e.pack(side=tk.LEFT, padx=(2, 0))
+        _lw_e.bind("<Return>",   lambda e: self._on_linewidth_change())
+        _lw_e.bind("<FocusOut>", lambda e: self._on_linewidth_change())
 
         # ── Axis selectors + unit dropdowns ──────────────────────
         ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
@@ -203,6 +216,24 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         y_unit_cb.bind("<<ComboboxSelected>>",
                        lambda e: _refresh_unit_after(self.y_unit_var, y_unit_cb))
 
+        def _do_refresh_unit_combos():
+            """Silently update unit combobox options to match current column selections."""
+            for col_var, unit_var, cb in (
+                (self.x_var, self.x_unit_var, x_unit_cb),
+                (self.y_var, self.y_unit_var, y_unit_cb),
+            ):
+                col = col_var.get()
+                if col == "J":
+                    dim = "J"
+                else:
+                    raw_unit = col.rsplit("/", 1)[-1].strip() if "/" in col else ""
+                    dim = _UNIT_DIMS.get(raw_unit)
+                opts = list(_DIM_OPTS.get(dim, ["(auto)"]))
+                cb["values"] = opts
+                if unit_var.get() not in opts:
+                    unit_var.set("(auto)")
+        self._do_refresh_unit_combos = _do_refresh_unit_combos
+
         def _swap_xy():
             xc, yc = self.x_var.get(),     self.y_var.get()
             xu, yu = self.x_unit_var.get(), self.y_unit_var.get()
@@ -230,22 +261,34 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         ttk.Label(xr_f, text="X min:").pack(side=tk.LEFT)
         self.x_min_var = tk.StringVar()
         _xmin = ttk.Entry(xr_f, textvariable=self.x_min_var, width=7)
-        _xmin.pack(side=tk.LEFT, padx=(2, 6))
+        _xmin.pack(side=tk.LEFT, padx=(2, 4))
         ttk.Label(xr_f, text="X max:").pack(side=tk.LEFT)
         self.x_max_var = tk.StringVar()
         _xmax = ttk.Entry(xr_f, textvariable=self.x_max_var, width=7)
-        _xmax.pack(side=tk.LEFT, padx=2)
+        _xmax.pack(side=tk.LEFT, padx=(2, 4))
+        ttk.Label(xr_f, text="Int:").pack(side=tk.LEFT)
+        self.x_grid_int_var = tk.StringVar(value="0")
+        _xgi = ttk.Entry(xr_f, textvariable=self.x_grid_int_var, width=5)
+        _xgi.pack(side=tk.LEFT, padx=(2, 0))
+        _xgi.bind("<Return>",   lambda e: self._auto_replot())
+        _xgi.bind("<FocusOut>", lambda e: self._auto_replot())
 
         yr_f = ttk.Frame(left)
         yr_f.pack(fill=tk.X, padx=4, pady=(1, 0))
         ttk.Label(yr_f, text="Y min:").pack(side=tk.LEFT)
         self.y_min_var = tk.StringVar()
         _ymin = ttk.Entry(yr_f, textvariable=self.y_min_var, width=7)
-        _ymin.pack(side=tk.LEFT, padx=(2, 6))
+        _ymin.pack(side=tk.LEFT, padx=(2, 4))
         ttk.Label(yr_f, text="Y max:").pack(side=tk.LEFT)
         self.y_max_var = tk.StringVar()
         _ymax = ttk.Entry(yr_f, textvariable=self.y_max_var, width=7)
-        _ymax.pack(side=tk.LEFT, padx=2)
+        _ymax.pack(side=tk.LEFT, padx=(2, 4))
+        ttk.Label(yr_f, text="Int:").pack(side=tk.LEFT)
+        self.y_grid_int_var = tk.StringVar(value="0")
+        _ygi = ttk.Entry(yr_f, textvariable=self.y_grid_int_var, width=5)
+        _ygi.pack(side=tk.LEFT, padx=(2, 0))
+        _ygi.bind("<Return>",   lambda e: self._auto_replot())
+        _ygi.bind("<FocusOut>", lambda e: self._auto_replot())
 
         ttk.Label(left, text="(blank = auto)", foreground="gray",
                   font=("", 8)).pack(anchor=tk.W, padx=4)
@@ -364,7 +407,7 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         self.cycle_gradient_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(_cc_row1, text="Gradient", variable=self.cycle_gradient_var,
                         command=self._on_gradient_change).pack(side=tk.LEFT)
-        self.cycle_reverse_var = tk.BooleanVar(value=False)
+        self.cycle_reverse_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(_cc_row1, text="Reverse", variable=self.cycle_reverse_var,
                         command=self._on_gradient_change).pack(side=tk.LEFT, padx=(8, 0))
         _cc_row2 = ttk.Frame(left)
@@ -421,20 +464,9 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         self.x_grid_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(grid_xy_row, text="X", variable=self.x_grid_var,
                         command=self._auto_replot).pack(side=tk.LEFT)
-        ttk.Label(grid_xy_row, text="Interval:").pack(side=tk.LEFT, padx=(6, 0))
-        self.x_grid_int_var = tk.StringVar(value="0")
-        _xgi = ttk.Entry(grid_xy_row, textvariable=self.x_grid_int_var, width=5)
-        _xgi.pack(side=tk.LEFT, padx=(2, 0))
         self.y_grid_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(grid_xy_row, text="Y", variable=self.y_grid_var,
                         command=self._auto_replot).pack(side=tk.LEFT, padx=(10, 0))
-        ttk.Label(grid_xy_row, text="Interval:").pack(side=tk.LEFT, padx=(6, 0))
-        self.y_grid_int_var = tk.StringVar(value="0")
-        _ygi = ttk.Entry(grid_xy_row, textvariable=self.y_grid_int_var, width=5)
-        _ygi.pack(side=tk.LEFT, padx=(2, 0))
-        for _gi in (_xgi, _ygi):
-            _gi.bind("<Return>",   lambda e: self._auto_replot())
-            _gi.bind("<FocusOut>", lambda e: self._auto_replot())
         grid_style_row = ttk.Frame(left)
         grid_style_row.pack(fill=tk.X, padx=4, pady=(0, 2))
         ttk.Label(grid_style_row, text="Style:").pack(side=tk.LEFT)
@@ -459,6 +491,43 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         _glw.pack(side=tk.LEFT, padx=(2, 0))
         _glw.bind("<Return>",   lambda e: self._auto_replot())
         _glw.bind("<FocusOut>", lambda e: self._auto_replot())
+
+        # ── Font ──────────────────────────────────────────────────
+        ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
+        ttk.Label(left, text="Font", font=("", 9, "bold")).pack(anchor=tk.W, padx=4)
+        self.font_title_size_var = tk.StringVar(value="10")
+        self.font_title_bold_var = tk.BooleanVar(value=False)
+        self.font_label_size_var = tk.StringVar(value="10")
+        self.font_label_bold_var = tk.BooleanVar(value=False)
+        self.font_tick_size_var  = tk.StringVar(value="8")
+        self.font_tick_bold_var  = tk.BooleanVar(value=False)
+        _font_title_row = ttk.Frame(left)
+        _font_title_row.pack(fill=tk.X, padx=4, pady=(2, 0))
+        ttk.Label(_font_title_row, text="Title:      Size").pack(side=tk.LEFT)
+        _fts_e = ttk.Entry(_font_title_row, textvariable=self.font_title_size_var, width=4)
+        _fts_e.pack(side=tk.LEFT, padx=(2, 4))
+        _fts_e.bind("<Return>",   lambda e: self._auto_replot())
+        _fts_e.bind("<FocusOut>", lambda e: self._auto_replot())
+        ttk.Checkbutton(_font_title_row, text="Bold", variable=self.font_title_bold_var,
+                        command=self._auto_replot).pack(side=tk.LEFT)
+        _font_label_row = ttk.Frame(left)
+        _font_label_row.pack(fill=tk.X, padx=4, pady=(2, 0))
+        ttk.Label(_font_label_row, text="Axis Lbl: Size").pack(side=tk.LEFT)
+        _fls_e = ttk.Entry(_font_label_row, textvariable=self.font_label_size_var, width=4)
+        _fls_e.pack(side=tk.LEFT, padx=(2, 4))
+        _fls_e.bind("<Return>",   lambda e: self._auto_replot())
+        _fls_e.bind("<FocusOut>", lambda e: self._auto_replot())
+        ttk.Checkbutton(_font_label_row, text="Bold", variable=self.font_label_bold_var,
+                        command=self._auto_replot).pack(side=tk.LEFT)
+        _font_tick_row = ttk.Frame(left)
+        _font_tick_row.pack(fill=tk.X, padx=4, pady=(2, 0))
+        ttk.Label(_font_tick_row, text="Tick Nos: Size").pack(side=tk.LEFT)
+        _fks_e = ttk.Entry(_font_tick_row, textvariable=self.font_tick_size_var, width=4)
+        _fks_e.pack(side=tk.LEFT, padx=(2, 4))
+        _fks_e.bind("<Return>",   lambda e: self._auto_replot())
+        _fks_e.bind("<FocusOut>", lambda e: self._auto_replot())
+        ttk.Checkbutton(_font_tick_row, text="Bold", variable=self.font_tick_bold_var,
+                        command=self._auto_replot).pack(side=tk.LEFT)
 
         # ── Reference Lines ───────────────────────────────────────
         ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
@@ -597,11 +666,17 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             "V": 1.0,  "mV": 1e-3, "µV": 1e-6, "nV": 1e-9,
             "s": 1.0,  "ms": 1e-3, "µs": 1e-6,
             "min": 60.0, "h": 3600.0,
+            "Ohm": 1.0, "Ω": 1.0, "mΩ": 1e-3, "kΩ": 1e3, "MΩ": 1e6,
+            "Hz": 1.0, "kHz": 1e3, "MHz": 1e6,
+            "rad": 1.0, "deg": math.pi / 180.0,
         }
         _DIMS = {
             "A": "I", "mA": "I", "µA": "I", "nA": "I",
             "V": "E", "mV": "E", "µV": "E", "nV": "E",
             "s": "t", "ms": "t", "µs": "t", "min": "t", "h": "t",
+            "Ohm": "Z", "Ω": "Z", "mΩ": "Z", "kΩ": "Z", "MΩ": "Z",
+            "Hz": "f", "kHz": "f", "MHz": "f",
+            "rad": "φ", "deg": "φ",
         }
         if "/" in col:
             col_base, src_unit = col.rsplit("/", 1)
@@ -877,6 +952,7 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         entry["cycle_gradient"] = self.cycle_gradient_var.get()
         entry["cycle_reverse"]  = self.cycle_reverse_var.get()
         entry["lightness_step"] = self.lightness_step_var.get()
+        entry["linewidth"]      = self.linewidth_var.get()
         entry["x_flip"]         = self.x_flip_var.get()
         entry["y_flip"]         = self.y_flip_var.get()
 
@@ -911,8 +987,9 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         entry.setdefault("grid_linewidth","0.8")
         entry.setdefault("reflines",      [])
         entry.setdefault("cycle_gradient", True)
-        entry.setdefault("cycle_reverse",  False)
+        entry.setdefault("cycle_reverse",  True)
         entry.setdefault("lightness_step", "0.08")
+        entry.setdefault("linewidth",      "1.5")
         entry.setdefault("x_flip",         False)
         entry.setdefault("y_flip",         False)
 
@@ -950,6 +1027,12 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             self.y_var.set(y_col)
         else:
             self.y_var.set(_default_ycol(cols, self.x_var.get()))
+
+        # Update unit combobox options to match the incoming file's columns
+        fn = getattr(self, '_do_refresh_unit_combos', None)
+        if fn:
+            fn()
+
         self.ref_electrode_var.set(entry["ref_electrode"])
         self.legend_show_var.set(entry["legend_show"])
         self.legend_frame_var.set(entry["legend_frame"])
@@ -982,8 +1065,9 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         name = next((n for n, h in _COLOR_HEX.items() if h == color), "Blue")
         self.file_color_var.set(name)
         self.cycle_gradient_var.set(entry.get("cycle_gradient", True))
-        self.cycle_reverse_var.set(entry.get("cycle_reverse", False))
+        self.cycle_reverse_var.set(entry.get("cycle_reverse", True))
         self.lightness_step_var.set(entry.get("lightness_step", "0.08"))
+        self.linewidth_var.set(entry.get("linewidth", "1.5"))
         self.x_flip_var.set(entry.get("x_flip", False))
         self.y_flip_var.set(entry.get("y_flip", False))
 
@@ -1108,9 +1192,15 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
 
         base_color = entry.get("color", "#1f77b4")
         _grad  = self.cycle_gradient_var.get() if is_active else entry.get("cycle_gradient", True)
-        _rev   = self.cycle_reverse_var.get()  if is_active else entry.get("cycle_reverse", False)
+        _rev   = self.cycle_reverse_var.get()  if is_active else entry.get("cycle_reverse", True)
         try:    _step = float(self.lightness_step_var.get() if is_active else entry.get("lightness_step", "0.08"))
         except: _step = 0.08
+
+        _lw_s = self.linewidth_var.get() if is_active else entry.get("linewidth", "1.5")
+        try:
+            _lw = float(_lw_s)
+        except (ValueError, TypeError):
+            _lw = 1.5
 
         has_data = False
         if "cycle number" in df.columns:
@@ -1121,11 +1211,11 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
                     sub = df[df["cycle number"] == c]
                     ax.plot(sub[_real_xcol] * x_scale,
                             sub[_real_ycol] * y_scale,
-                            color=cycle_cols[i], label=f"C{c}")
+                            color=cycle_cols[i], label=f"C{c}", linewidth=_lw)
                 has_data = True
         else:
             ax.plot(df[_real_xcol] * x_scale, df[_real_ycol] * y_scale,
-                    color=base_color)
+                    color=base_color, label=short, linewidth=_lw)
             has_data = True
 
         # Append "(vs Ref)" only to voltage-type axes; J is never voltage
@@ -1173,6 +1263,8 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             entry["legend"].get_frame().set_visible(leg_frm)
             entry["leg_size"] = leg_size
             canvas.draw()
+
+        self._apply_font_to_ax(ax, canvas)
 
     def _apply_range(self, short, x_min_s, x_max_s, y_min_s, y_max_s):
         """Apply manual axis limits to the figure for *short*."""
@@ -1261,6 +1353,11 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             self.file_color_var.get(), "#1f77b4")
         self._auto_replot()
 
+    def _on_linewidth_change(self):
+        if self.active_file and self.active_file in self.files:
+            self.files[self.active_file]["linewidth"] = self.linewidth_var.get()
+        self._auto_replot()
+
     def _on_gradient_change(self):
         """Persist gradient settings to the active file's entry, then replot."""
         if self.active_file and self.active_file in self.files:
@@ -1268,6 +1365,36 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             self.files[self.active_file]["cycle_reverse"]  = self.cycle_reverse_var.get()
             self.files[self.active_file]["lightness_step"] = self.lightness_step_var.get()
         self._auto_replot()
+
+    # ════════════════════════════════════════════════════════════════
+    # Font helpers
+    # ════════════════════════════════════════════════════════════════
+    def _read_font(self):
+        def _f(v, d):
+            try:
+                return float(v.get())
+            except Exception:
+                return d
+        return (
+            _f(self.font_title_size_var, 10.0),
+            'bold' if self.font_title_bold_var.get() else 'normal',
+            _f(self.font_label_size_var, 10.0),
+            'bold' if self.font_label_bold_var.get() else 'normal',
+            _f(self.font_tick_size_var,  8.0),
+            self.font_tick_bold_var.get(),
+        )
+
+    def _apply_font_to_ax(self, ax, canvas):
+        ts, tb, ls, lb, ks, kb = self._read_font()
+        ax.set_title(ax.get_title(),   fontsize=ts, fontweight=tb)
+        ax.set_xlabel(ax.get_xlabel(), fontsize=ls, fontweight=lb)
+        ax.set_ylabel(ax.get_ylabel(), fontsize=ls, fontweight=lb)
+        ax.tick_params(axis='both', labelsize=ks)
+        canvas.draw()
+        if kb:
+            for lbl in ax.get_xticklabels() + ax.get_yticklabels():
+                lbl.set_fontweight('bold')
+            canvas.draw_idle()
 
     # ════════════════════════════════════════════════════════════════
     # Legend frame toggle
@@ -1475,7 +1602,10 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         xoff = -95 if xf > 0.65 else 15
         yoff = -60 if yf > 0.65 else 15
         hint = f"  [{idx + 1}/{n}]" if n > 1 else ""
-        text = f"x = {x:.4g}\ny = {y:.4g}\n{label}{hint}"
+        text = f"{short}\nx = {x:.4g}\ny = {y:.4g}"
+        if label != short:
+            text += f"  ({label})"
+        text += hint
         if n > 1 and idx == 0:
             text += "\n↻ click again to cycle"
         self._clear_ann(short, redraw=False)

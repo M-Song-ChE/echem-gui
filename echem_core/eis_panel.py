@@ -206,6 +206,15 @@ class EISPanel(FileManagerMixin, ttk.Frame):
                         variable=self.connect_lines_var,
                         command=self._auto_replot).pack(anchor=tk.W, padx=4)
 
+        lw_row = ttk.Frame(left)
+        lw_row.pack(fill=tk.X, padx=4, pady=(2, 0))
+        ttk.Label(lw_row, text="Line Width:").pack(side=tk.LEFT)
+        self.linewidth_var = tk.StringVar(value="1.5")
+        _lw_e = ttk.Entry(lw_row, textvariable=self.linewidth_var, width=4)
+        _lw_e.pack(side=tk.LEFT, padx=(2, 0))
+        _lw_e.bind("<Return>",   lambda e: self._auto_replot())
+        _lw_e.bind("<FocusOut>", lambda e: self._auto_replot())
+
         # ── Plot Range ────────────────────────────────────────────
         ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
         ttk.Label(left, text="Plot Range", font=("", 9, "bold")).pack(anchor=tk.W, padx=4)
@@ -214,23 +223,35 @@ class EISPanel(FileManagerMixin, ttk.Frame):
         xr_f.pack(fill=tk.X, padx=4, pady=2)
         ttk.Label(xr_f, text="X:").pack(side=tk.LEFT)
         self.x_min_var = tk.StringVar()
-        _xmin = ttk.Entry(xr_f, textvariable=self.x_min_var, width=7)
+        _xmin = ttk.Entry(xr_f, textvariable=self.x_min_var, width=6)
         _xmin.pack(side=tk.LEFT, padx=(2, 2))
         ttk.Label(xr_f, text="–").pack(side=tk.LEFT)
         self.x_max_var = tk.StringVar()
-        _xmax = ttk.Entry(xr_f, textvariable=self.x_max_var, width=7)
-        _xmax.pack(side=tk.LEFT, padx=(2, 0))
+        _xmax = ttk.Entry(xr_f, textvariable=self.x_max_var, width=6)
+        _xmax.pack(side=tk.LEFT, padx=(2, 4))
+        ttk.Label(xr_f, text="Int:").pack(side=tk.LEFT)
+        self.x_grid_int_var = tk.StringVar(value="0")
+        _xgi = ttk.Entry(xr_f, textvariable=self.x_grid_int_var, width=5)
+        _xgi.pack(side=tk.LEFT, padx=(2, 0))
+        _xgi.bind("<Return>",   lambda e: self._auto_replot())
+        _xgi.bind("<FocusOut>", lambda e: self._auto_replot())
 
         yr_f = ttk.Frame(left)
         yr_f.pack(fill=tk.X, padx=4, pady=2)
         ttk.Label(yr_f, text="Y:").pack(side=tk.LEFT)
         self.y_min_var = tk.StringVar()
-        _ymin = ttk.Entry(yr_f, textvariable=self.y_min_var, width=7)
+        _ymin = ttk.Entry(yr_f, textvariable=self.y_min_var, width=6)
         _ymin.pack(side=tk.LEFT, padx=(2, 2))
         ttk.Label(yr_f, text="–").pack(side=tk.LEFT)
         self.y_max_var = tk.StringVar()
-        _ymax = ttk.Entry(yr_f, textvariable=self.y_max_var, width=7)
-        _ymax.pack(side=tk.LEFT, padx=(2, 0))
+        _ymax = ttk.Entry(yr_f, textvariable=self.y_max_var, width=6)
+        _ymax.pack(side=tk.LEFT, padx=(2, 4))
+        ttk.Label(yr_f, text="Int:").pack(side=tk.LEFT)
+        self.y_grid_int_var = tk.StringVar(value="0")
+        _ygi = ttk.Entry(yr_f, textvariable=self.y_grid_int_var, width=5)
+        _ygi.pack(side=tk.LEFT, padx=(2, 0))
+        _ygi.bind("<Return>",   lambda e: self._auto_replot())
+        _ygi.bind("<FocusOut>", lambda e: self._auto_replot())
 
         ttk.Label(left, text="(blank = auto)", foreground="gray",
                   font=("", 8)).pack(anchor=tk.W, padx=4)
@@ -298,18 +319,9 @@ class EISPanel(FileManagerMixin, ttk.Frame):
         self.x_grid_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(grid_row, text="X", variable=self.x_grid_var,
                         command=self._auto_replot).pack(side=tk.LEFT)
-        self.x_grid_int_var = tk.StringVar(value="0")
-        _xgi = ttk.Entry(grid_row, textvariable=self.x_grid_int_var, width=5)
-        _xgi.pack(side=tk.LEFT, padx=(2, 8))
         self.y_grid_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(grid_row, text="Y", variable=self.y_grid_var,
-                        command=self._auto_replot).pack(side=tk.LEFT)
-        self.y_grid_int_var = tk.StringVar(value="0")
-        _ygi = ttk.Entry(grid_row, textvariable=self.y_grid_int_var, width=5)
-        _ygi.pack(side=tk.LEFT, padx=(2, 0))
-        for _gi in (_xgi, _ygi):
-            _gi.bind("<Return>",   lambda e: self._auto_replot())
-            _gi.bind("<FocusOut>", lambda e: self._auto_replot())
+                        command=self._auto_replot).pack(side=tk.LEFT, padx=(8, 0))
 
         grid_style_row = ttk.Frame(left)
         grid_style_row.pack(fill=tk.X, padx=4, pady=(0, 2))
@@ -335,6 +347,43 @@ class EISPanel(FileManagerMixin, ttk.Frame):
         _glw.pack(side=tk.LEFT, padx=(2, 0))
         _glw.bind("<Return>",   lambda e: self._auto_replot())
         _glw.bind("<FocusOut>", lambda e: self._auto_replot())
+
+        # ── Font ──────────────────────────────────────────────────
+        ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
+        ttk.Label(left, text="Font", font=("", 9, "bold")).pack(anchor=tk.W, padx=4)
+        self.font_title_size_var = tk.StringVar(value="10")
+        self.font_title_bold_var = tk.BooleanVar(value=False)
+        self.font_label_size_var = tk.StringVar(value="10")
+        self.font_label_bold_var = tk.BooleanVar(value=False)
+        self.font_tick_size_var  = tk.StringVar(value="8")
+        self.font_tick_bold_var  = tk.BooleanVar(value=False)
+        _font_title_row = ttk.Frame(left)
+        _font_title_row.pack(fill=tk.X, padx=4, pady=(2, 0))
+        ttk.Label(_font_title_row, text="Title:      Size").pack(side=tk.LEFT)
+        _fts_e = ttk.Entry(_font_title_row, textvariable=self.font_title_size_var, width=4)
+        _fts_e.pack(side=tk.LEFT, padx=(2, 4))
+        _fts_e.bind("<Return>",   lambda e: self._auto_replot())
+        _fts_e.bind("<FocusOut>", lambda e: self._auto_replot())
+        ttk.Checkbutton(_font_title_row, text="Bold", variable=self.font_title_bold_var,
+                        command=self._auto_replot).pack(side=tk.LEFT)
+        _font_label_row = ttk.Frame(left)
+        _font_label_row.pack(fill=tk.X, padx=4, pady=(2, 0))
+        ttk.Label(_font_label_row, text="Axis Lbl: Size").pack(side=tk.LEFT)
+        _fls_e = ttk.Entry(_font_label_row, textvariable=self.font_label_size_var, width=4)
+        _fls_e.pack(side=tk.LEFT, padx=(2, 4))
+        _fls_e.bind("<Return>",   lambda e: self._auto_replot())
+        _fls_e.bind("<FocusOut>", lambda e: self._auto_replot())
+        ttk.Checkbutton(_font_label_row, text="Bold", variable=self.font_label_bold_var,
+                        command=self._auto_replot).pack(side=tk.LEFT)
+        _font_tick_row = ttk.Frame(left)
+        _font_tick_row.pack(fill=tk.X, padx=4, pady=(2, 0))
+        ttk.Label(_font_tick_row, text="Tick Nos: Size").pack(side=tk.LEFT)
+        _fks_e = ttk.Entry(_font_tick_row, textvariable=self.font_tick_size_var, width=4)
+        _fks_e.pack(side=tk.LEFT, padx=(2, 4))
+        _fks_e.bind("<Return>",   lambda e: self._auto_replot())
+        _fks_e.bind("<FocusOut>", lambda e: self._auto_replot())
+        ttk.Checkbutton(_font_tick_row, text="Bold", variable=self.font_tick_bold_var,
+                        command=self._auto_replot).pack(side=tk.LEFT)
 
         # ── Reference Lines ───────────────────────────────────────
         ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
@@ -686,6 +735,36 @@ class EISPanel(FileManagerMixin, ttk.Frame):
             return
         self._plot()
 
+    # ════════════════════════════════════════════════════════════════
+    # Font helpers
+    # ════════════════════════════════════════════════════════════════
+    def _read_font(self):
+        def _f(v, d):
+            try:
+                return float(v.get())
+            except Exception:
+                return d
+        return (
+            _f(self.font_title_size_var, 10.0),
+            'bold' if self.font_title_bold_var.get() else 'normal',
+            _f(self.font_label_size_var, 10.0),
+            'bold' if self.font_label_bold_var.get() else 'normal',
+            _f(self.font_tick_size_var,  8.0),
+            self.font_tick_bold_var.get(),
+        )
+
+    def _apply_font_to_ax(self, ax, canvas):
+        ts, tb, ls, lb, ks, kb = self._read_font()
+        ax.set_title(ax.get_title(),   fontsize=ts, fontweight=tb)
+        ax.set_xlabel(ax.get_xlabel(), fontsize=ls, fontweight=lb)
+        ax.set_ylabel(ax.get_ylabel(), fontsize=ls, fontweight=lb)
+        ax.tick_params(axis='both', labelsize=ks)
+        canvas.draw()
+        if kb:
+            for lbl in ax.get_xticklabels() + ax.get_yticklabels():
+                lbl.set_fontweight('bold')
+            canvas.draw_idle()
+
     def _plot(self):
         if not self.active_file:
             return
@@ -717,6 +796,11 @@ class EISPanel(FileManagerMixin, ttk.Frame):
         self._clear_annotation(redraw=False)
         self.ax.clear()
 
+        try:
+            _lw = float(self.linewidth_var.get())
+        except (ValueError, TypeError):
+            _lw = 1.5
+
         has_data = False
         for short, fentry in self.files.items():
             if fentry.get("hidden", False):
@@ -736,7 +820,7 @@ class EISPanel(FileManagerMixin, ttk.Frame):
                 marker=file_marker,
                 markersize=4,
                 linestyle=file_line,
-                linewidth=1.2,
+                linewidth=_lw,
                 label=short,
             )
             has_data = True
@@ -770,7 +854,7 @@ class EISPanel(FileManagerMixin, ttk.Frame):
             self._legend_obj.get_frame().set_visible(leg_frame)
             self._current_legend_size = leg_size
 
-        self.canvas.draw()
+        self._apply_font_to_ax(self.ax, self.canvas)
 
     def _apply_range(self):
         """Apply manual axis limits from the range entry fields."""
