@@ -18,8 +18,12 @@
 - **From the exe:** Double-click `EchemGUI.exe` inside the `EchemGUI` folder.
 - **From Python:** Run `python run_echem.py` in the project folder.
 
-### Supported File Format
-The app reads **tab-separated `.txt` files** as exported by EC-Lab (BioLogic) and similar potentiostats. Column names are recognized automatically (e.g. `Ewe/V`, `I/mA`, `time/s`, `cycle number`, `Re(Z)/Ohm`, `-Im(Z)/Ohm`).
+### Supported File Formats
+The app reads two file types:
+- **BioLogic `.mpr` binary files** — loaded directly from EC-Lab without any manual export step. Requires the `galvani` package (`pip install galvani`).
+- **Tab-separated `.txt` files** — as exported by EC-Lab (BioLogic) and similar potentiostats.
+
+Column names are recognized automatically (e.g. `Ewe/V`, `I/mA`, `time/s`, `cycle number`, `Re(Z)/Ohm`, `-Im(Z)/Ohm`). Both file types can be mixed within the same tab and session.
 
 ---
 
@@ -47,7 +51,7 @@ The layout in every tab is:
 Use this tab to load one or more data files and overlay them all on a single plot.
 
 ### 3.1 Loading Files
-1. Click **Load File(s)** to open a file browser. Select one or more `.txt` files.
+1. Click **Load File(s)** to open a file browser. Select one or more `.mpr` or `.txt` files.
 2. Loaded files appear in the **file listbox**. Click a filename to make it the active file — all left-panel controls reflect that file's settings.
 3. To remove a file, select it and click **Remove File**.
 
@@ -192,7 +196,7 @@ Double-click the title strip on either the CV or Cdl plot to rename it.
 Use this tab to visualize **electrochemical impedance spectroscopy (EIS)** data as a Nyquist diagram (Re(Z) vs. −Im(Z)).
 
 ### 6.1 Loading Files
-Load `.txt` files that contain impedance columns (e.g. `Re(Z)/Ohm` and `-Im(Z)/Ohm`).
+Load `.mpr` or `.txt` files that contain impedance columns (e.g. `Re(Z)/Ohm` and `-Im(Z)/Ohm`).
 
 ### 6.2 Axis Settings
 - Select which columns to use for X and Y using the dropdowns.
