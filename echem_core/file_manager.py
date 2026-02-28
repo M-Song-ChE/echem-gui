@@ -30,6 +30,39 @@ def _default_ycol(cols, x_col=""):
     return cols[2] if len(cols) > 2 else (cols[1] if len(cols) > 1 else cols[0])
 
 
+# EC-Lab column names to extract from .mpr files (after angle-bracket cleanup)
+_MPR_DESIRED = frozenset({
+    "time/s", "Ewe/V", "I/mA", "cycle number",
+    "Re(Z)/Ohm", "-Im(Z)/Ohm", "freq/Hz", "Phase(Z)/deg",
+})
+
+
+def _read_mpr(path: str) -> "pd.DataFrame":
+    """Read a BioLogic .mpr binary and return a DataFrame of desired columns only.
+
+    Uses galvani (lazily imported).  Raises ImportError with install hint if
+    galvani is missing, ValueError if no recognized columns are found.
+    """
+    try:
+        from galvani import BioLogic
+    except ImportError:
+        raise ImportError(
+            "galvani is required to load .mpr files.\n"
+            "Install it with:  pip install galvani"
+        )
+    mpr = BioLogic.MPRfile(path)
+    df  = pd.DataFrame(mpr.data)
+    # Apply the same column cleanup used for .txt files
+    df.columns = [c.strip().replace("<", "").replace(">", "") for c in df.columns]
+    keep = [c for c in df.columns if c in _MPR_DESIRED]
+    if not keep:
+        raise ValueError(
+            "No recognized columns found in the .mpr file.\n"
+            f"Columns present: {list(df.columns)}"
+        )
+    return df[keep].reset_index(drop=True)
+
+
 _COLOR_NAMES = ["Blue", "Orange", "Green", "Red", "Purple",
                 "Brown", "Pink", "Gray", "Olive", "Cyan"]
 _COLOR_HEX = {
@@ -56,7 +89,12 @@ class FileManagerMixin:
 
     def _load_files(self):
         paths = filedialog.askopenfilenames(
-            filetypes=[("Text files", "*.txt"), ("All files", "*.*")]
+            filetypes=[
+                ("EC-Lab / Text files", "*.mpr *.txt"),
+                ("BioLogic MPR",        "*.mpr"),
+                ("Text files",          "*.txt"),
+                ("All files",           "*.*"),
+            ]
         )
         if not paths:
             return
@@ -68,12 +106,15 @@ class FileManagerMixin:
                 short = f"{base_short} ({counter})"
                 counter += 1
             try:
-                df_raw = pd.read_csv(path, sep="\t")
-                # Strip whitespace and remove angle-bracket wrappers (e.g. <I>/mA → I/mA)
-                df_raw.columns = [c.strip().replace("<", "").replace(">", "")
-                                   for c in df_raw.columns]
-                # Drop blank "Unnamed: N" columns produced by trailing tab separators
-                df_raw = df_raw.loc[:, ~df_raw.columns.str.match(r"^Unnamed")]
+                if path.lower().endswith(".mpr"):
+                    df_raw = _read_mpr(path)
+                else:
+                    df_raw = pd.read_csv(path, sep="\t")
+                    # Strip whitespace and remove angle-bracket wrappers (e.g. <I>/mA → I/mA)
+                    df_raw.columns = [c.strip().replace("<", "").replace(">", "")
+                                       for c in df_raw.columns]
+                    # Drop blank "Unnamed: N" columns produced by trailing tab separators
+                    df_raw = df_raw.loc[:, ~df_raw.columns.str.match(r"^Unnamed")]
             except Exception as exc:
                 messagebox.showerror("Load error", f"{base_short}: {exc}")
                 continue
@@ -100,6 +141,8 @@ class FileManagerMixin:
         # Guard flag prevents <<ListboxSelect>> (fired by selection_set on Windows)
         # from calling _on_file_select prematurely before we do the explicit switch.
         # (do NOT replot — the user's current plot is preserved until they click Plot)
+        if not self.files:
+            return  # all files failed to load — nothing to switch to
         last_idx = self.file_listbox.size() - 1
         self.file_listbox.selection_clear(0, tk.END)
         self._loading_files = True

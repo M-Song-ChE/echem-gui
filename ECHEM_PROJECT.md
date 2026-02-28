@@ -16,7 +16,7 @@ echem_gui/
     multi_echem_panel.py    ← MultiEchemPanel class (Multi E.Chem tab)
     ecsa_panel.py           ← ECSAPanel class (dedicated ECSA Calc tab)
     eis_panel.py            ← EISPanel class (Nyquist Plot tab)
-    file_manager.py         ← FileManagerMixin: load/remove/switch files; _default_xcol/_default_ycol helpers; _on_file_visibility_change; _on_file_reorder (rebuilds files OrderedDict + _auto_replot)
+    file_manager.py         ← FileManagerMixin: load/remove/switch files; _default_xcol/_default_ycol helpers; _on_file_visibility_change; _on_file_reorder (rebuilds files OrderedDict + _auto_replot); _MPR_DESIRED frozenset of recognized EC-Lab column names; _read_mpr(path) helper (lazy galvani import, angle-bracket cleanup, column filtering)
     correction.py           ← CorrectionMixin: IR compensation + RHE conversion
     plotting.py             ← PlottingMixin: plot, zoom, pan, legend drag/resize, reset view, click-annotate; draw_reflines() helper
     ecsa.py                 ← ECSAMixin: legacy ECSA calc (used only by General E.Chem tab)
@@ -265,7 +265,7 @@ git rm --cached <file>      # unstage without deleting the local file
 
 ## Dependencies
 - Python standard: `tkinter`, `collections`
-- Third-party: `pandas`, `numpy`, `matplotlib`, `openpyxl`
+- Third-party: `pandas`, `numpy`, `matplotlib`, `openpyxl`, `galvani` (for `.mpr` binary loading; lazily imported — app launches without it, errors only when an `.mpr` file is selected)
 
 ## Important Design Decisions
 - File loading does NOT auto-replot (preserves current plot)
@@ -284,7 +284,7 @@ git rm --cached <file>      # unstage without deleting the local file
 - `canvas.draw()` (not `draw_idle()`) needed for legend resize to show frame changes in real-time
 - `set_draggable(True)` called after every `ax.legend(...)` call; old legend ref becomes stale after `ax.clear()` so reset to `None` before clearing
 - Toolbar Home button override requires subclassing `NavigationToolbar2Tk` (attribute assignment does not work — command is bound at init time)
-- Tab-separated `.txt` files expected; column names normalized on load: whitespace stripped, `<`/`>` removed (e.g. `<Ewe>/V` → `Ewe/V`)
+- **Two file formats supported**: BioLogic `.mpr` binary (via `galvani`) and tab-separated `.txt` (via `pd.read_csv`); both can be mixed in the same session. Column names normalized on load: whitespace stripped, `<`/`>` removed (e.g. `<Ewe>/V` → `Ewe/V`). `.mpr` loader additionally filters to `_MPR_DESIRED` columns only.
 - **`_clear_annotation` naming differs by panel** — EchemPanel (PlottingMixin) uses `_clear_annotation(redraw=False)`; ECSAPanel uses `_ei_clear_ann(redraw=False)`. Both must be called **before** `ax.clear()`.
 - **Axis label format** — `col (unit)` e.g. `I (mA)`, `time (ms)`; auto case converts the column name's own `/` separator to the same format (e.g. `I/mA` → `I (mA)`)
 - **`_pan_moved`** reset to `False` on every press, set `True` on actual motion; gates annotation on release
