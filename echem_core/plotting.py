@@ -2,10 +2,78 @@
 and click-to-annotate with overlap cycling."""
 
 import colorsys
+import io
 import math
 import numpy as np
 import matplotlib.colors as _mcolors
 from tkinter import messagebox
+
+
+def copy_figure_to_clipboard(fig):
+    """Copy *fig* to the Windows clipboard as a high-resolution PNG image.
+
+    Renders the figure at 150 DPI with tight bounding box, converts to the
+    CF_DIB clipboard format (standard Windows bitmap), and places it on the
+    clipboard so the user can paste directly into Word / PowerPoint / etc.
+
+    Requires Pillow. Falls back to an error dialog if Pillow is absent or the
+    copy fails for any reason.
+    """
+    try:
+        import ctypes
+        from PIL import Image
+
+        buf = io.BytesIO()
+        fig.savefig(buf, format='png', dpi=150, bbox_inches='tight')
+        buf.seek(0)
+        img = Image.open(buf).convert('RGB')
+
+        # Convert to BMP DIB (Windows clipboard native image format).
+        # The BMP file header is 14 bytes; strip it to obtain raw DIB data.
+        bmp_buf = io.BytesIO()
+        img.save(bmp_buf, 'BMP')
+        dib_data = bmp_buf.getvalue()[14:]
+
+        GMEM_MOVEABLE = 0x0002
+        CF_DIB = 8
+        kernel32 = ctypes.windll.kernel32
+        user32   = ctypes.windll.user32
+
+        # Declare proper 64-bit return types; without this, ctypes defaults to
+        # c_int (32-bit) which truncates HGLOBAL handles on 64-bit Windows,
+        # causing the "access violation writing 0x..." crash.
+        kernel32.GlobalAlloc.argtypes  = [ctypes.c_uint, ctypes.c_size_t]
+        kernel32.GlobalAlloc.restype   = ctypes.c_void_p
+        kernel32.GlobalLock.argtypes   = [ctypes.c_void_p]
+        kernel32.GlobalLock.restype    = ctypes.c_void_p
+        kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+        user32.OpenClipboard.argtypes  = [ctypes.c_void_p]
+        user32.SetClipboardData.argtypes = [ctypes.c_uint, ctypes.c_void_p]
+        user32.SetClipboardData.restype  = ctypes.c_void_p
+
+        hMem = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(dib_data))
+        if not hMem:
+            raise RuntimeError("GlobalAlloc failed")
+        pMem = kernel32.GlobalLock(hMem)
+        if not pMem:
+            raise RuntimeError("GlobalLock failed")
+        ctypes.memmove(pMem, dib_data, len(dib_data))
+        kernel32.GlobalUnlock(hMem)
+
+        if not user32.OpenClipboard(None):
+            raise RuntimeError("OpenClipboard failed")
+        user32.EmptyClipboard()
+        user32.SetClipboardData(CF_DIB, ctypes.c_void_p(hMem))
+        user32.CloseClipboard()
+
+    except ImportError:
+        messagebox.showwarning(
+            "Copy to Clipboard",
+            "Pillow is required for clipboard copy.\n"
+            "Install with:  pip install Pillow"
+        )
+    except Exception as exc:
+        messagebox.showerror("Copy to Clipboard", f"Failed to copy plot: {exc}")
 
 # Label prefix for internal artists (hidden from legend, excluded from click picking)
 _ANN_DOT_LABEL = "_click_dot"
@@ -128,6 +196,12 @@ class PlottingMixin:
         """Bind all matplotlib canvas events for zoom, pan, legend resize, click-annotate."""
         self._legend_obj = None
         self._current_legend_size = 8.0
+        self._legend_stable_map  = {}    # {stable_key: custom_label}
+        self._legend_stable_keys = []    # stable keys emitted during the last _plot()
+        self._legend_auto_labels = []    # auto-labels from the last _plot() (for edit diffing)
+        self._custom_xlabel      = None  # user-set axis label override (double-click)
+        self._custom_ylabel      = None
+        self._legend_manual_pos = None   # saved dragged position (axes-fraction tuple)
         self._auto_xlim = None
         self._auto_ylim = None
 
@@ -204,11 +278,23 @@ class PlottingMixin:
 
     # ── Press / release / motion ────────────────────────────────────
     def _on_press(self, event):
-        # Handle dblclick on title strip even when the click is outside the axes proper
+        # Handle dblclick on title / axis labels (may be outside axes bounding box)
         if event.button == 1 and getattr(event, 'dblclick', False):
             if self._hit_title_area(event, self.ax, self.fig):
                 self._edit_plot_title()
                 return
+            try:
+                renderer = event.canvas.get_renderer()
+                xl = self.ax.xaxis.label
+                if xl.get_text() and xl.get_window_extent(renderer).contains(event.x, event.y):
+                    self._edit_axis_label('x')
+                    return
+                yl = self.ax.yaxis.label
+                if yl.get_text() and yl.get_window_extent(renderer).contains(event.x, event.y):
+                    self._edit_axis_label('y')
+                    return
+            except Exception:
+                pass
 
         if event.inaxes != self.ax:
             return
@@ -498,10 +584,16 @@ class PlottingMixin:
 
         # Clear annotation BEFORE ax.clear() so .remove() still works on live artists
         self._clear_annotation(redraw=False)
+        # Save dragged legend position before axes are cleared
+        if self._legend_obj is not None:
+            _loc = getattr(self._legend_obj, '_loc', None)
+            if isinstance(_loc, (tuple, list)):
+                self._legend_manual_pos = tuple(_loc)
         self.ax.clear()
 
         multi = len(self.files) > 1
         has_legend = False
+        self._legend_stable_keys = []   # reset for this replot
 
         _lw_v = getattr(self, 'linewidth_var', None)
         try:
@@ -544,6 +636,8 @@ class PlottingMixin:
                     self.ax.plot(sub[_real_xcol] * x_scale,
                                  sub[_real_ycol] * y_scale,
                                  color=cycle_cols[i], label=label, linewidth=_lw)
+                    # Stable key always includes filename → survives single↔multi transitions
+                    self._legend_stable_keys.append(f"{short}:C{c}")
                 has_legend = True
             else:
                 label = short if multi else None
@@ -551,6 +645,7 @@ class PlottingMixin:
                             df[_real_ycol] * y_scale,
                             color=base_color, label=label, linewidth=_lw)
                 if label:
+                    self._legend_stable_keys.append(short)
                     has_legend = True
 
         # ── Axis labels: append "(vs Ref)" only for voltage-type axes ──────────
@@ -564,8 +659,19 @@ class PlottingMixin:
             _x_src = _real_xcol.rsplit("/", 1)[-1].strip() if "/" in _real_xcol else ""
             _x_is_V = (_x_unit_str in _VOLTAGE_UNITS if _x_unit_str != "(auto)"
                        else _x_src in _VOLTAGE_UNITS)
+        try:
+            _lpad = float(getattr(self, 'label_pad_var', None).get())
+        except Exception:
+            _lpad = 4.0
+        try:
+            _tpad = float(getattr(self, 'title_pad_var', None).get())
+        except Exception:
+            _tpad = 6.0
+
         xlabel = f"{x_label}  (vs {ref_text})" if (ref_text and _x_is_V) else x_label
-        self.ax.set_xlabel(xlabel)
+        self.ax.set_xlabel(
+            self._custom_xlabel if self._custom_xlabel is not None else xlabel,
+            labelpad=_lpad)
 
         if _y_is_J:
             _y_is_V = False
@@ -574,12 +680,14 @@ class PlottingMixin:
             _y_is_V = (_y_unit_str in _VOLTAGE_UNITS if _y_unit_str != "(auto)"
                        else _y_src in _VOLTAGE_UNITS)
         ylabel = f"{y_label}  (vs {ref_text})" if (ref_text and _y_is_V) else y_label
-        self.ax.set_ylabel(ylabel)
+        self.ax.set_ylabel(
+            self._custom_ylabel if self._custom_ylabel is not None else ylabel,
+            labelpad=_lpad)
 
         # Restore user-set plot title (persists across ax.clear() calls)
         _title_var = getattr(self, "plot_title_var", None)
         if _title_var is not None:
-            self.ax.set_title(_title_var.get())
+            self.ax.set_title(_title_var.get(), pad=_tpad)
 
         # Store auto-scaled limits before user overrides
         self.fig.tight_layout()
@@ -608,6 +716,17 @@ class PlottingMixin:
             self._legend_obj.get_frame().set_visible(
                 frame_visible.get() if frame_visible is not None else True
             )
+            # Capture auto-labels (used in edit dialog for change-detection)
+            self._legend_auto_labels = [t.get_text() for t in self._legend_obj.get_texts()]
+            # Apply custom labels by stable key (survives single↔multi-file transitions)
+            for i, text_obj in enumerate(self._legend_obj.get_texts()):
+                if i < len(self._legend_stable_keys):
+                    custom = self._legend_stable_map.get(self._legend_stable_keys[i])
+                    if custom:
+                        text_obj.set_text(custom)
+            # Restore dragged position (overrides loc= argument)
+            if self._legend_manual_pos is not None:
+                self._legend_obj._loc = self._legend_manual_pos
 
         _xgv = getattr(self, 'x_grid_var', None)
         if _xgv is not None:
@@ -705,6 +824,28 @@ class PlottingMixin:
             _title_var = getattr(self, "plot_title_var", None)
             if _title_var is not None:
                 _title_var.set(new_title)
+
+    def _edit_axis_label(self, which):
+        """Edit X or Y axis label by double-clicking it. Empty string reverts to auto."""
+        from tkinter.simpledialog import askstring
+        if which == 'x':
+            current = self.ax.get_xlabel()
+            new = askstring("Edit X Label", "X axis label\n(blank to revert to auto):",
+                            initialvalue=current, parent=self)
+            if new is not None:
+                self._custom_xlabel = new if new.strip() else None
+                self.ax.set_xlabel(
+                    new if new.strip() else current)
+                self.canvas.draw_idle()
+        else:
+            current = self.ax.get_ylabel()
+            new = askstring("Edit Y Label", "Y axis label\n(blank to revert to auto):",
+                            initialvalue=current, parent=self)
+            if new is not None:
+                self._custom_ylabel = new if new.strip() else None
+                self.ax.set_ylabel(
+                    new if new.strip() else current)
+                self.canvas.draw_idle()
 
     # ── Axis range helper ───────────────────────────────────────────
     def _apply_axis_range(self):

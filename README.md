@@ -123,8 +123,14 @@ Click **Export to Excel** to save the active file's data to an `.xlsx` file with
 - **Raw** — original data, one column group per selected cycle.
 - **Corrected** — IR/RHE corrected data.
 
-### 3.11 Editable Plot Title
-Double-click anywhere in the title area above the plot to rename it.
+### 3.11 Plot Title and Axis Labels
+- **Plot title** — the title entry in the left panel is pre-filled with "Title". Edit it directly in the entry field; the plot updates as you type. You can also **double-click** anywhere in the title strip above the plot.
+- **Axis labels** — double-click the **X axis label** or **Y axis label** text on the plot to rename it. Entering a blank string reverts to the auto-generated label. Custom labels persist across unit/column changes until explicitly cleared.
+
+### 3.12 Font Spacing and Plot Height
+In the Font section of the left panel:
+- **Spacing (pt): Title [__] Label [__]** — adjust the gap (in points) between the top of the axes and the title (default 6), and between the tick numbers and the axis labels (default 4). Press Enter or click away to apply.
+- **Plot height (px):** — enter a pixel value to fix the canvas height (e.g. 300 for a wide landscape plot, 600 for tall). Leave blank for automatic sizing.
 
 ---
 
@@ -261,6 +267,7 @@ Double-click the title strip to rename the plot.
 | **Right-click** | Dismiss the annotation |
 | **Double-click** (legend) | Open the legend label editor (rename + reorder) |
 | **Double-click** (title strip) | Rename the plot title |
+| **Double-click** (axis label) | Rename the X or Y axis label (General E.Chem tab) |
 | **Right-drag** (legend) | Resize legend font size |
 
 ### Navigation Toolbar
@@ -269,6 +276,7 @@ Each plot has a toolbar below it:
 - **Back / Forward** — navigate view history
 - **Pan / Zoom** — standard matplotlib pan and zoom tools
 - **Save** — save the current plot as an image file
+- **Copy** — copy the current plot image to the Windows clipboard; paste directly into Word, PowerPoint, etc.
 
 ### Zoom/Pan Preservation
 Each file remembers its last zoom/pan state. Switching to another file and back restores the view exactly where you left it.
@@ -292,4 +300,6 @@ Each file remembers its last zoom/pan state. Switching to another file and back 
 - **Multi E.Chem zoom** — use the zoom feature to inspect a single file in detail without losing the grid view; double-click anywhere on the subplot (not on the title) to zoom.
 - **Sharing results** — use the toolbar's Save button to export any plot as PNG/PDF, or use Export to Excel (General tab) for the raw and corrected data.
 - **ECSA: loading a new file always clears the CV plot** — switching to a newly loaded file in the ECSA tab immediately clears and redraws the CV plot for that file. If no cycles are selected yet, the CV area will be blank (as expected) until you check at least one cycle.
+- **Spacing for publication** — use the Spacing controls in the Font section to increase the gap between tick numbers and axis labels (Label pad) or push the title further from the axes (Title pad). Values are in points; typical ranges are 4–20 for labels and 6–20 for title.
+- **Copy to clipboard** — click the **Copy** button next to any toolbar to put the current plot on the clipboard and paste it directly into Word or PowerPoint at full resolution.
 - **Rebuilding the exe** — if you update the code and want a fresh exe, run `pyinstaller EchemGUI.spec` from the project folder (with PyInstaller installed).

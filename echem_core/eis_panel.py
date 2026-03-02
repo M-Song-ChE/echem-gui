@@ -15,7 +15,7 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 
 from .file_manager import FileManagerMixin, _COLOR_NAMES, _COLOR_HEX
-from .plotting import apply_grid, draw_reflines
+from .plotting import apply_grid, draw_reflines, copy_figure_to_clipboard
 from .legend_editor import open_legend_editor
 from .checklist import CheckableListbox
 
@@ -75,6 +75,9 @@ class EISPanel(FileManagerMixin, ttk.Frame):
         # Plot / legend state
         self._legend_obj           = None
         self._current_legend_size  = 8.0
+        self._legend_stable_map  = {}    # {stable_key: custom_label}
+        self._legend_stable_keys = []    # stable keys from the last _plot()
+        self._legend_auto_labels = []    # auto-labels from the last _plot() (for edit diffing)
         self._auto_xlim            = None
         self._auto_ylim            = None
 
@@ -302,7 +305,14 @@ class EISPanel(FileManagerMixin, ttk.Frame):
             state="readonly", width=11,
         )
         _leg_loc_cb.pack(side=tk.LEFT, padx=2)
-        _leg_loc_cb.bind("<<ComboboxSelected>>", lambda e: self._auto_replot())
+        def _on_leg_loc_select_eis(e=None):
+            self._legend_manual_pos = None  # user explicitly chose a location
+            # Also neutralise the live legend's _loc so _plot() doesn't
+            # re-capture the old tuple before ax.clear() runs.
+            if self._legend_obj is not None:
+                self._legend_obj._loc = 0
+            self._auto_replot()
+        _leg_loc_cb.bind("<<ComboboxSelected>>", _on_leg_loc_select_eis)
 
         ttk.Button(left, text="Edit Labels",
                    command=self._edit_legend_labels).pack(anchor=tk.W, padx=4, pady=2)
@@ -384,6 +394,20 @@ class EISPanel(FileManagerMixin, ttk.Frame):
         _fks_e.bind("<FocusOut>", lambda e: self._auto_replot())
         ttk.Checkbutton(_font_tick_row, text="Bold", variable=self.font_tick_bold_var,
                         command=self._auto_replot).pack(side=tk.LEFT)
+        _spacing_row = ttk.Frame(left)
+        _spacing_row.pack(fill=tk.X, padx=4, pady=(2, 0))
+        ttk.Label(_spacing_row, text="Spacing (pt): Title").pack(side=tk.LEFT)
+        self.title_pad_var = tk.StringVar(value="6")
+        _tpad_e = ttk.Entry(_spacing_row, textvariable=self.title_pad_var, width=4)
+        _tpad_e.pack(side=tk.LEFT, padx=(2, 6))
+        _tpad_e.bind("<Return>",   lambda e: self._auto_replot())
+        _tpad_e.bind("<FocusOut>", lambda e: self._auto_replot())
+        ttk.Label(_spacing_row, text="Label").pack(side=tk.LEFT)
+        self.label_pad_var = tk.StringVar(value="4")
+        _lpad_e = ttk.Entry(_spacing_row, textvariable=self.label_pad_var, width=4)
+        _lpad_e.pack(side=tk.LEFT, padx=(2, 0))
+        _lpad_e.bind("<Return>",   lambda e: self._auto_replot())
+        _lpad_e.bind("<FocusOut>", lambda e: self._auto_replot())
 
         # ── Reference Lines ───────────────────────────────────────
         ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
@@ -443,6 +467,18 @@ class EISPanel(FileManagerMixin, ttk.Frame):
         _rl_lw.bind("<Return>",   lambda e: self._on_refline_style_color_change())
         _rl_lw.bind("<FocusOut>", lambda e: self._on_refline_style_color_change())
 
+        # ── Plot height ───────────────────────────────────────────
+        ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=4)
+        _ph_row = ttk.Frame(left)
+        _ph_row.pack(fill=tk.X, padx=4, pady=2)
+        ttk.Label(_ph_row, text="Plot height (px):").pack(side=tk.LEFT)
+        self._plot_height_var = tk.StringVar(value="")
+        _ph_entry = ttk.Entry(_ph_row, textvariable=self._plot_height_var, width=6)
+        _ph_entry.pack(side=tk.LEFT, padx=(4, 0))
+        _ph_entry.bind("<Return>",   lambda e: self._apply_plot_height())
+        _ph_entry.bind("<FocusOut>", lambda e: self._apply_plot_height())
+        ttk.Label(_ph_row, text="(blank = auto)").pack(side=tk.LEFT, padx=(4, 0))
+
         # ── Plot button ───────────────────────────────────────────
         ttk.Button(left, text="Plot",
                    command=self._plot).pack(padx=4, pady=6, anchor=tk.W)
@@ -465,7 +501,14 @@ class EISPanel(FileManagerMixin, ttk.Frame):
             def home(tb_self, *args):
                 panel_ref._reset_view()
 
-        _EISToolbar(self.canvas, tb_frame).update()
+        tb = _EISToolbar(self.canvas, tb_frame, pack_toolbar=False)
+        tb.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        tb.update()
+        tk.Button(
+            tb_frame, text="Copy",
+            command=lambda: copy_figure_to_clipboard(self.fig),
+            relief=tk.RAISED, borderwidth=1, padx=6,
+        ).pack(side=tk.LEFT, padx=(4, 2), pady=1)
 
         # Mouse interactions
         self.canvas.mpl_connect("scroll_event",          self._on_scroll)
@@ -755,15 +798,21 @@ class EISPanel(FileManagerMixin, ttk.Frame):
 
     def _apply_font_to_ax(self, ax, canvas):
         ts, tb, ls, lb, ks, kb = self._read_font()
-        ax.set_title(ax.get_title(),   fontsize=ts, fontweight=tb)
-        ax.set_xlabel(ax.get_xlabel(), fontsize=ls, fontweight=lb)
-        ax.set_ylabel(ax.get_ylabel(), fontsize=ls, fontweight=lb)
+        try: title_pad = float(self.title_pad_var.get())
+        except Exception: title_pad = 6.0
+        try: label_pad = float(self.label_pad_var.get())
+        except Exception: label_pad = 4.0
+        ax.set_title(ax.get_title(),   fontsize=ts, fontweight=tb, pad=title_pad)
+        ax.set_xlabel(ax.get_xlabel(), fontsize=ls, fontweight=lb, labelpad=label_pad)
+        ax.set_ylabel(ax.get_ylabel(), fontsize=ls, fontweight=lb, labelpad=label_pad)
         ax.tick_params(axis='both', labelsize=ks)
+        ax.figure.tight_layout()
         canvas.draw()
         if kb:
             for lbl in ax.get_xticklabels() + ax.get_yticklabels():
                 lbl.set_fontweight('bold')
-            canvas.draw_idle()
+            ax.figure.tight_layout()
+            canvas.draw()
 
     def _plot(self):
         if not self.active_file:
@@ -792,6 +841,11 @@ class EISPanel(FileManagerMixin, ttk.Frame):
         except ValueError:
             leg_size = 8.0
 
+        # Save dragged legend position before clearing
+        if self._legend_obj is not None:
+            _loc = getattr(self._legend_obj, '_loc', None)
+            if isinstance(_loc, (tuple, list)):
+                self._legend_manual_pos = tuple(_loc)
         self._legend_obj = None
         self._clear_annotation(redraw=False)
         self.ax.clear()
@@ -802,6 +856,7 @@ class EISPanel(FileManagerMixin, ttk.Frame):
             _lw = 1.5
 
         has_data = False
+        self._legend_stable_keys = []   # reset for this replot
         for short, fentry in self.files.items():
             if fentry.get("hidden", False):
                 continue
@@ -823,11 +878,16 @@ class EISPanel(FileManagerMixin, ttk.Frame):
                 linewidth=_lw,
                 label=short,
             )
+            self._legend_stable_keys.append(short)
             has_data = True
 
-        self.ax.set_xlabel(x_label)
-        self.ax.set_ylabel(y_label)
-        self.ax.set_title("Nyquist Plot")
+        try: _lpad = float(self.label_pad_var.get())
+        except Exception: _lpad = 4.0
+        try: _tpad = float(self.title_pad_var.get())
+        except Exception: _tpad = 6.0
+        self.ax.set_xlabel(x_label, labelpad=_lpad)
+        self.ax.set_ylabel(y_label, labelpad=_lpad)
+        self.ax.set_title("Nyquist Plot", pad=_tpad)
 
         # Draw once to settle constrained_layout before capturing auto limits
         self.canvas.draw()
@@ -853,6 +913,16 @@ class EISPanel(FileManagerMixin, ttk.Frame):
             self._legend_obj.set_draggable(True)
             self._legend_obj.get_frame().set_visible(leg_frame)
             self._current_legend_size = leg_size
+            # Capture auto-labels, then apply custom labels by stable key
+            self._legend_auto_labels = [t.get_text() for t in self._legend_obj.get_texts()]
+            for i, text_obj in enumerate(self._legend_obj.get_texts()):
+                if i < len(self._legend_stable_keys):
+                    custom = self._legend_stable_map.get(self._legend_stable_keys[i])
+                    if custom:
+                        text_obj.set_text(custom)
+            # Restore dragged position
+            if self._legend_manual_pos is not None:
+                self._legend_obj._loc = self._legend_manual_pos
 
         self._apply_font_to_ax(self.ax, self.canvas)
 
@@ -903,6 +973,26 @@ class EISPanel(FileManagerMixin, ttk.Frame):
         self.canvas.draw()
         self._auto_xlim = None
         self._auto_ylim = None
+
+    def _apply_plot_height(self):
+        """Constrain the canvas widget height, or restore auto-fill if blank."""
+        widget = self.canvas.get_tk_widget()
+        val = self._plot_height_var.get().strip()
+        if val:
+            try:
+                h_px = int(val)
+                if h_px > 0:
+                    widget.pack_forget()
+                    widget.pack(fill=tk.X, expand=False)
+                    widget.config(height=h_px)
+                    self.canvas.draw_idle()
+                    return
+            except ValueError:
+                pass
+        # Blank or invalid → auto-fill
+        widget.pack_forget()
+        widget.pack(fill=tk.BOTH, expand=True)
+        self.canvas.draw_idle()
 
     def _reset_view(self):
         """Restore the auto-scaled limits from the last _plot() call (Home button)."""
@@ -1139,6 +1229,16 @@ class EISPanel(FileManagerMixin, ttk.Frame):
             self, self._legend_obj, self.canvas, self._current_legend_size)
         if self._legend_obj is not None:
             self._legend_obj.set_draggable(True)
+            # Persist labels by stable key so they survive file show/hide transitions.
+            new_texts = [t.get_text() for t in self._legend_obj.get_texts()]
+            for i, (key, new_text) in enumerate(
+                    zip(self._legend_stable_keys, new_texts)):
+                auto = (self._legend_auto_labels[i]
+                        if i < len(self._legend_auto_labels) else new_text)
+                if new_text and new_text != auto:
+                    self._legend_stable_map[key] = new_text
+                else:
+                    self._legend_stable_map.pop(key, None)
 
     def _edit_plot_title(self):
         """Prompt the user to edit the Nyquist plot title (double-click on title area)."""

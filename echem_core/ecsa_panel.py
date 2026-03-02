@@ -35,7 +35,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolb
 from .file_manager import FileManagerMixin, _COLOR_NAMES, _COLOR_HEX, _default_xcol, _default_ycol
 from .checklist import CheckableListbox
 from .correction import CorrectionMixin
-from .plotting import apply_grid, draw_reflines, _cycle_colors
+from .plotting import apply_grid, draw_reflines, _cycle_colors, copy_figure_to_clipboard
 from .legend_editor import open_legend_editor
 
 _CYCLE_BG        = "#e8f0fe"
@@ -628,6 +628,20 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         _fks_e.bind("<FocusOut>", lambda e: self._auto_replot())
         ttk.Checkbutton(_font_tick_row, text="Bold", variable=self.font_tick_bold_var,
                         command=self._auto_replot).pack(side=tk.LEFT)
+        _spacing_row = ttk.Frame(left)
+        _spacing_row.pack(fill=tk.X, padx=4, pady=(2, 0))
+        ttk.Label(_spacing_row, text="Spacing (pt): Title").pack(side=tk.LEFT)
+        self.title_pad_var = tk.StringVar(value="6")
+        _tpad_e = ttk.Entry(_spacing_row, textvariable=self.title_pad_var, width=4)
+        _tpad_e.pack(side=tk.LEFT, padx=(2, 6))
+        _tpad_e.bind("<Return>",   lambda e: self._auto_replot())
+        _tpad_e.bind("<FocusOut>", lambda e: self._auto_replot())
+        ttk.Label(_spacing_row, text="Label").pack(side=tk.LEFT)
+        self.label_pad_var = tk.StringVar(value="4")
+        _lpad_e = ttk.Entry(_spacing_row, textvariable=self.label_pad_var, width=4)
+        _lpad_e.pack(side=tk.LEFT, padx=(2, 0))
+        _lpad_e.bind("<Return>",   lambda e: self._auto_replot())
+        _lpad_e.bind("<FocusOut>", lambda e: self._auto_replot())
 
         self.result_label = ttk.Label(left, text="", wraplength=290, justify=tk.LEFT)
         self.result_label.pack(anchor=tk.W, padx=4, pady=2)
@@ -661,7 +675,14 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         class _CVToolbar(NavigationToolbar2Tk):
             def home(tb_self, *args):
                 _panel._reset_cv_view()
-        _CVToolbar(self.canvas_cv, tb_cv).update()
+        _cv_tb = _CVToolbar(self.canvas_cv, tb_cv, pack_toolbar=False)
+        _cv_tb.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        _cv_tb.update()
+        tk.Button(
+            tb_cv, text="Copy",
+            command=lambda: copy_figure_to_clipboard(self.fig_cv),
+            relief=tk.RAISED, borderwidth=1, padx=6,
+        ).pack(side=tk.LEFT, padx=(4, 2), pady=1)
 
         # Separator between plots
         ttk.Separator(right, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=2)
@@ -678,7 +699,14 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         class _CdlToolbar(NavigationToolbar2Tk):
             def home(tb_self, *args):
                 _panel._reset_cdl_view()
-        _CdlToolbar(self.canvas_cdl, tb_cdl).update()
+        _cdl_tb = _CdlToolbar(self.canvas_cdl, tb_cdl, pack_toolbar=False)
+        _cdl_tb.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        _cdl_tb.update()
+        tk.Button(
+            tb_cdl, text="Copy",
+            command=lambda: copy_figure_to_clipboard(self.fig_cdl),
+            relief=tk.RAISED, borderwidth=1, padx=6,
+        ).pack(side=tk.LEFT, padx=(4, 2), pady=1)
 
         self._reset_cv_axes_labels()
         self._reset_cdl_axes_labels()
@@ -736,10 +764,12 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
     # Interactive plot interactions
     # ════════════════════════════════════════════════════════════════
     def _init_plot_interactions(self):
-        self._legend_cv    = None
-        self._legend_cdl   = None
-        self._leg_size_cv  = 7.0
-        self._leg_size_cdl = 7.0
+        self._legend_cv         = None
+        self._legend_cdl        = None
+        self._leg_size_cv       = 7.0
+        self._leg_size_cdl      = 7.0
+        self._legend_labels_cv  = []    # persisted custom CV legend labels
+        self._legend_manual_pos_cv = None  # saved dragged CV legend position
 
         # Stored auto-scaled limits for Home button restore
         self._auto_xlim_cv  = None
@@ -1245,15 +1275,21 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
 
     def _apply_font_to_ax(self, ax, canvas):
         ts, tb, ls, lb, ks, kb = self._read_font()
-        ax.set_title(ax.get_title(),   fontsize=ts, fontweight=tb)
-        ax.set_xlabel(ax.get_xlabel(), fontsize=ls, fontweight=lb)
-        ax.set_ylabel(ax.get_ylabel(), fontsize=ls, fontweight=lb)
+        try: title_pad = float(self.title_pad_var.get())
+        except Exception: title_pad = 6.0
+        try: label_pad = float(self.label_pad_var.get())
+        except Exception: label_pad = 4.0
+        ax.set_title(ax.get_title(),   fontsize=ts, fontweight=tb, pad=title_pad)
+        ax.set_xlabel(ax.get_xlabel(), fontsize=ls, fontweight=lb, labelpad=label_pad)
+        ax.set_ylabel(ax.get_ylabel(), fontsize=ls, fontweight=lb, labelpad=label_pad)
         ax.tick_params(axis='both', labelsize=ks)
+        ax.figure.tight_layout()
         canvas.draw()
         if kb:
             for lbl in ax.get_xticklabels() + ax.get_yticklabels():
                 lbl.set_fontweight('bold')
-            canvas.draw_idle()
+            ax.figure.tight_layout()
+            canvas.draw()
 
     # ════════════════════════════════════════════════════════════════
     # CV plot (upper figure)
@@ -1277,6 +1313,11 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         y_scale, y_label = self._get_unit_scale(ycol, self.y_unit_var.get())
 
         self._ei_clear_ann(redraw=False)
+        # Save dragged CV legend position before clearing
+        if self._legend_cv is not None:
+            _loc = getattr(self._legend_cv, '_loc', None)
+            if isinstance(_loc, (tuple, list)):
+                self._legend_manual_pos_cv = tuple(_loc)
         self._legend_cv = None
         self.ax_cv.clear()
 
@@ -1337,6 +1378,15 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             self._legend_cv = self.ax_cv.legend(fontsize=self._leg_size_cv)
             self._legend_cv.set_draggable(True)
             self._legend_cv.get_frame().set_visible(self.legend_frame_cv_var.get())
+            # Restore custom CV legend labels if count matches
+            _cv_custom = getattr(self, '_legend_labels_cv', [])
+            if _cv_custom:
+                for text_obj, lbl in zip(self._legend_cv.get_texts(), _cv_custom):
+                    if lbl:
+                        text_obj.set_text(lbl)
+            # Restore dragged position
+            if self._legend_manual_pos_cv is not None:
+                self._legend_cv._loc = self._legend_manual_pos_cv
 
         if self.active_file and self.active_file in self.files:
             draw_reflines(self.ax_cv,
@@ -1948,6 +1998,11 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             self._legend_cdl = new_leg
         if new_leg is not None:
             new_leg.set_draggable(True)
+            # Persist CV labels so they survive replots (Cdl is auto-generated)
+            if is_cv:
+                self._legend_labels_cv = [
+                    t.get_text() for t in new_leg.get_texts()
+                ]
 
     def _update_e_std_rec(self):
         """Compute and display the recommended E_std (midpoint of plotted data range).

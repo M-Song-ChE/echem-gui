@@ -13,7 +13,7 @@ from .legend_editor import open_legend_editor
 from .checklist import CheckableListbox
 from .file_manager import FileManagerMixin, _COLOR_NAMES, _COLOR_HEX, _is_impedance_col
 from .correction import CorrectionMixin
-from .plotting import PlottingMixin
+from .plotting import PlottingMixin, copy_figure_to_clipboard
 from .ecsa import ECSAMixin
 from .export import ExportMixin
 from .ecsa_panel import ECSAPanel
@@ -348,13 +348,17 @@ class EchemPanel(
         title_row = ttk.Frame(left)
         title_row.pack(fill=tk.X, padx=4, pady=(2, 2))
         ttk.Label(title_row, text="Title:").pack(side=tk.LEFT)
-        self.plot_title_var = tk.StringVar()
+        self.plot_title_var = tk.StringVar(value="Title")
         _title_entry = ttk.Entry(title_row, textvariable=self.plot_title_var)
         _title_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
 
         def _on_title_change(e=None):
             self.ax.set_title(self.plot_title_var.get())
-            self.canvas.draw_idle()
+            _fn = getattr(self, '_apply_font_to_ax', None)
+            if _fn is not None:
+                _fn(self.ax, self.canvas)
+            else:
+                self.canvas.draw_idle()
 
         _title_entry.bind("<Return>",   _on_title_change)
         _title_entry.bind("<FocusOut>", _on_title_change)
@@ -380,10 +384,13 @@ class EchemPanel(
         leg_row.pack(fill=tk.X, padx=4, pady=2)
         ttk.Label(leg_row, text="Size:").pack(side=tk.LEFT)
         self.legend_size_var = tk.StringVar(value="8")
-        ttk.Entry(leg_row, textvariable=self.legend_size_var, width=5).pack(side=tk.LEFT, padx=(2, 8))
+        _leg_size_e = ttk.Entry(leg_row, textvariable=self.legend_size_var, width=5)
+        _leg_size_e.pack(side=tk.LEFT, padx=(2, 8))
+        _leg_size_e.bind("<Return>",   lambda e: self._auto_replot())
+        _leg_size_e.bind("<FocusOut>", lambda e: self._auto_replot())
         ttk.Label(leg_row, text="Location:").pack(side=tk.LEFT)
         self.legend_loc_var = tk.StringVar(value="best")
-        ttk.Combobox(
+        _leg_loc_cb = ttk.Combobox(
             leg_row, textvariable=self.legend_loc_var,
             values=[
                 "best", "upper right", "upper left", "lower left", "lower right",
@@ -391,7 +398,16 @@ class EchemPanel(
                 "upper center", "center",
             ],
             state="readonly", width=12,
-        ).pack(side=tk.LEFT, padx=2)
+        )
+        _leg_loc_cb.pack(side=tk.LEFT, padx=2)
+        def _on_leg_loc_select(e=None):
+            self._legend_manual_pos = None  # user explicitly chose a location
+            # Also neutralise the live legend's _loc so _plot() doesn't
+            # re-capture the old tuple before ax.clear() runs.
+            if self._legend_obj is not None:
+                self._legend_obj._loc = 0
+            self._auto_replot()
+        _leg_loc_cb.bind("<<ComboboxSelected>>", _on_leg_loc_select)
 
         ttk.Button(left, text="Edit Labels", command=self._edit_legend_labels).pack(anchor=tk.W, padx=4, pady=2)
         ttk.Label(left, text="(left-drag legend to move, right-drag to resize; dbl-click to edit)",
@@ -469,6 +485,20 @@ class EchemPanel(
         _fks_e.bind("<FocusOut>", lambda e: self._auto_replot())
         ttk.Checkbutton(_font_tick_row, text="Bold", variable=self.font_tick_bold_var,
                         command=self._auto_replot).pack(side=tk.LEFT)
+        _spacing_row = ttk.Frame(left)
+        _spacing_row.pack(fill=tk.X, padx=4, pady=(2, 0))
+        ttk.Label(_spacing_row, text="Spacing (pt): Title").pack(side=tk.LEFT)
+        self.title_pad_var = tk.StringVar(value="6")
+        _tpad_e = ttk.Entry(_spacing_row, textvariable=self.title_pad_var, width=4)
+        _tpad_e.pack(side=tk.LEFT, padx=(2, 6))
+        _tpad_e.bind("<Return>",   lambda e: self._auto_replot())
+        _tpad_e.bind("<FocusOut>", lambda e: self._auto_replot())
+        ttk.Label(_spacing_row, text="Label").pack(side=tk.LEFT)
+        self.label_pad_var = tk.StringVar(value="4")
+        _lpad_e = ttk.Entry(_spacing_row, textvariable=self.label_pad_var, width=4)
+        _lpad_e.pack(side=tk.LEFT, padx=(2, 0))
+        _lpad_e.bind("<Return>",   lambda e: self._auto_replot())
+        _lpad_e.bind("<FocusOut>", lambda e: self._auto_replot())
 
         # Reference Lines
         ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
@@ -612,6 +642,18 @@ class EchemPanel(
         _step_spin.bind("<Return>",      lambda e: self._on_gradient_change())
         _step_spin.bind("<FocusOut>",    lambda e: self._on_gradient_change())
 
+        # ── Plot height ──────────────────────────────────────────────
+        ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=4)
+        _ph_row = ttk.Frame(left)
+        _ph_row.pack(fill=tk.X, padx=4, pady=2)
+        ttk.Label(_ph_row, text="Plot height (px):").pack(side=tk.LEFT)
+        self._plot_height_var = tk.StringVar(value="")
+        _ph_entry = ttk.Entry(_ph_row, textvariable=self._plot_height_var, width=6)
+        _ph_entry.pack(side=tk.LEFT, padx=(4, 0))
+        _ph_entry.bind("<Return>",   lambda e: self._apply_plot_height())
+        _ph_entry.bind("<FocusOut>", lambda e: self._apply_plot_height())
+        ttk.Label(_ph_row, text="(blank = auto)").pack(side=tk.LEFT, padx=(4, 0))
+
         # ── Optional ECSA section ────────────────────────────────────
         if show_ecsa:
             ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
@@ -659,8 +701,14 @@ class EchemPanel(
         class _Toolbar(NavigationToolbar2Tk):
             def home(tb_self, *args):
                 self._reset_view()
-        toolbar = _Toolbar(self.canvas, toolbar_frame)
+        toolbar = _Toolbar(self.canvas, toolbar_frame, pack_toolbar=False)
+        toolbar.pack(side=tk.LEFT, fill=tk.X, expand=True)
         toolbar.update()
+        tk.Button(
+            toolbar_frame, text="Copy",
+            command=lambda: copy_figure_to_clipboard(self.fig),
+            relief=tk.RAISED, borderwidth=1, padx=6,
+        ).pack(side=tk.LEFT, padx=(4, 2), pady=1)
 
         self._init_plot_interactions()
 
@@ -741,6 +789,17 @@ class EchemPanel(
             self, self._legend_obj, self.canvas, self._current_legend_size)
         if self._legend_obj is not None:
             self._legend_obj.set_draggable(True)
+            # Persist labels by stable key (file:cycle) so they survive
+            # single↔multi-file display format changes.
+            new_texts = [t.get_text() for t in self._legend_obj.get_texts()]
+            for i, (key, new_text) in enumerate(
+                    zip(self._legend_stable_keys, new_texts)):
+                auto = (self._legend_auto_labels[i]
+                        if i < len(self._legend_auto_labels) else new_text)
+                if new_text and new_text != auto:
+                    self._legend_stable_map[key] = new_text
+                else:
+                    self._legend_stable_map.pop(key, None)
 
     # ── Reference line helpers ───────────────────────────────────────
     def _add_xrefline(self):
@@ -799,6 +858,27 @@ class EchemPanel(
         self._reflines_lb.delete(idx)
         self._auto_replot()
 
+    # ── Plot height helper ────────────────────────────────────────────
+    def _apply_plot_height(self):
+        """Constrain the canvas widget height, or restore auto-fill if blank."""
+        widget = self.canvas.get_tk_widget()
+        val = self._plot_height_var.get().strip()
+        if val:
+            try:
+                h_px = int(val)
+                if h_px > 0:
+                    widget.pack_forget()
+                    widget.pack(fill=tk.X, expand=False)
+                    widget.config(height=h_px)
+                    self.canvas.draw_idle()
+                    return
+            except ValueError:
+                pass
+        # Blank or invalid → auto-fill
+        widget.pack_forget()
+        widget.pack(fill=tk.BOTH, expand=True)
+        self.canvas.draw_idle()
+
     # ── Gradient helper ──────────────────────────────────────────────
     def _on_gradient_change(self):
         """Persist gradient settings to the active file's entry, then replot."""
@@ -826,15 +906,21 @@ class EchemPanel(
 
     def _apply_font_to_ax(self, ax, canvas):
         ts, tb, ls, lb, ks, kb = self._read_font()
-        ax.set_title(ax.get_title(),   fontsize=ts, fontweight=tb)
-        ax.set_xlabel(ax.get_xlabel(), fontsize=ls, fontweight=lb)
-        ax.set_ylabel(ax.get_ylabel(), fontsize=ls, fontweight=lb)
+        try: title_pad = float(self.title_pad_var.get())
+        except Exception: title_pad = 6.0
+        try: label_pad = float(self.label_pad_var.get())
+        except Exception: label_pad = 4.0
+        ax.set_title(ax.get_title(),   fontsize=ts, fontweight=tb, pad=title_pad)
+        ax.set_xlabel(ax.get_xlabel(), fontsize=ls, fontweight=lb, labelpad=label_pad)
+        ax.set_ylabel(ax.get_ylabel(), fontsize=ls, fontweight=lb, labelpad=label_pad)
         ax.tick_params(axis='both', labelsize=ks)
+        ax.figure.tight_layout()
         canvas.draw()
         if kb:
             for lbl in ax.get_xticklabels() + ax.get_yticklabels():
                 lbl.set_fontweight('bold')
-            canvas.draw_idle()
+            ax.figure.tight_layout()
+            canvas.draw()
 
     # ── File color helper ────────────────────────────────────────────
     def _on_file_color_change(self, event=None):

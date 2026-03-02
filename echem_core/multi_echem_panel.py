@@ -26,7 +26,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolb
 
 from .file_manager import FileManagerMixin, _COLOR_NAMES, _COLOR_HEX, _default_xcol, _default_ycol
 from .correction import CorrectionMixin
-from .plotting import apply_grid, draw_reflines, _cycle_colors
+from .plotting import apply_grid, draw_reflines, _cycle_colors, copy_figure_to_clipboard
 from .legend_editor import open_legend_editor
 from .checklist import CheckableListbox
 
@@ -442,17 +442,25 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         leg_row2.pack(fill=tk.X, padx=4, pady=2)
         ttk.Label(leg_row2, text="Size:").pack(side=tk.LEFT)
         self.legend_size_var = tk.StringVar(value="8")
-        ttk.Entry(leg_row2, textvariable=self.legend_size_var, width=4).pack(
-            side=tk.LEFT, padx=(2, 8))
+        _leg_sz_e = ttk.Entry(leg_row2, textvariable=self.legend_size_var, width=4)
+        _leg_sz_e.pack(side=tk.LEFT, padx=(2, 8))
+        _leg_sz_e.bind("<Return>",   lambda e: self._auto_replot())
+        _leg_sz_e.bind("<FocusOut>", lambda e: self._auto_replot())
         ttk.Label(leg_row2, text="Loc:").pack(side=tk.LEFT)
         self.legend_loc_var = tk.StringVar(value="best")
-        ttk.Combobox(
+        _leg_loc_cb = ttk.Combobox(
             leg_row2, textvariable=self.legend_loc_var,
             values=["best", "upper right", "upper left", "lower left", "lower right",
                     "right", "center left", "center right", "lower center",
                     "upper center", "center"],
             state="readonly", width=11,
-        ).pack(side=tk.LEFT, padx=2)
+        )
+        _leg_loc_cb.pack(side=tk.LEFT, padx=2)
+        def _on_leg_loc_select_multi(e=None):
+            if self.active_file and self.active_file in self.files:
+                self.files[self.active_file].pop("legend_manual_pos", None)
+            self._auto_replot()
+        _leg_loc_cb.bind("<<ComboboxSelected>>", _on_leg_loc_select_multi)
         ttk.Label(left, text="(left-drag to move, right-drag to resize; dbl-click to edit)",
                   foreground="gray", font=("", 8)).pack(anchor=tk.W, padx=4)
 
@@ -528,6 +536,20 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         _fks_e.bind("<FocusOut>", lambda e: self._auto_replot())
         ttk.Checkbutton(_font_tick_row, text="Bold", variable=self.font_tick_bold_var,
                         command=self._auto_replot).pack(side=tk.LEFT)
+        _spacing_row = ttk.Frame(left)
+        _spacing_row.pack(fill=tk.X, padx=4, pady=(2, 0))
+        ttk.Label(_spacing_row, text="Spacing (pt): Title").pack(side=tk.LEFT)
+        self.title_pad_var = tk.StringVar(value="6")
+        _tpad_e = ttk.Entry(_spacing_row, textvariable=self.title_pad_var, width=4)
+        _tpad_e.pack(side=tk.LEFT, padx=(2, 6))
+        _tpad_e.bind("<Return>",   lambda e: self._auto_replot())
+        _tpad_e.bind("<FocusOut>", lambda e: self._auto_replot())
+        ttk.Label(_spacing_row, text="Label").pack(side=tk.LEFT)
+        self.label_pad_var = tk.StringVar(value="4")
+        _lpad_e = ttk.Entry(_spacing_row, textvariable=self.label_pad_var, width=4)
+        _lpad_e.pack(side=tk.LEFT, padx=(2, 0))
+        _lpad_e.bind("<Return>",   lambda e: self._auto_replot())
+        _lpad_e.bind("<FocusOut>", lambda e: self._auto_replot())
 
         # ── Reference Lines ───────────────────────────────────────
         ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
@@ -735,7 +757,14 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             def home(tb_self, *args):
                 panel_ref._reset_file_view(short)
 
-        _Toolbar(canvas, tb_frame).update()
+        _tb = _Toolbar(canvas, tb_frame, pack_toolbar=False)
+        _tb.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        _tb.update()
+        tk.Button(
+            tb_frame, text="Copy",
+            command=lambda f=fig: copy_figure_to_clipboard(f),
+            relief=tk.RAISED, borderwidth=1, padx=6,
+        ).pack(side=tk.LEFT, padx=(4, 2), pady=1)
 
         # Forward mouse-wheel on the frame and toolbar (not the canvas) to
         # the right-side scroll panel.  The canvas widget must NOT forward wheel
@@ -1187,6 +1216,12 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         canvas = entry["canvas"]
 
         self._clear_ann(short, redraw=False)
+        # Save dragged legend position before discarding old legend
+        _old_leg = entry.get("legend")
+        if _old_leg is not None:
+            _loc = getattr(_old_leg, '_loc', None)
+            if isinstance(_loc, (tuple, list)):
+                entry["legend_manual_pos"] = tuple(_loc)
         entry["legend"] = None
         ax.clear()
 
@@ -1262,6 +1297,15 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             entry["legend"].set_draggable(True)
             entry["legend"].get_frame().set_visible(leg_frm)
             entry["leg_size"] = leg_size
+            # Restore custom labels if count matches
+            custom = entry.get("legend_labels", [])
+            if custom:
+                for text_obj, lbl in zip(entry["legend"].get_texts(), custom):
+                    if lbl:
+                        text_obj.set_text(lbl)
+            # Restore dragged position
+            if entry.get("legend_manual_pos") is not None:
+                entry["legend"]._loc = entry["legend_manual_pos"]
             canvas.draw()
 
         self._apply_font_to_ax(ax, canvas)
@@ -1386,15 +1430,21 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
 
     def _apply_font_to_ax(self, ax, canvas):
         ts, tb, ls, lb, ks, kb = self._read_font()
-        ax.set_title(ax.get_title(),   fontsize=ts, fontweight=tb)
-        ax.set_xlabel(ax.get_xlabel(), fontsize=ls, fontweight=lb)
-        ax.set_ylabel(ax.get_ylabel(), fontsize=ls, fontweight=lb)
+        try: title_pad = float(self.title_pad_var.get())
+        except Exception: title_pad = 6.0
+        try: label_pad = float(self.label_pad_var.get())
+        except Exception: label_pad = 4.0
+        ax.set_title(ax.get_title(),   fontsize=ts, fontweight=tb, pad=title_pad)
+        ax.set_xlabel(ax.get_xlabel(), fontsize=ls, fontweight=lb, labelpad=label_pad)
+        ax.set_ylabel(ax.get_ylabel(), fontsize=ls, fontweight=lb, labelpad=label_pad)
         ax.tick_params(axis='both', labelsize=ks)
+        ax.figure.tight_layout()
         canvas.draw()
         if kb:
             for lbl in ax.get_xticklabels() + ax.get_yticklabels():
                 lbl.set_fontweight('bold')
-            canvas.draw_idle()
+            ax.figure.tight_layout()
+            canvas.draw()
 
     # ════════════════════════════════════════════════════════════════
     # Legend frame toggle
@@ -1831,6 +1881,10 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             self, leg, entry["canvas"], entry.get("leg_size", 8.0))
         if entry.get("legend") is not None:
             entry["legend"].set_draggable(True)
+            # Persist labels so they survive the next replot
+            entry["legend_labels"] = [
+                t.get_text() for t in entry["legend"].get_texts()
+            ]
 
     # ════════════════════════════════════════════════════════════════
     # Reference line helpers
