@@ -15,6 +15,7 @@ Right (scrollable):
 """
 
 from collections import OrderedDict
+import math
 
 import numpy as np
 import tkinter as tk
@@ -23,10 +24,11 @@ from tkinter import ttk
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 
-from .file_manager import FileManagerMixin, _COLOR_NAMES, _COLOR_HEX
+from .file_manager import FileManagerMixin, _COLOR_NAMES, _COLOR_HEX, _default_xcol, _default_ycol
 from .correction import CorrectionMixin
-from .plotting import apply_grid, draw_reflines, _cycle_colors
+from .plotting import apply_grid, draw_reflines, _cycle_colors, copy_figure_to_clipboard
 from .legend_editor import open_legend_editor
+from .checklist import CheckableListbox
 
 _CYCLE_BG        = "#e8f0fe"
 
@@ -41,12 +43,18 @@ _UNIT_DIMS = {
     "A": "I",  "mA": "I",  "µA": "I",  "nA": "I",
     "V": "E",  "mV": "E",  "µV": "E",  "nV": "E",
     "s": "t",  "ms": "t",  "µs": "t",  "min": "t", "h": "t",
+    "Ohm": "Z", "Ω": "Z", "mΩ": "Z", "kΩ": "Z", "MΩ": "Z",
+    "Hz": "f",  "kHz": "f", "MHz": "f",
+    "deg": "φ", "rad": "φ",
 }
 _DIM_OPTS = {
     "I": ["(auto)", "A",  "mA",  "µA",  "nA"],
     "E": ["(auto)", "V",  "mV",  "µV",  "nV"],
     "t": ["(auto)", "s",  "ms",  "µs",  "min", "h"],
     "J": ["(auto)", "A/cm²", "mA/cm²", "µA/cm²", "nA/cm²"],
+    "Z": ["(auto)", "mΩ", "Ω",  "kΩ",  "MΩ"],
+    "f": ["(auto)", "Hz", "kHz", "MHz"],
+    "φ": ["(auto)", "deg", "rad"],
 }
 _ALL_UNITS = ["(auto)", "A", "mA", "µA", "nA",
               "V", "mV", "µV", "nV", "s", "ms", "µs", "min", "h"]
@@ -66,6 +74,7 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         self._loading_files   = False
         self._cycle_vars      = {}
         self._zoom_file       = None
+        self._drag            = None   # drag-to-reorder state
         self._build_panel()
 
     # ════════════════════════════════════════════════════════════════
@@ -102,12 +111,10 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
 
         flf = ttk.Frame(left)
         flf.pack(fill=tk.X, padx=4, pady=2)
-        self.file_listbox = tk.Listbox(flf, height=4, selectmode=tk.BROWSE,
-                                       exportselection=False)
-        fl_sc = ttk.Scrollbar(flf, orient=tk.VERTICAL, command=self.file_listbox.yview)
-        self.file_listbox.configure(yscrollcommand=fl_sc.set)
-        self.file_listbox.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        fl_sc.pack(side=tk.RIGHT, fill=tk.Y)
+        self.file_listbox = CheckableListbox(flf, height=4,
+                                             on_check=self._on_file_visibility_change,
+                                             on_reorder=self._on_file_reorder)
+        self.file_listbox.pack(fill=tk.X, expand=True)
         self.file_listbox.bind("<<ListboxSelect>>", self._on_file_select)
 
         # ── File Color ────────────────────────────────────────────────
@@ -121,6 +128,12 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
                                       values=_COLOR_NAMES, state="readonly", width=12)
         _file_color_cb.pack(side=tk.LEFT, padx=(4, 0))
         _file_color_cb.bind("<<ComboboxSelected>>", self._on_file_color_change)
+        ttk.Label(_fc_row, text="Width:").pack(side=tk.LEFT, padx=(8, 0))
+        self.linewidth_var = tk.StringVar(value="1.5")
+        _lw_e = ttk.Entry(_fc_row, textvariable=self.linewidth_var, width=4)
+        _lw_e.pack(side=tk.LEFT, padx=(2, 0))
+        _lw_e.bind("<Return>",   lambda e: self._on_linewidth_change())
+        _lw_e.bind("<FocusOut>", lambda e: self._on_linewidth_change())
 
         # ── Axis selectors + unit dropdowns ──────────────────────
         ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
@@ -203,6 +216,43 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         y_unit_cb.bind("<<ComboboxSelected>>",
                        lambda e: _refresh_unit_after(self.y_unit_var, y_unit_cb))
 
+        def _do_refresh_unit_combos():
+            """Silently update unit combobox options to match current column selections."""
+            for col_var, unit_var, cb in (
+                (self.x_var, self.x_unit_var, x_unit_cb),
+                (self.y_var, self.y_unit_var, y_unit_cb),
+            ):
+                col = col_var.get()
+                if col == "J":
+                    dim = "J"
+                else:
+                    raw_unit = col.rsplit("/", 1)[-1].strip() if "/" in col else ""
+                    dim = _UNIT_DIMS.get(raw_unit)
+                opts = list(_DIM_OPTS.get(dim, ["(auto)"]))
+                cb["values"] = opts
+                if unit_var.get() not in opts:
+                    unit_var.set("(auto)")
+        self._do_refresh_unit_combos = _do_refresh_unit_combos
+
+        def _swap_xy():
+            xc, yc = self.x_var.get(),     self.y_var.get()
+            xu, yu = self.x_unit_var.get(), self.y_unit_var.get()
+            xn, yn = self.x_min_var.get(),  self.y_min_var.get()
+            xx, yx = self.x_max_var.get(),  self.y_max_var.get()
+            xf, yf = self.x_flip_var.get(), self.y_flip_var.get()
+            self.x_var.set(yc);      self.y_var.set(xc)
+            self.x_unit_var.set(yu); self.y_unit_var.set(xu)
+            self.x_min_var.set(yn);  self.y_min_var.set(xn)
+            self.x_max_var.set(yx);  self.y_max_var.set(xx)
+            self.x_flip_var.set(yf); self.y_flip_var.set(xf)
+            self._suppress_replot = True
+            _refresh_unit_opts(self.x_var, self.x_unit_var, x_unit_cb)
+            self._suppress_replot = False
+            _refresh_unit_opts(self.y_var, self.y_unit_var, y_unit_cb)
+
+        ttk.Button(left, text="⇄  Swap X↔Y", command=_swap_xy).pack(
+            anchor=tk.W, padx=4, pady=(0, 4))
+
         # ── Plot range ────────────────────────────────────────────
         ttk.Label(left, text="Plot Range:", font=("", 8)).pack(
             anchor=tk.W, padx=4, pady=(6, 0))
@@ -211,28 +261,49 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         ttk.Label(xr_f, text="X min:").pack(side=tk.LEFT)
         self.x_min_var = tk.StringVar()
         _xmin = ttk.Entry(xr_f, textvariable=self.x_min_var, width=7)
-        _xmin.pack(side=tk.LEFT, padx=(2, 6))
+        _xmin.pack(side=tk.LEFT, padx=(2, 4))
         ttk.Label(xr_f, text="X max:").pack(side=tk.LEFT)
         self.x_max_var = tk.StringVar()
         _xmax = ttk.Entry(xr_f, textvariable=self.x_max_var, width=7)
-        _xmax.pack(side=tk.LEFT, padx=2)
+        _xmax.pack(side=tk.LEFT, padx=(2, 4))
+        ttk.Label(xr_f, text="Int:").pack(side=tk.LEFT)
+        self.x_grid_int_var = tk.StringVar(value="0")
+        _xgi = ttk.Entry(xr_f, textvariable=self.x_grid_int_var, width=5)
+        _xgi.pack(side=tk.LEFT, padx=(2, 0))
+        _xgi.bind("<Return>",   lambda e: self._auto_replot())
+        _xgi.bind("<FocusOut>", lambda e: self._auto_replot())
 
         yr_f = ttk.Frame(left)
         yr_f.pack(fill=tk.X, padx=4, pady=(1, 0))
         ttk.Label(yr_f, text="Y min:").pack(side=tk.LEFT)
         self.y_min_var = tk.StringVar()
         _ymin = ttk.Entry(yr_f, textvariable=self.y_min_var, width=7)
-        _ymin.pack(side=tk.LEFT, padx=(2, 6))
+        _ymin.pack(side=tk.LEFT, padx=(2, 4))
         ttk.Label(yr_f, text="Y max:").pack(side=tk.LEFT)
         self.y_max_var = tk.StringVar()
         _ymax = ttk.Entry(yr_f, textvariable=self.y_max_var, width=7)
-        _ymax.pack(side=tk.LEFT, padx=2)
+        _ymax.pack(side=tk.LEFT, padx=(2, 4))
+        ttk.Label(yr_f, text="Int:").pack(side=tk.LEFT)
+        self.y_grid_int_var = tk.StringVar(value="0")
+        _ygi = ttk.Entry(yr_f, textvariable=self.y_grid_int_var, width=5)
+        _ygi.pack(side=tk.LEFT, padx=(2, 0))
+        _ygi.bind("<Return>",   lambda e: self._auto_replot())
+        _ygi.bind("<FocusOut>", lambda e: self._auto_replot())
 
         ttk.Label(left, text="(blank = auto)", foreground="gray",
                   font=("", 8)).pack(anchor=tk.W, padx=4)
         for _re in (_xmin, _xmax, _ymin, _ymax):
             _re.bind("<Return>",   lambda e: self._auto_replot())
             _re.bind("<FocusOut>", lambda e: self._auto_replot())
+
+        flip_row = ttk.Frame(left)
+        flip_row.pack(fill=tk.X, padx=4, pady=(0, 2))
+        self.x_flip_var = tk.BooleanVar(value=False)
+        self.y_flip_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(flip_row, text="Flip X", variable=self.x_flip_var,
+                        command=self._auto_replot).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Checkbutton(flip_row, text="Flip Y", variable=self.y_flip_var,
+                        command=self._auto_replot).pack(side=tk.LEFT)
 
         # ── Current density (per-file electrode area — unlocks J units) ──
         area_row = ttk.Frame(left)
@@ -336,7 +407,7 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         self.cycle_gradient_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(_cc_row1, text="Gradient", variable=self.cycle_gradient_var,
                         command=self._on_gradient_change).pack(side=tk.LEFT)
-        self.cycle_reverse_var = tk.BooleanVar(value=False)
+        self.cycle_reverse_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(_cc_row1, text="Reverse", variable=self.cycle_reverse_var,
                         command=self._on_gradient_change).pack(side=tk.LEFT, padx=(8, 0))
         _cc_row2 = ttk.Frame(left)
@@ -371,17 +442,25 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         leg_row2.pack(fill=tk.X, padx=4, pady=2)
         ttk.Label(leg_row2, text="Size:").pack(side=tk.LEFT)
         self.legend_size_var = tk.StringVar(value="8")
-        ttk.Entry(leg_row2, textvariable=self.legend_size_var, width=4).pack(
-            side=tk.LEFT, padx=(2, 8))
+        _leg_sz_e = ttk.Entry(leg_row2, textvariable=self.legend_size_var, width=4)
+        _leg_sz_e.pack(side=tk.LEFT, padx=(2, 8))
+        _leg_sz_e.bind("<Return>",   lambda e: self._auto_replot())
+        _leg_sz_e.bind("<FocusOut>", lambda e: self._auto_replot())
         ttk.Label(leg_row2, text="Loc:").pack(side=tk.LEFT)
         self.legend_loc_var = tk.StringVar(value="best")
-        ttk.Combobox(
+        _leg_loc_cb = ttk.Combobox(
             leg_row2, textvariable=self.legend_loc_var,
             values=["best", "upper right", "upper left", "lower left", "lower right",
                     "right", "center left", "center right", "lower center",
                     "upper center", "center"],
             state="readonly", width=11,
-        ).pack(side=tk.LEFT, padx=2)
+        )
+        _leg_loc_cb.pack(side=tk.LEFT, padx=2)
+        def _on_leg_loc_select_multi(e=None):
+            if self.active_file and self.active_file in self.files:
+                self.files[self.active_file].pop("legend_manual_pos", None)
+            self._auto_replot()
+        _leg_loc_cb.bind("<<ComboboxSelected>>", _on_leg_loc_select_multi)
         ttk.Label(left, text="(left-drag to move, right-drag to resize; dbl-click to edit)",
                   foreground="gray", font=("", 8)).pack(anchor=tk.W, padx=4)
 
@@ -393,20 +472,9 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         self.x_grid_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(grid_xy_row, text="X", variable=self.x_grid_var,
                         command=self._auto_replot).pack(side=tk.LEFT)
-        ttk.Label(grid_xy_row, text="Interval:").pack(side=tk.LEFT, padx=(6, 0))
-        self.x_grid_int_var = tk.StringVar(value="0")
-        _xgi = ttk.Entry(grid_xy_row, textvariable=self.x_grid_int_var, width=5)
-        _xgi.pack(side=tk.LEFT, padx=(2, 0))
         self.y_grid_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(grid_xy_row, text="Y", variable=self.y_grid_var,
                         command=self._auto_replot).pack(side=tk.LEFT, padx=(10, 0))
-        ttk.Label(grid_xy_row, text="Interval:").pack(side=tk.LEFT, padx=(6, 0))
-        self.y_grid_int_var = tk.StringVar(value="0")
-        _ygi = ttk.Entry(grid_xy_row, textvariable=self.y_grid_int_var, width=5)
-        _ygi.pack(side=tk.LEFT, padx=(2, 0))
-        for _gi in (_xgi, _ygi):
-            _gi.bind("<Return>",   lambda e: self._auto_replot())
-            _gi.bind("<FocusOut>", lambda e: self._auto_replot())
         grid_style_row = ttk.Frame(left)
         grid_style_row.pack(fill=tk.X, padx=4, pady=(0, 2))
         ttk.Label(grid_style_row, text="Style:").pack(side=tk.LEFT)
@@ -414,8 +482,74 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         _gscb = ttk.Combobox(grid_style_row, textvariable=self.grid_style_var,
                              values=["dashed", "dotted", "solid", "dash-dot"],
                              state="readonly", width=9)
-        _gscb.pack(side=tk.LEFT, padx=4)
+        _gscb.pack(side=tk.LEFT, padx=(2, 6))
         _gscb.bind("<<ComboboxSelected>>", lambda e: self._auto_replot())
+        ttk.Label(grid_style_row, text="Color:").pack(side=tk.LEFT)
+        self.grid_color_var = tk.StringVar(value="gray")
+        _gcol_cb = ttk.Combobox(grid_style_row, textvariable=self.grid_color_var,
+                                values=["gray", "black", "red", "blue", "green",
+                                        "orange", "purple", "crimson", "royalblue",
+                                        "darkorange", "teal"],
+                                state="readonly", width=9)
+        _gcol_cb.pack(side=tk.LEFT, padx=(2, 6))
+        _gcol_cb.bind("<<ComboboxSelected>>", lambda e: self._auto_replot())
+        ttk.Label(grid_style_row, text="Width:").pack(side=tk.LEFT)
+        self.grid_linewidth_var = tk.StringVar(value="0.8")
+        _glw = ttk.Entry(grid_style_row, textvariable=self.grid_linewidth_var, width=4)
+        _glw.pack(side=tk.LEFT, padx=(2, 0))
+        _glw.bind("<Return>",   lambda e: self._auto_replot())
+        _glw.bind("<FocusOut>", lambda e: self._auto_replot())
+
+        # ── Font ──────────────────────────────────────────────────
+        ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
+        ttk.Label(left, text="Font", font=("", 9, "bold")).pack(anchor=tk.W, padx=4)
+        self.font_title_size_var = tk.StringVar(value="10")
+        self.font_title_bold_var = tk.BooleanVar(value=False)
+        self.font_label_size_var = tk.StringVar(value="10")
+        self.font_label_bold_var = tk.BooleanVar(value=False)
+        self.font_tick_size_var  = tk.StringVar(value="8")
+        self.font_tick_bold_var  = tk.BooleanVar(value=False)
+        _font_title_row = ttk.Frame(left)
+        _font_title_row.pack(fill=tk.X, padx=4, pady=(2, 0))
+        ttk.Label(_font_title_row, text="Title:      Size").pack(side=tk.LEFT)
+        _fts_e = ttk.Entry(_font_title_row, textvariable=self.font_title_size_var, width=4)
+        _fts_e.pack(side=tk.LEFT, padx=(2, 4))
+        _fts_e.bind("<Return>",   lambda e: self._auto_replot())
+        _fts_e.bind("<FocusOut>", lambda e: self._auto_replot())
+        ttk.Checkbutton(_font_title_row, text="Bold", variable=self.font_title_bold_var,
+                        command=self._auto_replot).pack(side=tk.LEFT)
+        _font_label_row = ttk.Frame(left)
+        _font_label_row.pack(fill=tk.X, padx=4, pady=(2, 0))
+        ttk.Label(_font_label_row, text="Axis Lbl: Size").pack(side=tk.LEFT)
+        _fls_e = ttk.Entry(_font_label_row, textvariable=self.font_label_size_var, width=4)
+        _fls_e.pack(side=tk.LEFT, padx=(2, 4))
+        _fls_e.bind("<Return>",   lambda e: self._auto_replot())
+        _fls_e.bind("<FocusOut>", lambda e: self._auto_replot())
+        ttk.Checkbutton(_font_label_row, text="Bold", variable=self.font_label_bold_var,
+                        command=self._auto_replot).pack(side=tk.LEFT)
+        _font_tick_row = ttk.Frame(left)
+        _font_tick_row.pack(fill=tk.X, padx=4, pady=(2, 0))
+        ttk.Label(_font_tick_row, text="Tick Nos: Size").pack(side=tk.LEFT)
+        _fks_e = ttk.Entry(_font_tick_row, textvariable=self.font_tick_size_var, width=4)
+        _fks_e.pack(side=tk.LEFT, padx=(2, 4))
+        _fks_e.bind("<Return>",   lambda e: self._auto_replot())
+        _fks_e.bind("<FocusOut>", lambda e: self._auto_replot())
+        ttk.Checkbutton(_font_tick_row, text="Bold", variable=self.font_tick_bold_var,
+                        command=self._auto_replot).pack(side=tk.LEFT)
+        _spacing_row = ttk.Frame(left)
+        _spacing_row.pack(fill=tk.X, padx=4, pady=(2, 0))
+        ttk.Label(_spacing_row, text="Spacing (pt): Title").pack(side=tk.LEFT)
+        self.title_pad_var = tk.StringVar(value="6")
+        _tpad_e = ttk.Entry(_spacing_row, textvariable=self.title_pad_var, width=4)
+        _tpad_e.pack(side=tk.LEFT, padx=(2, 6))
+        _tpad_e.bind("<Return>",   lambda e: self._auto_replot())
+        _tpad_e.bind("<FocusOut>", lambda e: self._auto_replot())
+        ttk.Label(_spacing_row, text="Label").pack(side=tk.LEFT)
+        self.label_pad_var = tk.StringVar(value="4")
+        _lpad_e = ttk.Entry(_spacing_row, textvariable=self.label_pad_var, width=4)
+        _lpad_e.pack(side=tk.LEFT, padx=(2, 0))
+        _lpad_e.bind("<Return>",   lambda e: self._auto_replot())
+        _lpad_e.bind("<FocusOut>", lambda e: self._auto_replot())
 
         # ── Reference Lines ───────────────────────────────────────
         ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
@@ -452,17 +586,23 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         _rl_style_cb = ttk.Combobox(ref_opt_row, textvariable=self._refline_style_var,
                                      values=["dashed", "dotted", "solid", "dash-dot"],
                                      state="readonly", width=9)
-        _rl_style_cb.pack(side=tk.LEFT, padx=(2, 8))
+        _rl_style_cb.pack(side=tk.LEFT, padx=(2, 6))
         ttk.Label(ref_opt_row, text="Color:").pack(side=tk.LEFT)
         self._refline_color_var = tk.StringVar(value="dimgray")
         _rl_color_cb = ttk.Combobox(ref_opt_row, textvariable=self._refline_color_var,
                                      values=["dimgray", "black", "red", "blue", "green",
                                              "orange", "purple", "crimson", "royalblue",
                                              "darkorange", "teal", "saddlebrown"],
-                                     state="readonly", width=10)
-        _rl_color_cb.pack(side=tk.LEFT, padx=2)
+                                     state="readonly", width=9)
+        _rl_color_cb.pack(side=tk.LEFT, padx=(2, 6))
+        ttk.Label(ref_opt_row, text="Width:").pack(side=tk.LEFT)
+        self._refline_linewidth_var = tk.StringVar(value="1.0")
+        _rl_lw = ttk.Entry(ref_opt_row, textvariable=self._refline_linewidth_var, width=4)
+        _rl_lw.pack(side=tk.LEFT, padx=(2, 0))
         _rl_style_cb.bind("<<ComboboxSelected>>", lambda e: self._on_refline_style_color_change())
         _rl_color_cb.bind("<<ComboboxSelected>>", lambda e: self._on_refline_style_color_change())
+        _rl_lw.bind("<Return>",   lambda e: self._on_refline_style_color_change())
+        _rl_lw.bind("<FocusOut>", lambda e: self._on_refline_style_color_change())
 
         # ── Plot button ───────────────────────────────────────────
         ttk.Button(left, text="Plot Active File",
@@ -523,6 +663,9 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         for _c in range(2):
             self._plots_frame.columnconfigure(_c, weight=1, uniform="col")
 
+        # Drop indicator: a thin colored bar shown during drag-to-reorder
+        self._drop_line = tk.Frame(self._plots_frame, bg="#1a73e8", height=3)
+
         # Placeholder shown when no files are loaded (uses grid like everything else)
         self._placeholder = ttk.Label(
             self._plots_frame,
@@ -545,11 +688,17 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             "V": 1.0,  "mV": 1e-3, "µV": 1e-6, "nV": 1e-9,
             "s": 1.0,  "ms": 1e-3, "µs": 1e-6,
             "min": 60.0, "h": 3600.0,
+            "Ohm": 1.0, "Ω": 1.0, "mΩ": 1e-3, "kΩ": 1e3, "MΩ": 1e6,
+            "Hz": 1.0, "kHz": 1e3, "MHz": 1e6,
+            "rad": 1.0, "deg": math.pi / 180.0,
         }
         _DIMS = {
             "A": "I", "mA": "I", "µA": "I", "nA": "I",
             "V": "E", "mV": "E", "µV": "E", "nV": "E",
             "s": "t", "ms": "t", "µs": "t", "min": "t", "h": "t",
+            "Ohm": "Z", "Ω": "Z", "mΩ": "Z", "kΩ": "Z", "MΩ": "Z",
+            "Hz": "f", "kHz": "f", "MHz": "f",
+            "rad": "φ", "deg": "φ",
         }
         if "/" in col:
             col_base, src_unit = col.rsplit("/", 1)
@@ -579,30 +728,52 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
 
         panel_ref = self
 
-        frame = ttk.LabelFrame(self._plots_frame, text=f"  {short}  ", padding=4)
+        # Outer bordered frame (replaces LabelFrame so we can add a visible drag strip)
+        _HDR_BG = "#c0cfe4"
+        frame = tk.Frame(self._plots_frame, relief="groove", bd=2)
         # Placement is handled by _relayout_figures(); do not pack/grid here
+
+        # ── Header strip: drag handle + filename ────────────────────
+        header = tk.Frame(frame, bg=_HDR_BG, cursor="fleur")
+        header.pack(fill=tk.X, side=tk.TOP)
+        handle_lbl = tk.Label(header, text=f"⠿  {short}",
+                              bg=_HDR_BG, cursor="fleur",
+                              font=("", 9, "bold"), anchor=tk.W)
+        handle_lbl.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=6, pady=3)
+
+        # ── Content area (canvas + toolbar) ─────────────────────────
+        inner = ttk.Frame(frame, padding=(4, 2, 4, 2))
+        inner.pack(fill=tk.BOTH, expand=True)
 
         fig = Figure(figsize=(5, 3.8), dpi=100, constrained_layout=True)
         ax  = fig.add_subplot(111)
-        canvas = FigureCanvasTkAgg(fig, master=frame)
+        canvas = FigureCanvasTkAgg(fig, master=inner)
         canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
-        tb_frame = ttk.Frame(frame)
+        tb_frame = ttk.Frame(inner)
         tb_frame.pack(fill=tk.X)
 
         class _Toolbar(NavigationToolbar2Tk):
             def home(tb_self, *args):
                 panel_ref._reset_file_view(short)
 
-        _Toolbar(canvas, tb_frame).update()
+        _tb = _Toolbar(canvas, tb_frame, pack_toolbar=False)
+        _tb.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        _tb.update()
+        tk.Button(
+            tb_frame, text="Copy",
+            command=lambda f=fig: copy_figure_to_clipboard(f),
+            relief=tk.RAISED, borderwidth=1, padx=6,
+        ).pack(side=tk.LEFT, padx=(4, 2), pady=1)
 
-        # Forward mouse-wheel on the LabelFrame and toolbar (not the canvas) to
+        # Forward mouse-wheel on the frame and toolbar (not the canvas) to
         # the right-side scroll panel.  The canvas widget must NOT forward wheel
         # events so that matplotlib's scroll-to-zoom handler works undisturbed.
         def _fwd_scroll(e):
             self._right_canvas.yview_scroll(-1 * (e.delta // 120), "units")
 
         frame.bind("<MouseWheel>", _fwd_scroll)
+        header.bind("<MouseWheel>", _fwd_scroll)
         tb_frame.bind("<MouseWheel>", _fwd_scroll)
 
         # Click on the frame / toolbar → select this file in the listbox
@@ -610,6 +781,12 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             self._activate_file(short)
         frame.bind("<Button-1>",    _activate, add="+")
         tb_frame.bind("<Button-1>", _activate, add="+")
+
+        # Drag on the header strip → reorder subplots
+        for _w in (header, handle_lbl):
+            _w.bind("<ButtonPress-1>",   lambda e, s=short: self._on_frame_press(e, s))
+            _w.bind("<B1-Motion>",       lambda e, s=short: self._on_frame_drag(e, s))
+            _w.bind("<ButtonRelease-1>", lambda e, s=short: self._on_frame_release(e, s))
 
         # Per-figure matplotlib interactions
         canvas.mpl_connect("scroll_event",         lambda ev: self._on_scroll(ev, short))
@@ -679,6 +856,43 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         else:
             self._relayout_figures()
 
+    def _on_file_visibility_change(self, short, visible):
+        """Toggle a file's hidden flag and update the subplot grid."""
+        if short not in self.files:
+            return
+        entry = self.files[short]
+        # Snapshot the current zoom before hiding so it survives the replot on unhide
+        if not visible and "ax" in entry:
+            entry["view_xlim"] = entry["ax"].get_xlim()
+            entry["view_ylim"] = entry["ax"].get_ylim()
+        entry["hidden"] = not visible
+        # If hiding the currently zoomed file, exit zoom mode
+        if not visible and self._zoom_file == short:
+            self._zoom_file = None
+            self._zoom_bar.grid_remove()
+            self._right_canvas.itemconfig(self._plots_win, height=0)
+        self._relayout_figures()
+        if visible:
+            self._plot_file(short)
+            # Restore zoom/pan after the replot resets the view to auto-scale
+            if "view_xlim" in entry and "ax" in entry:
+                entry["ax"].set_xlim(entry["view_xlim"])
+                entry["ax"].set_ylim(entry["view_ylim"])
+                entry["canvas"].draw_idle()
+
+    def _on_file_reorder(self, new_order):
+        """Called when the file list is drag-reordered; rebuilds self.files and re-layouts."""
+        from collections import OrderedDict
+        new_files = OrderedDict()
+        for name in new_order:
+            if name in self.files:
+                new_files[name] = self.files[name]
+        for name, entry in self.files.items():
+            if name not in new_files:
+                new_files[name] = entry
+        self.files = new_files
+        self._relayout_figures()
+
     def _on_right_canvas_configure(self, event):
         """Keep the plots frame width in sync with the canvas; fill height when zoomed."""
         self._right_canvas.itemconfig(self._plots_win, width=event.width)
@@ -691,7 +905,8 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         """
         MAX_COLS = 2
         valid = [(s, self.files[s]) for s in self.files
-                 if "plot_frame" in self.files[s]]
+                 if "plot_frame" in self.files[s]
+                 and not self.files[s].get("hidden", False)]
 
         # ── Zoom mode: one subplot fills the whole canvas area ───────
         if self._zoom_file and any(s == self._zoom_file for s, _ in valid):
@@ -705,8 +920,11 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             return
 
         # ── Normal grid layout ───────────────────────────────────────
-        for _, entry in valid:
-            entry["plot_frame"].grid_remove()
+        # Remove all frames (including hidden ones) before re-placing visible ones
+        for s in self.files:
+            pf = self.files[s].get("plot_frame")
+            if pf is not None:
+                pf.grid_remove()
         for i, (short, entry) in enumerate(valid):
             row = i // MAX_COLS
             col = i % MAX_COLS
@@ -753,14 +971,19 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         except ValueError:
             pass
         entry["legend_loc"] = self.legend_loc_var.get()
-        entry["x_grid"]     = self.x_grid_var.get()
-        entry["y_grid"]     = self.y_grid_var.get()
-        entry["x_grid_int"] = self.x_grid_int_var.get()
-        entry["y_grid_int"] = self.y_grid_int_var.get()
-        entry["grid_style"]     = self.grid_style_var.get()
+        entry["x_grid"]          = self.x_grid_var.get()
+        entry["y_grid"]          = self.y_grid_var.get()
+        entry["x_grid_int"]      = self.x_grid_int_var.get()
+        entry["y_grid_int"]      = self.y_grid_int_var.get()
+        entry["grid_style"]      = self.grid_style_var.get()
+        entry["grid_color"]      = self.grid_color_var.get()
+        entry["grid_linewidth"]  = self.grid_linewidth_var.get()
         entry["cycle_gradient"] = self.cycle_gradient_var.get()
         entry["cycle_reverse"]  = self.cycle_reverse_var.get()
         entry["lightness_step"] = self.lightness_step_var.get()
+        entry["linewidth"]      = self.linewidth_var.get()
+        entry["x_flip"]         = self.x_flip_var.get()
+        entry["y_flip"]         = self.y_flip_var.get()
 
     def _switch_active_file(self, short):
         self.active_file = short
@@ -789,10 +1012,15 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         entry.setdefault("x_grid_int",    "0")
         entry.setdefault("y_grid_int",    "0")
         entry.setdefault("grid_style",    "dashed")
+        entry.setdefault("grid_color",    "gray")
+        entry.setdefault("grid_linewidth","0.8")
         entry.setdefault("reflines",      [])
         entry.setdefault("cycle_gradient", True)
-        entry.setdefault("cycle_reverse",  False)
+        entry.setdefault("cycle_reverse",  True)
         entry.setdefault("lightness_step", "0.08")
+        entry.setdefault("linewidth",      "1.5")
+        entry.setdefault("x_flip",         False)
+        entry.setdefault("y_flip",         False)
 
         df   = entry["df"]
 
@@ -821,21 +1049,19 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         if x_col and x_col in cols:
             self.x_var.set(x_col)
         else:
-            x_default = next(
-                (c for c in cols if "ewe" in c.lower() or c.lower() in ("e/v", "potential")),
-                cols[1] if len(cols) > 1 else cols[0],
-            )
-            self.x_var.set(x_default)
+            self.x_var.set(_default_xcol(cols))
 
         y_col = entry["y_col"]
         if y_col and y_col in cols:
             self.y_var.set(y_col)
         else:
-            y_default = next(
-                (c for c in cols if "i/ma" in c.lower() or "current" in c.lower()),
-                cols[2] if len(cols) > 2 else cols[0],
-            )
-            self.y_var.set(y_default)
+            self.y_var.set(_default_ycol(cols, self.x_var.get()))
+
+        # Update unit combobox options to match the incoming file's columns
+        fn = getattr(self, '_do_refresh_unit_combos', None)
+        if fn:
+            fn()
+
         self.ref_electrode_var.set(entry["ref_electrode"])
         self.legend_show_var.set(entry["legend_show"])
         self.legend_frame_var.set(entry["legend_frame"])
@@ -850,6 +1076,8 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         self.x_grid_int_var.set(entry["x_grid_int"])
         self.y_grid_int_var.set(entry["y_grid_int"])
         self.grid_style_var.set(entry["grid_style"])
+        self.grid_color_var.set(entry["grid_color"])
+        self.grid_linewidth_var.set(entry["grid_linewidth"])
 
         old = self._suppress_replot
         self._suppress_replot = True
@@ -866,8 +1094,11 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         name = next((n for n, h in _COLOR_HEX.items() if h == color), "Blue")
         self.file_color_var.set(name)
         self.cycle_gradient_var.set(entry.get("cycle_gradient", True))
-        self.cycle_reverse_var.set(entry.get("cycle_reverse", False))
+        self.cycle_reverse_var.set(entry.get("cycle_reverse", True))
         self.lightness_step_var.set(entry.get("lightness_step", "0.08"))
+        self.linewidth_var.set(entry.get("linewidth", "1.5"))
+        self.x_flip_var.set(entry.get("x_flip", False))
+        self.y_flip_var.set(entry.get("y_flip", False))
 
         self._auto_replot()
 
@@ -985,14 +1216,26 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         canvas = entry["canvas"]
 
         self._clear_ann(short, redraw=False)
+        # Save dragged legend position before discarding old legend
+        _old_leg = entry.get("legend")
+        if _old_leg is not None:
+            _loc = getattr(_old_leg, '_loc', None)
+            if isinstance(_loc, (tuple, list)):
+                entry["legend_manual_pos"] = tuple(_loc)
         entry["legend"] = None
         ax.clear()
 
         base_color = entry.get("color", "#1f77b4")
         _grad  = self.cycle_gradient_var.get() if is_active else entry.get("cycle_gradient", True)
-        _rev   = self.cycle_reverse_var.get()  if is_active else entry.get("cycle_reverse", False)
+        _rev   = self.cycle_reverse_var.get()  if is_active else entry.get("cycle_reverse", True)
         try:    _step = float(self.lightness_step_var.get() if is_active else entry.get("lightness_step", "0.08"))
         except: _step = 0.08
+
+        _lw_s = self.linewidth_var.get() if is_active else entry.get("linewidth", "1.5")
+        try:
+            _lw = float(_lw_s)
+        except (ValueError, TypeError):
+            _lw = 1.5
 
         has_data = False
         if "cycle number" in df.columns:
@@ -1003,11 +1246,11 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
                     sub = df[df["cycle number"] == c]
                     ax.plot(sub[_real_xcol] * x_scale,
                             sub[_real_ycol] * y_scale,
-                            color=cycle_cols[i], label=f"C{c}")
+                            color=cycle_cols[i], label=f"C{c}", linewidth=_lw)
                 has_data = True
         else:
             ax.plot(df[_real_xcol] * x_scale, df[_real_ycol] * y_scale,
-                    color=base_color)
+                    color=base_color, label=short, linewidth=_lw)
             has_data = True
 
         # Append "(vs Ref)" only to voltage-type axes; J is never voltage
@@ -1039,12 +1282,14 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         draw_reflines(ax, entry.get("reflines", []))
 
         # Grid — read from live UI if active file, else from stored entry
-        _xg  = self.x_grid_var.get()     if is_active else entry.get("x_grid",     False)
-        _yg  = self.y_grid_var.get()     if is_active else entry.get("y_grid",     False)
-        _xgi = self.x_grid_int_var.get() if is_active else entry.get("x_grid_int", "0")
-        _ygi = self.y_grid_int_var.get() if is_active else entry.get("y_grid_int", "0")
-        _gs  = self.grid_style_var.get() if is_active else entry.get("grid_style", "dashed")
-        apply_grid(ax, _xg, _yg, _xgi, _ygi, _gs)
+        _xg  = self.x_grid_var.get()        if is_active else entry.get("x_grid",        False)
+        _yg  = self.y_grid_var.get()        if is_active else entry.get("y_grid",        False)
+        _xgi = self.x_grid_int_var.get()   if is_active else entry.get("x_grid_int",    "0")
+        _ygi = self.y_grid_int_var.get()   if is_active else entry.get("y_grid_int",    "0")
+        _gs  = self.grid_style_var.get()   if is_active else entry.get("grid_style",    "dashed")
+        _gc  = self.grid_color_var.get()   if is_active else entry.get("grid_color",    "gray")
+        _glw = self.grid_linewidth_var.get() if is_active else entry.get("grid_linewidth", "0.8")
+        apply_grid(ax, _xg, _yg, _xgi, _ygi, _gs, linewidth=_glw, color=_gc)
 
         # Legend
         if leg_show and has_data and ax.get_lines():
@@ -1052,7 +1297,18 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             entry["legend"].set_draggable(True)
             entry["legend"].get_frame().set_visible(leg_frm)
             entry["leg_size"] = leg_size
+            # Restore custom labels if count matches
+            custom = entry.get("legend_labels", [])
+            if custom:
+                for text_obj, lbl in zip(entry["legend"].get_texts(), custom):
+                    if lbl:
+                        text_obj.set_text(lbl)
+            # Restore dragged position
+            if entry.get("legend_manual_pos") is not None:
+                entry["legend"]._loc = entry["legend_manual_pos"]
             canvas.draw()
+
+        self._apply_font_to_ax(ax, canvas)
 
     def _apply_range(self, short, x_min_s, x_max_s, y_min_s, y_max_s):
         """Apply manual axis limits to the figure for *short*."""
@@ -1072,6 +1328,27 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
                 changed = True
             except (ValueError, TypeError):
                 pass
+        # Flip axes if requested (only for the active file whose vars reflect current state)
+        if short == self.active_file:
+            xl = ax.get_xlim()
+            if self.x_flip_var.get() != (xl[0] > xl[1]):
+                ax.set_xlim(xl[1], xl[0])
+                changed = True
+            yl = ax.get_ylim()
+            if self.y_flip_var.get() != (yl[0] > yl[1]):
+                ax.set_ylim(yl[1], yl[0])
+                changed = True
+        else:
+            # Non-active files: apply saved flip state from entry dict
+            xl = ax.get_xlim()
+            if entry.get("x_flip", False) != (xl[0] > xl[1]):
+                ax.set_xlim(xl[1], xl[0])
+                changed = True
+            yl = ax.get_ylim()
+            if entry.get("y_flip", False) != (yl[0] > yl[1]):
+                ax.set_ylim(yl[1], yl[0])
+                changed = True
+
         if changed:
             entry["canvas"].draw_idle()
 
@@ -1120,6 +1397,11 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             self.file_color_var.get(), "#1f77b4")
         self._auto_replot()
 
+    def _on_linewidth_change(self):
+        if self.active_file and self.active_file in self.files:
+            self.files[self.active_file]["linewidth"] = self.linewidth_var.get()
+        self._auto_replot()
+
     def _on_gradient_change(self):
         """Persist gradient settings to the active file's entry, then replot."""
         if self.active_file and self.active_file in self.files:
@@ -1127,6 +1409,42 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             self.files[self.active_file]["cycle_reverse"]  = self.cycle_reverse_var.get()
             self.files[self.active_file]["lightness_step"] = self.lightness_step_var.get()
         self._auto_replot()
+
+    # ════════════════════════════════════════════════════════════════
+    # Font helpers
+    # ════════════════════════════════════════════════════════════════
+    def _read_font(self):
+        def _f(v, d):
+            try:
+                return float(v.get())
+            except Exception:
+                return d
+        return (
+            _f(self.font_title_size_var, 10.0),
+            'bold' if self.font_title_bold_var.get() else 'normal',
+            _f(self.font_label_size_var, 10.0),
+            'bold' if self.font_label_bold_var.get() else 'normal',
+            _f(self.font_tick_size_var,  8.0),
+            self.font_tick_bold_var.get(),
+        )
+
+    def _apply_font_to_ax(self, ax, canvas):
+        ts, tb, ls, lb, ks, kb = self._read_font()
+        try: title_pad = float(self.title_pad_var.get())
+        except Exception: title_pad = 6.0
+        try: label_pad = float(self.label_pad_var.get())
+        except Exception: label_pad = 4.0
+        ax.set_title(ax.get_title(),   fontsize=ts, fontweight=tb, pad=title_pad)
+        ax.set_xlabel(ax.get_xlabel(), fontsize=ls, fontweight=lb, labelpad=label_pad)
+        ax.set_ylabel(ax.get_ylabel(), fontsize=ls, fontweight=lb, labelpad=label_pad)
+        ax.tick_params(axis='both', labelsize=ks)
+        ax.figure.tight_layout()
+        canvas.draw()
+        if kb:
+            for lbl in ax.get_xticklabels() + ax.get_yticklabels():
+                lbl.set_fontweight('bold')
+            ax.figure.tight_layout()
+            canvas.draw()
 
     # ════════════════════════════════════════════════════════════════
     # Legend frame toggle
@@ -1334,7 +1652,10 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         xoff = -95 if xf > 0.65 else 15
         yoff = -60 if yf > 0.65 else 15
         hint = f"  [{idx + 1}/{n}]" if n > 1 else ""
-        text = f"x = {x:.4g}\ny = {y:.4g}\n{label}{hint}"
+        text = f"{short}\nx = {x:.4g}\ny = {y:.4g}"
+        if label != short:
+            text += f"  ({label})"
+        text += hint
         if n > 1 and idx == 0:
             text += "\n↻ click again to cycle"
         self._clear_ann(short, redraw=False)
@@ -1424,6 +1745,100 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         return [c for c, v in self._cycle_vars.items() if v.get()]
 
     # ════════════════════════════════════════════════════════════════
+    # Drag-to-reorder: drag a subplot frame to change grid order
+    # ════════════════════════════════════════════════════════════════
+    def _on_frame_press(self, event, short):
+        self._drag = {
+            "short":      short,
+            "start_x":    event.x_root,
+            "start_y":    event.y_root,
+            "active":     False,
+            "target":     None,
+            "target_top": True,
+        }
+
+    def _on_frame_drag(self, event, short):
+        drag = self._drag
+        if drag is None or drag["short"] != short:
+            return
+        if not drag["active"]:
+            if abs(event.x_root - drag["start_x"]) + abs(event.y_root - drag["start_y"]) < 6:
+                return
+            drag["active"] = True
+
+        # Detect which visible frame the cursor is over
+        target = None
+        target_top = True
+        for s, entry in self.files.items():
+            if s == short or entry.get("hidden"):
+                continue
+            pf = entry.get("plot_frame")
+            if pf is None:
+                continue
+            x0 = pf.winfo_rootx()
+            y0 = pf.winfo_rooty()
+            w  = pf.winfo_width()
+            h  = pf.winfo_height()
+            if x0 <= event.x_root <= x0 + w and y0 <= event.y_root <= y0 + h:
+                target = s
+                target_top = (event.y_root - y0) < h / 2
+                break
+        drag["target"]     = target
+        drag["target_top"] = target_top
+
+        # Move / show the drop-indicator line
+        if target is not None:
+            pf = self.files[target]["plot_frame"]
+            rx = pf.winfo_x()
+            ry = pf.winfo_y()
+            rw = pf.winfo_width()
+            rh = pf.winfo_height()
+            line_y = ry if target_top else ry + rh - 3
+            self._drop_line.place(x=rx, y=line_y, width=rw, height=3)
+            self._drop_line.lift()
+        else:
+            self._drop_line.place_forget()
+
+    def _on_frame_release(self, event, short):
+        drag = self._drag
+        self._drag = None
+        self._drop_line.place_forget()
+        if drag is None or not drag["active"]:
+            return
+        target = drag.get("target")
+        if target is None or target == short:
+            return
+        self._reorder_files(short, target, before=drag.get("target_top", True))
+
+    def _reorder_files(self, from_short, to_short, *, before=True):
+        """Move from_short to just before (or after) to_short in self.files."""
+        keys = list(self.files.keys())
+        if from_short not in keys or to_short not in keys:
+            return
+        keys.remove(from_short)
+        to_idx = keys.index(to_short)
+        keys.insert(to_idx if before else to_idx + 1, from_short)
+        self.files = OrderedDict((k, self.files[k]) for k in keys)
+        self._rebuild_listbox()
+        # Restore active-file highlight without triggering _on_file_select
+        if self.active_file in self.files:
+            idx = list(self.files.keys()).index(self.active_file)
+            self.file_listbox.selection_clear(0, tk.END)
+            self._loading_files = True
+            try:
+                self.file_listbox.selection_set(idx)
+            finally:
+                self._loading_files = False
+        self._relayout_figures()
+
+    def _rebuild_listbox(self):
+        """Rebuild CheckableListbox rows to match current self.files order."""
+        self.file_listbox.clear()
+        for short, entry in self.files.items():
+            self.file_listbox.insert(tk.END, short,
+                                     checked=not entry.get("hidden", False))
+
+    # ════════════════════════════════════════════════════════════════
     # Click-to-select: clicking any plot selects that file
     # ════════════════════════════════════════════════════════════════
     def _activate_file(self, short):
@@ -1466,6 +1881,10 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             self, leg, entry["canvas"], entry.get("leg_size", 8.0))
         if entry.get("legend") is not None:
             entry["legend"].set_draggable(True)
+            # Persist labels so they survive the next replot
+            entry["legend_labels"] = [
+                t.get_text() for t in entry["legend"].get_texts()
+            ]
 
     # ════════════════════════════════════════════════════════════════
     # Reference line helpers
@@ -1479,7 +1898,8 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             return
         style = self._refline_style_var.get()
         color = self._refline_color_var.get()
-        self.files[self.active_file].setdefault("reflines", []).append(('x', v, style, color))
+        lw    = self._refline_linewidth_var.get()
+        self.files[self.active_file].setdefault("reflines", []).append(('x', v, style, color, lw))
         self._reflines_lb.insert(tk.END, f"X = {v:.4g}")
         self._auto_replot()
 
@@ -1492,7 +1912,8 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             return
         style = self._refline_style_var.get()
         color = self._refline_color_var.get()
-        self.files[self.active_file].setdefault("reflines", []).append(('y', v, style, color))
+        lw    = self._refline_linewidth_var.get()
+        self.files[self.active_file].setdefault("reflines", []).append(('y', v, style, color, lw))
         self._reflines_lb.insert(tk.END, f"Y = {v:.4g}")
         self._auto_replot()
 
@@ -1509,34 +1930,37 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         self._reflines_lb.delete(0, tk.END)
         if not self.active_file:
             return
-        for axis, val, _, _ in self.files.get(self.active_file, {}).get("reflines", []):
+        for e in self.files.get(self.active_file, {}).get("reflines", []):
+            axis, val = e[0], e[1]
             self._reflines_lb.insert(tk.END, f"{'X' if axis == 'x' else 'Y'} = {val:.4g}")
 
     def _on_refline_select(self):
-        """Populate style/color comboboxes from the selected line's own settings."""
+        """Populate style/color/width widgets from the selected line's own settings."""
         sel = self._reflines_lb.curselection()
         if not sel or not self.active_file:
             return
         reflines = self.files.get(self.active_file, {}).get("reflines", [])
         if sel[0] >= len(reflines):
             return
-        _, _, style, color = reflines[sel[0]]
-        self._refline_style_var.set(style)
-        self._refline_color_var.set(color)
+        e = reflines[sel[0]]
+        self._refline_style_var.set(e[2])
+        self._refline_color_var.set(e[3])
+        self._refline_linewidth_var.set(e[4] if len(e) > 4 else "1.0")
 
     def _on_refline_style_color_change(self):
-        """Apply new style/color to the currently selected reference line."""
+        """Apply new style/color/width to the currently selected reference line."""
         sel = self._reflines_lb.curselection()
         if not sel or not self.active_file:
-            return  # no line selected — comboboxes just set defaults for next add
+            return  # no line selected — widgets just set defaults for next add
         reflines = self.files.get(self.active_file, {}).get("reflines", [])
         idx = sel[0]
         if idx >= len(reflines):
             return
-        axis, val, _, _ = reflines[idx]
+        axis, val = reflines[idx][:2]
         reflines[idx] = (axis, val,
                          self._refline_style_var.get(),
-                         self._refline_color_var.get())
+                         self._refline_color_var.get(),
+                         self._refline_linewidth_var.get())
         self._auto_replot()
 
     # ════════════════════════════════════════════════════════════════

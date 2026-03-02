@@ -19,6 +19,9 @@ __pycache__/
 Thumbs.db
 .DS_Store
 
+# Old duplicate package folder (not the active package — use echem_core/)
+echem_gui/
+
 # PyInstaller build artifacts
 build/
 dist/
