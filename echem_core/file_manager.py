@@ -189,6 +189,24 @@ _COLOR_HEX = {
 _PALETTE = [_COLOR_HEX[n] for n in _COLOR_NAMES]
 _MARKERS = ["o", "s", "^", "D", "v", "P", "*", "X", "h", "p"]
 
+# Plot style name → (linestyle, marker, markersize)
+_PLOT_STYLES = {
+    "Line":          ("-",  "",    0),
+    "Line+Dot":      ("-",  ".",   5),
+    "Line+Circle":   ("-",  "o",   5),
+    "Line+Star":     ("-",  "*",   7),
+    "Line+Square":   ("-",  "s",   5),
+    "Line+Triangle": ("-",  "^",   5),
+    "Line+Diamond":  ("-",  "D",   5),
+    "Dot":           ("",   ".",   5),
+    "Circle":        ("",   "o",   5),
+    "Star":          ("",   "*",   7),
+    "Square":        ("",   "s",   5),
+    "Triangle":      ("",   "^",   5),
+    "Diamond":       ("",   "D",   5),
+}
+_PLOT_STYLE_NAMES = list(_PLOT_STYLES.keys())
+
 
 class FileManagerMixin:
     """Mixin that provides file load / remove / switch behaviour.

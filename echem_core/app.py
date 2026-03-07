@@ -11,7 +11,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolb
 
 from .legend_editor import open_legend_editor
 from .checklist import CheckableListbox
-from .file_manager import FileManagerMixin, _COLOR_NAMES, _COLOR_HEX, _is_impedance_col
+from .file_manager import FileManagerMixin, _COLOR_NAMES, _COLOR_HEX, _is_impedance_col, _PLOT_STYLES, _PLOT_STYLE_NAMES
 from .correction import CorrectionMixin
 from .plotting import PlottingMixin, copy_figure_to_clipboard
 from .ecsa import ECSAMixin
@@ -110,11 +110,17 @@ class EchemPanel(
         _file_color_cb.pack(side=tk.LEFT, padx=(4, 0))
         _file_color_cb.bind("<<ComboboxSelected>>", self._on_file_color_change)
         ttk.Label(_fc_row, text="Width:").pack(side=tk.LEFT, padx=(8, 0))
-        self.linewidth_var = tk.StringVar(value="1.5")
+        self.linewidth_var = tk.StringVar(value="3")
         _lw_e = ttk.Entry(_fc_row, textvariable=self.linewidth_var, width=4)
         _lw_e.pack(side=tk.LEFT, padx=(2, 0))
-        _lw_e.bind("<Return>",   lambda e: self._auto_replot())
-        _lw_e.bind("<FocusOut>", lambda e: self._auto_replot())
+        _lw_e.bind("<Return>",   lambda e: self._on_linewidth_change())
+        _lw_e.bind("<FocusOut>", lambda e: self._on_linewidth_change())
+        ttk.Label(_fc_row, text="Shape:").pack(side=tk.LEFT, padx=(8, 0))
+        self.plot_style_var = tk.StringVar(value="Line")
+        _style_cb = ttk.Combobox(_fc_row, textvariable=self.plot_style_var,
+                                  values=_PLOT_STYLE_NAMES, state="readonly", width=11)
+        _style_cb.pack(side=tk.LEFT, padx=(2, 0))
+        _style_cb.bind("<<ComboboxSelected>>", lambda e: self._on_plot_style_change())
 
         # ── Axis selectors + unit conversion ────────────────────────
         _UNIT_DIMS = {
@@ -383,7 +389,7 @@ class EchemPanel(
         leg_row = ttk.Frame(left)
         leg_row.pack(fill=tk.X, padx=4, pady=2)
         ttk.Label(leg_row, text="Size:").pack(side=tk.LEFT)
-        self.legend_size_var = tk.StringVar(value="8")
+        self.legend_size_var = tk.StringVar(value="40")
         _leg_size_e = ttk.Entry(leg_row, textvariable=self.legend_size_var, width=5)
         _leg_size_e.pack(side=tk.LEFT, padx=(2, 8))
         _leg_size_e.bind("<Return>",   lambda e: self._auto_replot())
@@ -418,10 +424,10 @@ class EchemPanel(
         ttk.Label(left, text="Grid", font=("", 9, "bold")).pack(anchor=tk.W, padx=4)
         grid_xy_row = ttk.Frame(left)
         grid_xy_row.pack(fill=tk.X, padx=4, pady=2)
-        self.x_grid_var = tk.BooleanVar(value=False)
+        self.x_grid_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(grid_xy_row, text="X", variable=self.x_grid_var,
                         command=self._auto_replot).pack(side=tk.LEFT)
-        self.y_grid_var = tk.BooleanVar(value=False)
+        self.y_grid_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(grid_xy_row, text="Y", variable=self.y_grid_var,
                         command=self._auto_replot).pack(side=tk.LEFT, padx=(10, 0))
         grid_style_row = ttk.Frame(left)
@@ -434,7 +440,7 @@ class EchemPanel(
         _gscb.pack(side=tk.LEFT, padx=(2, 6))
         _gscb.bind("<<ComboboxSelected>>", lambda e: self._auto_replot())
         ttk.Label(grid_style_row, text="Color:").pack(side=tk.LEFT)
-        self.grid_color_var = tk.StringVar(value="gray")
+        self.grid_color_var = tk.StringVar(value="black")
         _gcol_cb = ttk.Combobox(grid_style_row, textvariable=self.grid_color_var,
                                 values=["gray", "black", "red", "blue", "green",
                                         "orange", "purple", "crimson", "royalblue",
@@ -443,7 +449,7 @@ class EchemPanel(
         _gcol_cb.pack(side=tk.LEFT, padx=(2, 6))
         _gcol_cb.bind("<<ComboboxSelected>>", lambda e: self._auto_replot())
         ttk.Label(grid_style_row, text="Width:").pack(side=tk.LEFT)
-        self.grid_linewidth_var = tk.StringVar(value="0.8")
+        self.grid_linewidth_var = tk.StringVar(value="2")
         _glw = ttk.Entry(grid_style_row, textvariable=self.grid_linewidth_var, width=4)
         _glw.pack(side=tk.LEFT, padx=(2, 0))
         _glw.bind("<Return>",   lambda e: self._auto_replot())
@@ -452,11 +458,11 @@ class EchemPanel(
         # Font
         ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
         ttk.Label(left, text="Font", font=("", 9, "bold")).pack(anchor=tk.W, padx=4)
-        self.font_title_size_var = tk.StringVar(value="10")
+        self.font_title_size_var = tk.StringVar(value="80")
         self.font_title_bold_var = tk.BooleanVar(value=False)
-        self.font_label_size_var = tk.StringVar(value="10")
+        self.font_label_size_var = tk.StringVar(value="60")
         self.font_label_bold_var = tk.BooleanVar(value=False)
-        self.font_tick_size_var  = tk.StringVar(value="8")
+        self.font_tick_size_var  = tk.StringVar(value="30")
         self.font_tick_bold_var  = tk.BooleanVar(value=False)
         _font_title_row = ttk.Frame(left)
         _font_title_row.pack(fill=tk.X, padx=4, pady=(2, 0))
@@ -488,13 +494,13 @@ class EchemPanel(
         _spacing_row = ttk.Frame(left)
         _spacing_row.pack(fill=tk.X, padx=4, pady=(2, 0))
         ttk.Label(_spacing_row, text="Spacing (pt): Title").pack(side=tk.LEFT)
-        self.title_pad_var = tk.StringVar(value="6")
+        self.title_pad_var = tk.StringVar(value="40")
         _tpad_e = ttk.Entry(_spacing_row, textvariable=self.title_pad_var, width=4)
         _tpad_e.pack(side=tk.LEFT, padx=(2, 6))
         _tpad_e.bind("<Return>",   lambda e: self._auto_replot())
         _tpad_e.bind("<FocusOut>", lambda e: self._auto_replot())
         ttk.Label(_spacing_row, text="Label").pack(side=tk.LEFT)
-        self.label_pad_var = tk.StringVar(value="4")
+        self.label_pad_var = tk.StringVar(value="40")
         _lpad_e = ttk.Entry(_spacing_row, textvariable=self.label_pad_var, width=4)
         _lpad_e.pack(side=tk.LEFT, padx=(2, 0))
         _lpad_e.bind("<Return>",   lambda e: self._auto_replot())
@@ -633,7 +639,7 @@ class EchemPanel(
         _cc_row2 = ttk.Frame(left)
         _cc_row2.pack(fill=tk.X, padx=4, pady=(0, 2))
         ttk.Label(_cc_row2, text="Step:").pack(side=tk.LEFT)
-        self.lightness_step_var = tk.StringVar(value="0.08")
+        self.lightness_step_var = tk.StringVar(value="0.15")
         _step_spin = ttk.Spinbox(_cc_row2, textvariable=self.lightness_step_var,
                                   from_=0.01, to=0.30, increment=0.01, width=6)
         _step_spin.pack(side=tk.LEFT, padx=(4, 0))
@@ -879,6 +885,19 @@ class EchemPanel(
         widget.pack(fill=tk.BOTH, expand=True)
         self.canvas.draw_idle()
 
+    # ── Line width helper ─────────────────────────────────────────────
+    def _on_linewidth_change(self):
+        """Persist line width to the active file's entry, then replot."""
+        if self.active_file and self.active_file in self.files:
+            self.files[self.active_file]["linewidth"] = self.linewidth_var.get()
+        self._auto_replot()
+
+    def _on_plot_style_change(self):
+        """Persist plot shape/style to the active file's entry, then replot."""
+        if self.active_file and self.active_file in self.files:
+            self.files[self.active_file]["plot_style"] = self.plot_style_var.get()
+        self._auto_replot()
+
     # ── Gradient helper ──────────────────────────────────────────────
     def _on_gradient_change(self):
         """Persist gradient settings to the active file's entry, then replot."""
@@ -1012,6 +1031,8 @@ class EchemPanel(
             self.files[self.active_file]["cycle_gradient"]  = self.cycle_gradient_var.get()
             self.files[self.active_file]["cycle_reverse"]   = self.cycle_reverse_var.get()
             self.files[self.active_file]["lightness_step"]  = self.lightness_step_var.get()
+            self.files[self.active_file]["linewidth"]       = self.linewidth_var.get()
+            self.files[self.active_file]["plot_style"]      = self.plot_style_var.get()
         super()._save_active_state()
 
     def _switch_active_file(self, short):
@@ -1027,6 +1048,8 @@ class EchemPanel(
         self.cycle_gradient_var.set(entry.get("cycle_gradient", True))
         self.cycle_reverse_var.set(entry.get("cycle_reverse", True))
         self.lightness_step_var.set(entry.get("lightness_step", "0.08"))
+        self.linewidth_var.set(entry.get("linewidth", "3"))
+        self.plot_style_var.set(entry.get("plot_style", "Line"))
 
         super()._switch_active_file(short)
 

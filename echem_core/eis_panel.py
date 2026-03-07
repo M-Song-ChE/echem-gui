@@ -14,7 +14,7 @@ from tkinter import ttk
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 
-from .file_manager import FileManagerMixin, _COLOR_NAMES, _COLOR_HEX
+from .file_manager import FileManagerMixin, _COLOR_NAMES, _COLOR_HEX, _PLOT_STYLES, _PLOT_STYLE_NAMES
 from .plotting import apply_grid, draw_reflines, copy_figure_to_clipboard
 from .legend_editor import open_legend_editor
 from .checklist import CheckableListbox
@@ -215,8 +215,14 @@ class EISPanel(FileManagerMixin, ttk.Frame):
         self.linewidth_var = tk.StringVar(value="1.5")
         _lw_e = ttk.Entry(lw_row, textvariable=self.linewidth_var, width=4)
         _lw_e.pack(side=tk.LEFT, padx=(2, 0))
-        _lw_e.bind("<Return>",   lambda e: self._auto_replot())
-        _lw_e.bind("<FocusOut>", lambda e: self._auto_replot())
+        _lw_e.bind("<Return>",   lambda e: self._on_linewidth_change())
+        _lw_e.bind("<FocusOut>", lambda e: self._on_linewidth_change())
+        ttk.Label(lw_row, text="Shape:").pack(side=tk.LEFT, padx=(8, 0))
+        self.plot_style_var = tk.StringVar(value="Line+Circle")
+        _style_cb = ttk.Combobox(lw_row, textvariable=self.plot_style_var,
+                                  values=_PLOT_STYLE_NAMES, state="readonly", width=11)
+        _style_cb.pack(side=tk.LEFT, padx=(2, 0))
+        _style_cb.bind("<<ComboboxSelected>>", lambda e: self._on_plot_style_change())
 
         # ── Plot Range ────────────────────────────────────────────
         ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
@@ -624,6 +630,16 @@ class EISPanel(FileManagerMixin, ttk.Frame):
             self.file_color_var.get(), "#1f77b4")
         self._auto_replot()
 
+    def _on_linewidth_change(self):
+        if self.active_file and self.active_file in self.files:
+            self.files[self.active_file]["linewidth"] = self.linewidth_var.get()
+        self._auto_replot()
+
+    def _on_plot_style_change(self):
+        if self.active_file and self.active_file in self.files:
+            self.files[self.active_file]["plot_style"] = self.plot_style_var.get()
+        self._auto_replot()
+
     # ════════════════════════════════════════════════════════════════
     # State save / restore
     # ════════════════════════════════════════════════════════════════
@@ -657,6 +673,8 @@ class EISPanel(FileManagerMixin, ttk.Frame):
         entry["grid_style"]    = self.grid_style_var.get()
         entry["grid_color"]     = self.grid_color_var.get()
         entry["grid_linewidth"] = self.grid_linewidth_var.get()
+        entry["plot_style"]     = self.plot_style_var.get()
+        entry["linewidth"]      = self.linewidth_var.get()
         # Persist current view so it can be restored after a file switch
         entry["view_xlim"] = self.ax.get_xlim()
         entry["view_ylim"] = self.ax.get_ylim()
@@ -690,6 +708,7 @@ class EISPanel(FileManagerMixin, ttk.Frame):
         entry.setdefault("grid_color",     "gray")
         entry.setdefault("grid_linewidth", "0.8")
         entry.setdefault("reflines",      [])
+        entry.setdefault("plot_style",    "Line+Circle")
 
         cols = list(df.columns)
         self.x_combo["values"] = cols
@@ -765,10 +784,12 @@ class EISPanel(FileManagerMixin, ttk.Frame):
 
         self._refresh_reflines_lb()
 
-        # Restore color combobox to match this file's stored color
+        # Restore color and shape comboboxes to match this file's stored settings
         color = entry.get("color", "#1f77b4")
         name = next((n for n, h in _COLOR_HEX.items() if h == color), "Blue")
         self.file_color_var.set(name)
+        self.plot_style_var.set(entry.get("plot_style", "Line+Circle"))
+        self.linewidth_var.set(entry.get("linewidth", "1.5"))
 
     # ════════════════════════════════════════════════════════════════
     # Plot
@@ -864,7 +885,9 @@ class EISPanel(FileManagerMixin, ttk.Frame):
             if xcol not in df.columns or ycol not in df.columns:
                 continue
             base_color   = fentry.get("color",  "#1f77b4")
-            file_marker  = fentry.get("marker", "o") if show_markers else ""
+            _ls_style, _mk_style, _ms_style = _PLOT_STYLES.get(
+                fentry.get("plot_style", "Line+Circle"), ("-", "o", 5))
+            file_marker  = (_mk_style or "o") if show_markers else ""
             file_line    = "-" if connect_lines else ""
             if not file_marker and not file_line:
                 file_marker = "o"
@@ -872,8 +895,8 @@ class EISPanel(FileManagerMixin, ttk.Frame):
                 df[xcol] * x_scale,
                 df[ycol] * y_scale,
                 color=base_color,
-                marker=file_marker,
-                markersize=4,
+                marker=file_marker or None,
+                markersize=_ms_style if file_marker else 0,
                 linestyle=file_line,
                 linewidth=_lw,
                 label=short,

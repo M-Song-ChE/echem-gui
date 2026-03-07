@@ -24,7 +24,7 @@ from tkinter import ttk
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 
-from .file_manager import FileManagerMixin, _COLOR_NAMES, _COLOR_HEX, _default_xcol, _default_ycol
+from .file_manager import FileManagerMixin, _COLOR_NAMES, _COLOR_HEX, _default_xcol, _default_ycol, _PLOT_STYLES, _PLOT_STYLE_NAMES
 from .correction import CorrectionMixin
 from .plotting import apply_grid, draw_reflines, _cycle_colors, copy_figure_to_clipboard
 from .legend_editor import open_legend_editor
@@ -134,6 +134,12 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         _lw_e.pack(side=tk.LEFT, padx=(2, 0))
         _lw_e.bind("<Return>",   lambda e: self._on_linewidth_change())
         _lw_e.bind("<FocusOut>", lambda e: self._on_linewidth_change())
+        ttk.Label(_fc_row, text="Shape:").pack(side=tk.LEFT, padx=(8, 0))
+        self.plot_style_var = tk.StringVar(value="Line")
+        _style_cb = ttk.Combobox(_fc_row, textvariable=self.plot_style_var,
+                                  values=_PLOT_STYLE_NAMES, state="readonly", width=11)
+        _style_cb.pack(side=tk.LEFT, padx=(2, 0))
+        _style_cb.bind("<<ComboboxSelected>>", lambda e: self._on_plot_style_change())
 
         # ── Axis selectors + unit dropdowns ──────────────────────
         ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
@@ -982,6 +988,7 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         entry["cycle_reverse"]  = self.cycle_reverse_var.get()
         entry["lightness_step"] = self.lightness_step_var.get()
         entry["linewidth"]      = self.linewidth_var.get()
+        entry["plot_style"]     = self.plot_style_var.get()
         entry["x_flip"]         = self.x_flip_var.get()
         entry["y_flip"]         = self.y_flip_var.get()
 
@@ -1097,6 +1104,7 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         self.cycle_reverse_var.set(entry.get("cycle_reverse", True))
         self.lightness_step_var.set(entry.get("lightness_step", "0.08"))
         self.linewidth_var.set(entry.get("linewidth", "1.5"))
+        self.plot_style_var.set(entry.get("plot_style", "Line"))
         self.x_flip_var.set(entry.get("x_flip", False))
         self.y_flip_var.set(entry.get("y_flip", False))
 
@@ -1236,6 +1244,8 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             _lw = float(_lw_s)
         except (ValueError, TypeError):
             _lw = 1.5
+        _sname = (self.plot_style_var.get() if is_active else entry.get("plot_style", "Line"))
+        _ls, _mk, _ms = _PLOT_STYLES.get(_sname, ("-", "", 0))
 
         has_data = False
         if "cycle number" in df.columns:
@@ -1246,11 +1256,15 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
                     sub = df[df["cycle number"] == c]
                     ax.plot(sub[_real_xcol] * x_scale,
                             sub[_real_ycol] * y_scale,
-                            color=cycle_cols[i], label=f"C{c}", linewidth=_lw)
+                            color=cycle_cols[i], label=f"C{c}", linewidth=_lw,
+                            linestyle=_ls, marker=_mk or None,
+                            markersize=_ms if _mk else 0)
                 has_data = True
         else:
             ax.plot(df[_real_xcol] * x_scale, df[_real_ycol] * y_scale,
-                    color=base_color, label=short, linewidth=_lw)
+                    color=base_color, label=short, linewidth=_lw,
+                    linestyle=_ls, marker=_mk or None,
+                    markersize=_ms if _mk else 0)
             has_data = True
 
         # Append "(vs Ref)" only to voltage-type axes; J is never voltage
@@ -1400,6 +1414,11 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
     def _on_linewidth_change(self):
         if self.active_file and self.active_file in self.files:
             self.files[self.active_file]["linewidth"] = self.linewidth_var.get()
+        self._auto_replot()
+
+    def _on_plot_style_change(self):
+        if self.active_file and self.active_file in self.files:
+            self.files[self.active_file]["plot_style"] = self.plot_style_var.get()
         self._auto_replot()
 
     def _on_gradient_change(self):

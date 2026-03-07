@@ -7,6 +7,7 @@ import math
 import numpy as np
 import matplotlib.colors as _mcolors
 from tkinter import messagebox
+from .file_manager import _PLOT_STYLES
 
 
 def copy_figure_to_clipboard(fig):
@@ -595,12 +596,6 @@ class PlottingMixin:
         has_legend = False
         self._legend_stable_keys = []   # reset for this replot
 
-        _lw_v = getattr(self, 'linewidth_var', None)
-        try:
-            _lw = float(_lw_v.get()) if _lw_v else 1.5
-        except (ValueError, TypeError):
-            _lw = 1.5
-
         for short, entry in self.files.items():
             if entry.get("hidden", False):
                 continue
@@ -625,6 +620,9 @@ class PlottingMixin:
             try:    _step = float(entry.get("lightness_step", "0.08"))
             except: _step = 0.08
             base_color = entry.get("color", "#1f77b4")
+            try:    _lw = float(entry.get("linewidth", "3"))
+            except: _lw = 3.0
+            _ls, _mk, _ms = _PLOT_STYLES.get(entry.get("plot_style", "Line"), ("-", "", 0))
             if "cycle number" in df.columns:
                 if not cycles:
                     continue
@@ -635,7 +633,9 @@ class PlottingMixin:
                     label = f"{short} C{c}" if multi else f"Cycle {c}"
                     self.ax.plot(sub[_real_xcol] * x_scale,
                                  sub[_real_ycol] * y_scale,
-                                 color=cycle_cols[i], label=label, linewidth=_lw)
+                                 color=cycle_cols[i], label=label, linewidth=_lw,
+                                 linestyle=_ls, marker=_mk or None,
+                                 markersize=_ms if _mk else 0)
                     # Stable key always includes filename → survives single↔multi transitions
                     self._legend_stable_keys.append(f"{short}:C{c}")
                 has_legend = True
@@ -643,7 +643,9 @@ class PlottingMixin:
                 label = short if multi else None
                 self.ax.plot(df[_real_xcol] * x_scale,
                             df[_real_ycol] * y_scale,
-                            color=base_color, label=label, linewidth=_lw)
+                            color=base_color, label=label, linewidth=_lw,
+                            linestyle=_ls, marker=_mk or None,
+                            markersize=_ms if _mk else 0)
                 if label:
                     self._legend_stable_keys.append(short)
                     has_legend = True
