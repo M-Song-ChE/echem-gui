@@ -90,8 +90,8 @@ Files with a `cycle number` column show a grid of cycle checkboxes.
 ### 3.6 File Colors and Cycle Gradient
 - **Color combobox** — change the base color of the active file. Each file is auto-assigned a distinct color on load.
 - **Gradient checkbox** — when checked, cycles within a file are drawn with a lightness gradient: the first cycle is the lightest and the last cycle is the darkest (most evolved cycle = most visible).
-- **Reverse checkbox** — flips the gradient direction (first cycle darkest, last lightest).
-- **Step spinbox** — controls how much the lightness changes between consecutive cycles (range 0.01–0.30; default 0.08).
+- **Reverse checkbox** — flips the gradient direction (first cycle darkest, last lightest). Checked by default.
+- **Step spinbox** — controls how much the lightness changes between consecutive cycles (range 0.01–0.30; default 0.15).
 - These settings are saved **per file** — switching files restores each file's individual settings.
 
 ### 3.7 Legend
@@ -264,7 +264,7 @@ Each file remembers its last zoom/pan state. Switching to another file and back 
 - **Smart axis defaults** — when loading a file for the first time, the app detects its data type and picks appropriate column defaults: **EIS** files → `Re(Z)` vs `-Im(Z)`; **OCV/time-series** files (voltage + time, no current) → `time/s` vs `Ewe/V`; **CV/LSV** files → `Ewe/V` vs `I/mA`. EIS files also filter the column dropdowns to show only impedance columns (Re(Z), -Im(Z), freq, Phase), keeping the selector clean.
 - **EIS units** — when plotting EIS data in the General or Multi E.Chem tab, the unit dropdowns offer impedance units (mΩ, Ω, kΩ, MΩ), frequency units (Hz, kHz, MHz), and phase units (deg, rad). Data is scaled automatically when you switch.
 - **Newer EC-Lab firmware files** — `.mpr` files that contain column types not yet known to galvani (e.g. firmware-added metadata columns) now load automatically. The unrecognised columns are silently skipped and all recognised data (Ewe/V, I/mA, Re(Z), etc.) loads normally.
-- **Gradient for tracking evolution** — turn on Gradient to see how your CV cycles evolve: lightest = earliest, darkest = latest (most evolved).
+- **Gradient for tracking evolution** — turn on Gradient to see how your CV cycles evolve. With Reverse checked (default): darkest = earliest, lightest = latest. With Reverse unchecked: lightest = earliest, darkest = latest.
 - **Cycle order matters** — cycles are plotted in the order they appear in the data file, so the gradient naturally reflects temporal evolution.
 - **E_std position** — set E_std to the midpoint of the flat, featureless region of your CV for the most reliable Cdl extraction.
 - **Cs value** — the default 0.040 mF/cm² is appropriate for Pt in 0.1 M HClO₄. Adjust for your material and electrolyte.
