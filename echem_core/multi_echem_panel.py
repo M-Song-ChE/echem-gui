@@ -904,9 +904,6 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         self._right_canvas.itemconfig(self._plots_win, width=event.width)
         if self._zoom_file:
             self._right_canvas.itemconfig(self._plots_win, height=event.height)
-        if getattr(self, '_resize_after_id', None):
-            self.after_cancel(self._resize_after_id)
-        self._resize_after_id = self.after(300, self._auto_replot)
 
     def _relayout_figures(self):
         """Place every file's plot frame in a max-2-column grid, in load order.
@@ -1456,9 +1453,6 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         except Exception: title_pad = 6.0
         try: label_pad = float(self.label_pad_var.get())
         except Exception: label_pad = 4.0
-        w = canvas.get_tk_widget().winfo_width()
-        scale = w / 800 if w > 1 else 1.0
-        ts, ls, ks = ts * scale, ls * scale, ks * scale
         ax.set_title(ax.get_title(),   fontsize=ts, fontweight=tb, pad=title_pad)
         ax.set_xlabel(ax.get_xlabel(), fontsize=ls, fontweight=lb, labelpad=label_pad)
         ax.set_ylabel(ax.get_ylabel(), fontsize=ls, fontweight=lb, labelpad=label_pad)
