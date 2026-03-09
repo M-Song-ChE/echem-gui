@@ -1047,7 +1047,7 @@ class EchemPanel(
         self.file_color_var.set(name)
         self.cycle_gradient_var.set(entry.get("cycle_gradient", True))
         self.cycle_reverse_var.set(entry.get("cycle_reverse", True))
-        self.lightness_step_var.set(entry.get("lightness_step", "0.08"))
+        self.lightness_step_var.set(entry.get("lightness_step", "0.15"))
         self.linewidth_var.set(entry.get("linewidth", "3"))
         self.plot_style_var.set(entry.get("plot_style", "Line"))
 

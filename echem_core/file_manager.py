@@ -272,8 +272,8 @@ class FileManagerMixin:
                 "color":          _PALETTE[color_idx % len(_PALETTE)],
                 "marker":         _MARKERS[color_idx % len(_MARKERS)],
                 "cycle_gradient": True,
-                "cycle_reverse":  False,
-                "lightness_step": "0.08",
+                "cycle_reverse":  True,
+                "lightness_step": "0.15",
                 "hidden":         False,
             }
             self.file_listbox.insert(tk.END, short)

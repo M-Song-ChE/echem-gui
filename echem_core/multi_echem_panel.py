@@ -419,7 +419,7 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         _cc_row2 = ttk.Frame(left)
         _cc_row2.pack(fill=tk.X, padx=4, pady=(0, 2))
         ttk.Label(_cc_row2, text="Step:").pack(side=tk.LEFT)
-        self.lightness_step_var = tk.StringVar(value="0.08")
+        self.lightness_step_var = tk.StringVar(value="0.15")
         _step_spin = ttk.Spinbox(_cc_row2, textvariable=self.lightness_step_var,
                                   from_=0.01, to=0.30, increment=0.01, width=6)
         _step_spin.pack(side=tk.LEFT, padx=(4, 0))
@@ -1024,7 +1024,7 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         entry.setdefault("reflines",      [])
         entry.setdefault("cycle_gradient", True)
         entry.setdefault("cycle_reverse",  True)
-        entry.setdefault("lightness_step", "0.08")
+        entry.setdefault("lightness_step", "0.15")
         entry.setdefault("linewidth",      "1.5")
         entry.setdefault("x_flip",         False)
         entry.setdefault("y_flip",         False)
@@ -1102,7 +1102,7 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         self.file_color_var.set(name)
         self.cycle_gradient_var.set(entry.get("cycle_gradient", True))
         self.cycle_reverse_var.set(entry.get("cycle_reverse", True))
-        self.lightness_step_var.set(entry.get("lightness_step", "0.08"))
+        self.lightness_step_var.set(entry.get("lightness_step", "0.15"))
         self.linewidth_var.set(entry.get("linewidth", "1.5"))
         self.plot_style_var.set(entry.get("plot_style", "Line"))
         self.x_flip_var.set(entry.get("x_flip", False))
@@ -1236,7 +1236,7 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         base_color = entry.get("color", "#1f77b4")
         _grad  = self.cycle_gradient_var.get() if is_active else entry.get("cycle_gradient", True)
         _rev   = self.cycle_reverse_var.get()  if is_active else entry.get("cycle_reverse", True)
-        try:    _step = float(self.lightness_step_var.get() if is_active else entry.get("lightness_step", "0.08"))
+        try:    _step = float(self.lightness_step_var.get() if is_active else entry.get("lightness_step", "0.15"))
         except: _step = 0.08
 
         _lw_s = self.linewidth_var.get() if is_active else entry.get("linewidth", "1.5")

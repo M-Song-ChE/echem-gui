@@ -616,8 +616,8 @@ class PlottingMixin:
                        else y_scale_base)
 
             _grad = entry.get("cycle_gradient", True)
-            _rev  = entry.get("cycle_reverse",  False)
-            try:    _step = float(entry.get("lightness_step", "0.08"))
+            _rev  = entry.get("cycle_reverse",  True)
+            try:    _step = float(entry.get("lightness_step", "0.15"))
             except: _step = 0.08
             base_color = entry.get("color", "#1f77b4")
             try:    _lw = float(entry.get("linewidth", "3"))
