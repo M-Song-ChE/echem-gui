@@ -700,6 +700,7 @@ class EchemPanel(
         self.ax = self.fig.add_subplot(111)
         self.canvas = FigureCanvasTkAgg(self.fig, master=right)
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        self.canvas.get_tk_widget().bind("<Configure>", self._on_canvas_configure)
 
         toolbar_frame = ttk.Frame(right)
         toolbar_frame.pack(fill=tk.X, side=tk.BOTTOM)
@@ -929,6 +930,9 @@ class EchemPanel(
         except Exception: title_pad = 6.0
         try: label_pad = float(self.label_pad_var.get())
         except Exception: label_pad = 4.0
+        w = canvas.get_tk_widget().winfo_width()
+        scale = w / 800 if w > 1 else 1.0
+        ts, ls, ks = ts * scale, ls * scale, ks * scale
         ax.set_title(ax.get_title(),   fontsize=ts, fontweight=tb, pad=title_pad)
         ax.set_xlabel(ax.get_xlabel(), fontsize=ls, fontweight=lb, labelpad=label_pad)
         ax.set_ylabel(ax.get_ylabel(), fontsize=ls, fontweight=lb, labelpad=label_pad)
@@ -940,6 +944,11 @@ class EchemPanel(
                 lbl.set_fontweight('bold')
             ax.figure.tight_layout()
             canvas.draw()
+
+    def _on_canvas_configure(self, event):
+        if getattr(self, '_resize_after_id', None):
+            self.after_cancel(self._resize_after_id)
+        self._resize_after_id = self.after(300, self._auto_replot)
 
     # ── File color helper ────────────────────────────────────────────
     def _on_file_color_change(self, event=None):

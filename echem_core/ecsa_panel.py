@@ -675,6 +675,7 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         self.ax_cv     = self.fig_cv.add_subplot(1, 1, 1)
         self.canvas_cv = FigureCanvasTkAgg(self.fig_cv, master=upper)
         self.canvas_cv.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        self.canvas_cv.get_tk_widget().bind("<Configure>", self._on_canvas_configure)
         tb_cv = ttk.Frame(upper)
         tb_cv.pack(fill=tk.X)
         _panel = self
@@ -1292,6 +1293,9 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         except Exception: title_pad = 6.0
         try: label_pad = float(self.label_pad_var.get())
         except Exception: label_pad = 4.0
+        w = canvas.get_tk_widget().winfo_width()
+        scale = w / 800 if w > 1 else 1.0
+        ts, ls, ks = ts * scale, ls * scale, ks * scale
         ax.set_title(ax.get_title(),   fontsize=ts, fontweight=tb, pad=title_pad)
         ax.set_xlabel(ax.get_xlabel(), fontsize=ls, fontweight=lb, labelpad=label_pad)
         ax.set_ylabel(ax.get_ylabel(), fontsize=ls, fontweight=lb, labelpad=label_pad)
@@ -1303,6 +1307,11 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
                 lbl.set_fontweight('bold')
             ax.figure.tight_layout()
             canvas.draw()
+
+    def _on_canvas_configure(self, event):
+        if getattr(self, '_resize_after_id', None):
+            self.after_cancel(self._resize_after_id)
+        self._resize_after_id = self.after(300, self._plot_cv)
 
     # ════════════════════════════════════════════════════════════════
     # CV plot (upper figure)
