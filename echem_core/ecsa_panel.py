@@ -310,7 +310,7 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         self.cycle_gradient_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(_cc_row1, text="Gradient", variable=self.cycle_gradient_var,
                         command=self._on_gradient_change).pack(side=tk.LEFT)
-        self.cycle_reverse_var = tk.BooleanVar(value=True)
+        self.cycle_reverse_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(_cc_row1, text="Reverse", variable=self.cycle_reverse_var,
                         command=self._on_gradient_change).pack(side=tk.LEFT, padx=(8, 0))
         _cc_row2 = ttk.Frame(left)
@@ -1147,7 +1147,7 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         entry.setdefault("cv_reflines",      [])
         entry.setdefault("cdl_reflines",     [])
         entry.setdefault("cycle_gradient", True)
-        entry.setdefault("cycle_reverse",  True)
+        entry.setdefault("cycle_reverse",  False)
         entry.setdefault("lightness_step", "0.15")
         entry.setdefault("linewidth",      "1.5")
 
@@ -1253,7 +1253,7 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         name = next((n for n, h in _COLOR_HEX.items() if h == color), "Blue")
         self.file_color_var.set(name)
         self.cycle_gradient_var.set(entry.get("cycle_gradient", True))
-        self.cycle_reverse_var.set(entry.get("cycle_reverse", True))
+        self.cycle_reverse_var.set(entry.get("cycle_reverse", False))
         self.lightness_step_var.set(entry.get("lightness_step", "0.15"))
         self.linewidth_var.set(entry.get("linewidth", "1.5"))
         self.plot_style_var.set(entry.get("plot_style", "Line"))
@@ -1337,7 +1337,7 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         entry_ref = self.files[self.active_file]
         base_color = entry_ref.get("color", "#1f77b4")
         _grad  = entry_ref.get("cycle_gradient", True)
-        _rev   = entry_ref.get("cycle_reverse",  True)
+        _rev   = entry_ref.get("cycle_reverse",  False)
         try:    _step = float(entry_ref.get("lightness_step", "0.15"))
         except: _step = 0.08
 

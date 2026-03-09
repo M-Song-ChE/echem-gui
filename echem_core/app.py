@@ -633,7 +633,7 @@ class EchemPanel(
         self.cycle_gradient_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(_cc_row1, text="Gradient", variable=self.cycle_gradient_var,
                         command=self._on_gradient_change).pack(side=tk.LEFT)
-        self.cycle_reverse_var = tk.BooleanVar(value=True)
+        self.cycle_reverse_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(_cc_row1, text="Reverse", variable=self.cycle_reverse_var,
                         command=self._on_gradient_change).pack(side=tk.LEFT, padx=(8, 0))
         _cc_row2 = ttk.Frame(left)
@@ -1046,7 +1046,7 @@ class EchemPanel(
         name  = next((n for n, h in _COLOR_HEX.items() if h == color), "Blue")
         self.file_color_var.set(name)
         self.cycle_gradient_var.set(entry.get("cycle_gradient", True))
-        self.cycle_reverse_var.set(entry.get("cycle_reverse", True))
+        self.cycle_reverse_var.set(entry.get("cycle_reverse", False))
         self.lightness_step_var.set(entry.get("lightness_step", "0.15"))
         self.linewidth_var.set(entry.get("linewidth", "3"))
         self.plot_style_var.set(entry.get("plot_style", "Line"))

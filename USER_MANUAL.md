@@ -90,7 +90,7 @@ Files with a `cycle number` column show a grid of cycle checkboxes.
 ### 3.6 File Colors and Cycle Gradient
 - **Color combobox** — change the base color of the active file. Each file is auto-assigned a distinct color on load.
 - **Gradient checkbox** — when checked, cycles within a file are drawn with a lightness gradient: the first cycle is the lightest and the last cycle is the darkest (most evolved cycle = most visible).
-- **Reverse checkbox** — flips the gradient direction (first cycle darkest, last lightest). Checked by default.
+- **Reverse checkbox** — flips the gradient direction (first cycle darkest, last lightest). Unchecked by default.
 - **Step spinbox** — controls how much the lightness changes between consecutive cycles (range 0.01–0.30; default 0.15).
 - These settings are saved **per file** — switching files restores each file's individual settings.
 
