@@ -97,7 +97,7 @@ Files with a `cycle number` column show a grid of cycle checkboxes.
 ### 3.7 Legend
 - **Show Legend checkbox** — toggles the legend on/off.
 - **Frame checkbox** — adds a border around the legend box.
-- **Font size** — adjust legend text size.
+- **Font size** — adjust legend text size. The plot axes dimensions are **not affected** by legend size or placement — a large legend may overlap the plot area or extend to the figure edge, but the axes will not shrink to accommodate it.
 - **Location** — choose legend anchor position, or drag the legend freely with the mouse.
 - **Edit Labels** — opens a dialog to rename individual legend entries.
 

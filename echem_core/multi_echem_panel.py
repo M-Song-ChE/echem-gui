@@ -1457,12 +1457,21 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         ax.set_xlabel(ax.get_xlabel(), fontsize=ls, fontweight=lb, labelpad=label_pad)
         ax.set_ylabel(ax.get_ylabel(), fontsize=ls, fontweight=lb, labelpad=label_pad)
         ax.tick_params(axis='both', labelsize=ks)
+        _leg = ax.get_legend()
+        if _leg is not None:
+            _leg.set_visible(False)
         ax.figure.tight_layout()
+        if _leg is not None:
+            _leg.set_visible(True)
         canvas.draw()
         if kb:
             for lbl in ax.get_xticklabels() + ax.get_yticklabels():
                 lbl.set_fontweight('bold')
+            if _leg is not None:
+                _leg.set_visible(False)
             ax.figure.tight_layout()
+            if _leg is not None:
+                _leg.set_visible(True)
             canvas.draw()
 
     # ════════════════════════════════════════════════════════════════
