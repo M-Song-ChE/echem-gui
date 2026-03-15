@@ -24,7 +24,7 @@ from tkinter import ttk
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 
-from .file_manager import FileManagerMixin, _COLOR_NAMES, _COLOR_HEX, _default_xcol, _default_ycol
+from .file_manager import FileManagerMixin, _COLOR_NAMES, _COLOR_HEX, _default_xcol, _default_ycol, _PLOT_STYLES, _PLOT_STYLE_NAMES
 from .correction import CorrectionMixin
 from .plotting import apply_grid, draw_reflines, _cycle_colors, copy_figure_to_clipboard
 from .legend_editor import open_legend_editor
@@ -134,6 +134,12 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         _lw_e.pack(side=tk.LEFT, padx=(2, 0))
         _lw_e.bind("<Return>",   lambda e: self._on_linewidth_change())
         _lw_e.bind("<FocusOut>", lambda e: self._on_linewidth_change())
+        ttk.Label(_fc_row, text="Shape:").pack(side=tk.LEFT, padx=(8, 0))
+        self.plot_style_var = tk.StringVar(value="Line")
+        _style_cb = ttk.Combobox(_fc_row, textvariable=self.plot_style_var,
+                                  values=_PLOT_STYLE_NAMES, state="readonly", width=11)
+        _style_cb.pack(side=tk.LEFT, padx=(2, 0))
+        _style_cb.bind("<<ComboboxSelected>>", lambda e: self._on_plot_style_change())
 
         # ── Axis selectors + unit dropdowns ──────────────────────
         ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
@@ -407,13 +413,13 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         self.cycle_gradient_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(_cc_row1, text="Gradient", variable=self.cycle_gradient_var,
                         command=self._on_gradient_change).pack(side=tk.LEFT)
-        self.cycle_reverse_var = tk.BooleanVar(value=True)
+        self.cycle_reverse_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(_cc_row1, text="Reverse", variable=self.cycle_reverse_var,
                         command=self._on_gradient_change).pack(side=tk.LEFT, padx=(8, 0))
         _cc_row2 = ttk.Frame(left)
         _cc_row2.pack(fill=tk.X, padx=4, pady=(0, 2))
         ttk.Label(_cc_row2, text="Step:").pack(side=tk.LEFT)
-        self.lightness_step_var = tk.StringVar(value="0.08")
+        self.lightness_step_var = tk.StringVar(value="0.15")
         _step_spin = ttk.Spinbox(_cc_row2, textvariable=self.lightness_step_var,
                                   from_=0.01, to=0.30, increment=0.01, width=6)
         _step_spin.pack(side=tk.LEFT, padx=(4, 0))
@@ -982,6 +988,7 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         entry["cycle_reverse"]  = self.cycle_reverse_var.get()
         entry["lightness_step"] = self.lightness_step_var.get()
         entry["linewidth"]      = self.linewidth_var.get()
+        entry["plot_style"]     = self.plot_style_var.get()
         entry["x_flip"]         = self.x_flip_var.get()
         entry["y_flip"]         = self.y_flip_var.get()
 
@@ -1016,8 +1023,8 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         entry.setdefault("grid_linewidth","0.8")
         entry.setdefault("reflines",      [])
         entry.setdefault("cycle_gradient", True)
-        entry.setdefault("cycle_reverse",  True)
-        entry.setdefault("lightness_step", "0.08")
+        entry.setdefault("cycle_reverse",  False)
+        entry.setdefault("lightness_step", "0.15")
         entry.setdefault("linewidth",      "1.5")
         entry.setdefault("x_flip",         False)
         entry.setdefault("y_flip",         False)
@@ -1094,9 +1101,10 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         name = next((n for n, h in _COLOR_HEX.items() if h == color), "Blue")
         self.file_color_var.set(name)
         self.cycle_gradient_var.set(entry.get("cycle_gradient", True))
-        self.cycle_reverse_var.set(entry.get("cycle_reverse", True))
-        self.lightness_step_var.set(entry.get("lightness_step", "0.08"))
+        self.cycle_reverse_var.set(entry.get("cycle_reverse", False))
+        self.lightness_step_var.set(entry.get("lightness_step", "0.15"))
         self.linewidth_var.set(entry.get("linewidth", "1.5"))
+        self.plot_style_var.set(entry.get("plot_style", "Line"))
         self.x_flip_var.set(entry.get("x_flip", False))
         self.y_flip_var.set(entry.get("y_flip", False))
 
@@ -1227,8 +1235,8 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
 
         base_color = entry.get("color", "#1f77b4")
         _grad  = self.cycle_gradient_var.get() if is_active else entry.get("cycle_gradient", True)
-        _rev   = self.cycle_reverse_var.get()  if is_active else entry.get("cycle_reverse", True)
-        try:    _step = float(self.lightness_step_var.get() if is_active else entry.get("lightness_step", "0.08"))
+        _rev   = self.cycle_reverse_var.get()  if is_active else entry.get("cycle_reverse", False)
+        try:    _step = float(self.lightness_step_var.get() if is_active else entry.get("lightness_step", "0.15"))
         except: _step = 0.08
 
         _lw_s = self.linewidth_var.get() if is_active else entry.get("linewidth", "1.5")
@@ -1236,6 +1244,8 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             _lw = float(_lw_s)
         except (ValueError, TypeError):
             _lw = 1.5
+        _sname = (self.plot_style_var.get() if is_active else entry.get("plot_style", "Line"))
+        _ls, _mk, _ms = _PLOT_STYLES.get(_sname, ("-", "", 0))
 
         has_data = False
         if "cycle number" in df.columns:
@@ -1246,11 +1256,15 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
                     sub = df[df["cycle number"] == c]
                     ax.plot(sub[_real_xcol] * x_scale,
                             sub[_real_ycol] * y_scale,
-                            color=cycle_cols[i], label=f"C{c}", linewidth=_lw)
+                            color=cycle_cols[i], label=f"C{c}", linewidth=_lw,
+                            linestyle=_ls, marker=_mk or None,
+                            markersize=_ms if _mk else 0)
                 has_data = True
         else:
             ax.plot(df[_real_xcol] * x_scale, df[_real_ycol] * y_scale,
-                    color=base_color, label=short, linewidth=_lw)
+                    color=base_color, label=short, linewidth=_lw,
+                    linestyle=_ls, marker=_mk or None,
+                    markersize=_ms if _mk else 0)
             has_data = True
 
         # Append "(vs Ref)" only to voltage-type axes; J is never voltage
@@ -1402,6 +1416,11 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             self.files[self.active_file]["linewidth"] = self.linewidth_var.get()
         self._auto_replot()
 
+    def _on_plot_style_change(self):
+        if self.active_file and self.active_file in self.files:
+            self.files[self.active_file]["plot_style"] = self.plot_style_var.get()
+        self._auto_replot()
+
     def _on_gradient_change(self):
         """Persist gradient settings to the active file's entry, then replot."""
         if self.active_file and self.active_file in self.files:
@@ -1438,12 +1457,21 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         ax.set_xlabel(ax.get_xlabel(), fontsize=ls, fontweight=lb, labelpad=label_pad)
         ax.set_ylabel(ax.get_ylabel(), fontsize=ls, fontweight=lb, labelpad=label_pad)
         ax.tick_params(axis='both', labelsize=ks)
+        _leg = ax.get_legend()
+        if _leg is not None:
+            _leg.set_visible(False)
         ax.figure.tight_layout()
+        if _leg is not None:
+            _leg.set_visible(True)
         canvas.draw()
         if kb:
             for lbl in ax.get_xticklabels() + ax.get_yticklabels():
                 lbl.set_fontweight('bold')
+            if _leg is not None:
+                _leg.set_visible(False)
             ax.figure.tight_layout()
+            if _leg is not None:
+                _leg.set_visible(True)
             canvas.draw()
 
     # ════════════════════════════════════════════════════════════════

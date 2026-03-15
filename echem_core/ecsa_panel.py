@@ -32,7 +32,7 @@ from tkinter import ttk
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 
-from .file_manager import FileManagerMixin, _COLOR_NAMES, _COLOR_HEX, _default_xcol, _default_ycol
+from .file_manager import FileManagerMixin, _COLOR_NAMES, _COLOR_HEX, _default_xcol, _default_ycol, _PLOT_STYLES, _PLOT_STYLE_NAMES
 from .checklist import CheckableListbox
 from .correction import CorrectionMixin
 from .plotting import apply_grid, draw_reflines, _cycle_colors, copy_figure_to_clipboard
@@ -128,6 +128,12 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         _lw_e.pack(side=tk.LEFT, padx=(2, 0))
         _lw_e.bind("<Return>",   lambda e: self._on_linewidth_change())
         _lw_e.bind("<FocusOut>", lambda e: self._on_linewidth_change())
+        ttk.Label(_fc_row, text="Shape:").pack(side=tk.LEFT, padx=(8, 0))
+        self.plot_style_var = tk.StringVar(value="Line")
+        _style_cb = ttk.Combobox(_fc_row, textvariable=self.plot_style_var,
+                                  values=_PLOT_STYLE_NAMES, state="readonly", width=11)
+        _style_cb.pack(side=tk.LEFT, padx=(2, 0))
+        _style_cb.bind("<<ComboboxSelected>>", lambda e: self._on_plot_style_change())
 
         # ── Axis selectors + unit dropdowns ──────────────────────
         ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
@@ -304,13 +310,13 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         self.cycle_gradient_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(_cc_row1, text="Gradient", variable=self.cycle_gradient_var,
                         command=self._on_gradient_change).pack(side=tk.LEFT)
-        self.cycle_reverse_var = tk.BooleanVar(value=True)
+        self.cycle_reverse_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(_cc_row1, text="Reverse", variable=self.cycle_reverse_var,
                         command=self._on_gradient_change).pack(side=tk.LEFT, padx=(8, 0))
         _cc_row2 = ttk.Frame(left)
         _cc_row2.pack(fill=tk.X, padx=4, pady=(0, 2))
         ttk.Label(_cc_row2, text="Step:").pack(side=tk.LEFT)
-        self.lightness_step_var = tk.StringVar(value="0.08")
+        self.lightness_step_var = tk.StringVar(value="0.15")
         _step_spin = ttk.Spinbox(_cc_row2, textvariable=self.lightness_step_var,
                                   from_=0.01, to=0.30, increment=0.01, width=6)
         _step_spin.pack(side=tk.LEFT, padx=(4, 0))
@@ -1045,6 +1051,11 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             self.files[self.active_file]["linewidth"] = self.linewidth_var.get()
         self._auto_replot()
 
+    def _on_plot_style_change(self):
+        if self.active_file and self.active_file in self.files:
+            self.files[self.active_file]["plot_style"] = self.plot_style_var.get()
+        self._auto_replot()
+
     def _on_gradient_change(self):
         """Persist gradient settings to the active file's entry, then replot."""
         if self.active_file and self.active_file in self.files:
@@ -1091,6 +1102,7 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             entry["cycle_reverse"]  = self.cycle_reverse_var.get()
             entry["lightness_step"] = self.lightness_step_var.get()
             entry["linewidth"]      = self.linewidth_var.get()
+            entry["plot_style"]     = self.plot_style_var.get()
             # Preserve current zoom/pan for both plots
             entry["view_xlim_cv"]  = self.ax_cv.get_xlim()
             entry["view_ylim_cv"]  = self.ax_cv.get_ylim()
@@ -1135,8 +1147,8 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         entry.setdefault("cv_reflines",      [])
         entry.setdefault("cdl_reflines",     [])
         entry.setdefault("cycle_gradient", True)
-        entry.setdefault("cycle_reverse",  True)
-        entry.setdefault("lightness_step", "0.08")
+        entry.setdefault("cycle_reverse",  False)
+        entry.setdefault("lightness_step", "0.15")
         entry.setdefault("linewidth",      "1.5")
 
         df   = entry["df"]
@@ -1241,9 +1253,10 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         name = next((n for n, h in _COLOR_HEX.items() if h == color), "Blue")
         self.file_color_var.set(name)
         self.cycle_gradient_var.set(entry.get("cycle_gradient", True))
-        self.cycle_reverse_var.set(entry.get("cycle_reverse", True))
-        self.lightness_step_var.set(entry.get("lightness_step", "0.08"))
+        self.cycle_reverse_var.set(entry.get("cycle_reverse", False))
+        self.lightness_step_var.set(entry.get("lightness_step", "0.15"))
         self.linewidth_var.set(entry.get("linewidth", "1.5"))
+        self.plot_style_var.set(entry.get("plot_style", "Line"))
 
     def _auto_replot(self):
         if self._suppress_replot:
@@ -1283,12 +1296,21 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         ax.set_xlabel(ax.get_xlabel(), fontsize=ls, fontweight=lb, labelpad=label_pad)
         ax.set_ylabel(ax.get_ylabel(), fontsize=ls, fontweight=lb, labelpad=label_pad)
         ax.tick_params(axis='both', labelsize=ks)
+        _leg = ax.get_legend()
+        if _leg is not None:
+            _leg.set_visible(False)
         ax.figure.tight_layout()
+        if _leg is not None:
+            _leg.set_visible(True)
         canvas.draw()
         if kb:
             for lbl in ax.get_xticklabels() + ax.get_yticklabels():
                 lbl.set_fontweight('bold')
+            if _leg is not None:
+                _leg.set_visible(False)
             ax.figure.tight_layout()
+            if _leg is not None:
+                _leg.set_visible(True)
             canvas.draw()
 
     # ════════════════════════════════════════════════════════════════
@@ -1324,14 +1346,16 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         entry_ref = self.files[self.active_file]
         base_color = entry_ref.get("color", "#1f77b4")
         _grad  = entry_ref.get("cycle_gradient", True)
-        _rev   = entry_ref.get("cycle_reverse",  True)
-        try:    _step = float(entry_ref.get("lightness_step", "0.08"))
+        _rev   = entry_ref.get("cycle_reverse",  False)
+        try:    _step = float(entry_ref.get("lightness_step", "0.15"))
         except: _step = 0.08
 
         try:
             _cv_lw = float(self.files[self.active_file].get("linewidth", "1.5"))
         except (ValueError, TypeError):
             _cv_lw = 1.5
+        _ls, _mk, _ms = _PLOT_STYLES.get(
+            self.files[self.active_file].get("plot_style", "Line"), ("-", "", 0))
 
         if "cycle number" in df.columns:
             if not selected:
@@ -1346,10 +1370,14 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
                 sr  = self._sr_vars.get(c, tk.StringVar()).get().strip()
                 lbl = f"C{c}" + (f"  ({sr} mV/s)" if sr else "")
                 self.ax_cv.plot(sub[xcol] * x_scale, sub[ycol] * y_scale,
-                                color=cycle_cols[i], label=lbl, linewidth=_cv_lw)
+                                color=cycle_cols[i], label=lbl, linewidth=_cv_lw,
+                                linestyle=_ls, marker=_mk or None,
+                                markersize=_ms if _mk else 0)
         else:
             self.ax_cv.plot(df[xcol] * x_scale, df[ycol] * y_scale,
-                            color=base_color, linewidth=_cv_lw)
+                            color=base_color, linewidth=_cv_lw,
+                            linestyle=_ls, marker=_mk or None,
+                            markersize=_ms if _mk else 0)
 
         ref = self.ref_electrode_var.get().strip()
         _x_src = xcol.rsplit("/", 1)[-1].strip() if "/" in xcol else ""
