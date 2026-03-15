@@ -58,6 +58,17 @@ Use this tab to load one or more data files and overlay them all on a single plo
    - **Drag the ⠿ handle** up or down to reorder files in the list. The plot updates to reflect the new order.
 3. To remove a file, select it and click **Remove**.
 
+#### Auto-merging sequential CV files
+When you select multiple files at once, the app automatically detects EC-Lab CVA sequence naming and merges matching groups for you:
+
+- **Pattern recognised:** `..._NN_METHOD_Cxx.mpr / .txt`
+  e.g. `sample_05_CV_C01.mpr`, `sample_07_CV_C01.mpr`, `sample_09_CV_C01.mpr`
+- Files sharing the same base name, method, and channel but differing only in the sequence number are merged into a single entry: `sample_05-09_CV_C01_merged.mpr`
+- **Cycle numbers** are renumbered consecutively (cycles 1–2 from the first file stay 1–2; cycles 1–2 from the second become 3–4; etc.).
+- **time/s** is kept exactly as recorded by EC-Lab — no modification.
+- A dialog appears after loading, listing every group that was auto-merged.
+- Only voltammetry methods are merged automatically (**CV, CVA, LSV, DPV, NPV, SWV**). CA, OCV, EIS, and other techniques are always loaded as individual files.
+
 ### 3.2 Axis Settings
 - **X / Y column selectors** — choose which data column to plot on each axis. The available columns are filtered by data type: if the file contains EIS impedance data, only the impedance-related columns (`Re(Z)/Ohm`, `-Im(Z)/Ohm`, `freq/Hz`, `Phase(Z)/deg`) are shown; for CV/OCV files all columns are shown.
 - **Smart defaults** — when a file is first loaded the app automatically selects sensible defaults based on data type:
@@ -289,6 +300,7 @@ Each file remembers its last zoom/pan state. Switching to another file and back 
 - **Hide without losing settings** — unchecking a file in the file list removes it from the plot instantly. All cycles, corrections, zoom state, colors, and gradient settings are preserved. Re-check to restore the exact same view. Use this to compare a subset of files without having to reload anything. *(Not available in the ECSA Calc tab.)*
 - **Drag to reorder** — grab the **⠿** handle in the file list to drag files up or down. In Multi E.Chem you can also drag the **⠿ header strip** on each subplot to reorder the grid. The legend editor uses the same drag-handle pattern.
 - **Axis swap shortcut** — use **⇄ Swap X↔Y** to instantly swap axes when you want to flip between, e.g., E vs. I and I vs. E without manually changing each dropdown.
+- **Auto-merge sequential CV files** — when loading multiple EC-Lab CVA files at once (e.g. `sample_05_CV_C01.mpr`, `sample_07_CV_C01.mpr`, `sample_09_CV_C01.mpr`), the app detects the sequence pattern and automatically merges them into one entry with consecutively renumbered cycles. CA, OCV, EIS, and other non-voltammetry files in the same selection are loaded individually. A dialog confirms what was merged.
 - **Smart axis defaults** — when loading a file for the first time, the app detects its data type and picks appropriate column defaults: **EIS** files → `Re(Z)` vs `-Im(Z)`; **OCV/time-series** files → `time/s` vs `Ewe/V`; **CV/LSV** files → `Ewe/V` vs `I/mA`. EIS files also filter the column dropdowns to show only impedance columns, keeping the selector clean.
 - **EIS units** — when plotting EIS data in the General or Multi E.Chem tab, the unit dropdowns offer impedance units (mΩ, Ω, kΩ, MΩ), frequency units (Hz, kHz, MHz), and phase units (deg, rad). Data is scaled automatically when you switch.
 - **Newer EC-Lab firmware files** — `.mpr` files that contain column types not yet known to galvani now load automatically; unrecognised columns are silently skipped.

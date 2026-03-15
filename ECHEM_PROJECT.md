@@ -115,7 +115,8 @@ Each panel is fully **independent**: its own `files` dict, `active_file`, figure
 ## Key Features
 
 ### General E.Chem tab
-1. **Multi-file support** — load multiple `.txt` files, manage in CheckableListbox, overlay on single plot; checkbox hides/shows a file's contribution without losing any settings (cycles, corrections, zoom, colors, etc.); ⠿ drag handle in each row reorders files (fires `_on_file_reorder`)
+1. **Multi-file support** — load multiple `.txt`/`.mpr` files, manage in CheckableListbox, overlay on single plot; checkbox hides/shows a file's contribution without losing any settings (cycles, corrections, zoom, colors, etc.); ⠿ drag handle in each row reorders files (fires `_on_file_reorder`)
+1b. **Auto-merge sequential CV files** — `_load_files` groups selected files by EC-Lab CVA pattern `_(\d{2,3})_([A-Za-z]+)_(C\d+)\.(mpr|txt)$`; groups with ≥2 files whose method is in `_MERGE_METHODS = {CV, CVA, LSV, DPV, NPV, SWV}` are automatically merged into one entry with consecutively renumbered `cycle number`; `time/s` preserved verbatim (EC-Lab records absolute time); CA/OCV/EIS etc. always loaded individually; post-load dialog lists merged groups; helpers: `_read_one_df`, `_make_file_entry`, `_merge_dfs`, `_unique_short`
 2. **Axis selectors + unit dropdowns** — X and Y each have a column selector and a unit combobox with dimension-aware filtering (I/E/t/J families)
 3. **J (current density) column** — virtual column; requires all files to have area > 0; computes I/area per file at plot time; density unit range: A/cm², mA/cm², µA/cm², nA/cm²
 4. **Unit conversion** — `_get_axis_unit_scale(col, target)` returns `(scale_factor, display_label)`; label format is `col (unit)` e.g. `I (mA)`, `Ewe (V)`

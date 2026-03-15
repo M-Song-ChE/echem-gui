@@ -55,6 +55,17 @@ Use this tab to load one or more data files and overlay them all on a single plo
 2. Loaded files appear in the **file listbox**. Click a filename to make it the active file — all left-panel controls reflect that file's settings.
 3. To remove a file, select it and click **Remove File**.
 
+#### Auto-merging sequential CV files
+When you select multiple files at once, the app automatically detects EC-Lab CVA sequence naming and merges matching groups:
+
+- **Pattern recognised:** `..._NN_METHOD_Cxx.mpr / .txt`
+  e.g. `sample_05_CV_C01.mpr`, `sample_07_CV_C01.mpr`, `sample_09_CV_C01.mpr`
+- Files sharing the same base name, method, and channel but differing only in the sequence number are merged into one entry: `sample_05-09_CV_C01_merged.mpr`
+- **Cycle numbers** are renumbered consecutively (cycles 1–2 from the first file stay 1–2; cycles 1–2 from the second become 3–4; etc.).
+- **time/s** is kept exactly as recorded by EC-Lab — no modification.
+- A dialog appears after loading, listing every group that was auto-merged.
+- Only voltammetry methods are merged automatically (**CV, CVA, LSV, DPV, NPV, SWV**). CA, OCV, EIS, and other techniques are always loaded as individual files.
+
 ### 3.2 Axis Settings
 - **X / Y column selectors** — choose which data column to plot on each axis. The available columns are filtered by data type: if the file contains EIS impedance data, only the impedance-related columns (`Re(Z)/Ohm`, `-Im(Z)/Ohm`, `freq/Hz`, `Phase(Z)/deg`) are shown; for CV/OCV files all columns are shown.
 - **Smart defaults** — when a file is first loaded the app automatically selects sensible defaults based on data type:

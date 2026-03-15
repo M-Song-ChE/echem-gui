@@ -220,6 +220,92 @@ class FileManagerMixin:
         self._auto_replot()
     """
 
+    # ── Shared sequence-detection pattern ────────────────────────────────
+    # Matches EC-Lab CVA suffix:  _<seq>_<METHOD>_C<N>.<ext>
+    # e.g.  KOH_05_CV_C01.mpr  →  seq=5, method=CV, channel=C01, ext=mpr
+    _SEQ_PAT = re.compile(
+        r'_(\d{2,3})_([A-Za-z]+)_(C\d+)\.(mpr|txt)$', re.IGNORECASE
+    )
+
+    def _read_one_df(self, path):
+        """Read a single .mpr or .txt file and return a cleaned DataFrame.
+        Raises on any error (caller shows the message box).
+        """
+        if path.lower().endswith(".mpr"):
+            return _read_mpr(path)
+        df = pd.read_csv(path, sep="\t")
+        df.columns = [c.strip().replace("<", "").replace(">", "")
+                      for c in df.columns]
+        df = df.loc[:, ~df.columns.str.match(r"^Unnamed")]
+        return df
+
+    def _make_file_entry(self, path, df_raw):
+        """Build the standard files-dict entry for a loaded DataFrame."""
+        color_idx = len(self.files)
+        if ("cycle number" in df_raw.columns
+                and df_raw["cycle number"].nunique() <= 1):
+            auto_cycles = sorted(int(c) for c in df_raw["cycle number"].unique())
+        else:
+            auto_cycles = []
+        return {
+            "path":           path,
+            "df_raw":         df_raw,
+            "df":             df_raw.copy(),
+            "selected_cycles": auto_cycles,
+            "r_sol":          0.0,
+            "e_ref":          0.0,
+            "area":           "",
+            "color":          _PALETTE[color_idx % len(_PALETTE)],
+            "marker":         _MARKERS[color_idx % len(_MARKERS)],
+            "cycle_gradient": True,
+            "cycle_reverse":  False,
+            "lightness_step": "0.15",
+            "hidden":         False,
+        }
+
+    def _merge_dfs(self, sorted_paths):
+        """Load sorted_paths, renumber cycles consecutively, offset time/s,
+        and return (df_merged, total_cycle_count).  Returns (None, 0) on error.
+        """
+        raw_dfs = []
+        for path in sorted_paths:
+            try:
+                raw_dfs.append(self._read_one_df(path))
+            except Exception as exc:
+                messagebox.showerror(
+                    "Merge CV Files",
+                    f"Error loading {os.path.basename(path)}:\n{exc}"
+                )
+                return None, 0
+
+        cycle_offset = 0
+        merged_dfs   = []
+        for df in raw_dfs:
+            df = df.copy()
+            if "cycle number" in df.columns:
+                c_min = int(df["cycle number"].min())
+                c_max = int(df["cycle number"].max())
+                df["cycle number"] = df["cycle number"] - c_min + 1 + cycle_offset
+                cycle_offset += c_max - c_min + 1
+            merged_dfs.append(df)
+
+        try:
+            return pd.concat(merged_dfs, ignore_index=True), cycle_offset
+        except Exception as exc:
+            messagebox.showerror("Merge CV Files",
+                                 f"Failed to concatenate files:\n{exc}")
+            return None, 0
+
+    def _unique_short(self, name):
+        """Return name, appending (N) if already in self.files."""
+        base, ext = os.path.splitext(name)
+        candidate = name
+        counter = 1
+        while candidate in self.files:
+            candidate = f"{base} ({counter}){ext}"
+            counter += 1
+        return candidate
+
     def _load_files(self):
         paths = filedialog.askopenfilenames(
             filetypes=[
@@ -231,59 +317,74 @@ class FileManagerMixin:
         )
         if not paths:
             return
+
+        # ── Group files by CVA sequence pattern ───────────────────────────
+        # Only auto-merge voltammetry-type methods (CV, LSV, etc.).
+        # CA, OCV, EIS and other techniques are always loaded individually.
+        _MERGE_METHODS = frozenset({"CV", "CVA", "LSV", "DPV", "NPV", "SWV"})
+
+        # key = (base_name, METHOD, channel, ext)  →  [(seq_num, path), ...]
+        seq_groups   = {}
+        individual   = []
+
         for path in paths:
-            short = os.path.basename(path)
-            base_short = short
-            counter = 1
-            while short in self.files:
-                short = f"{base_short} ({counter})"
-                counter += 1
-            try:
-                if path.lower().endswith(".mpr"):
-                    df_raw = _read_mpr(path)
-                else:
-                    df_raw = pd.read_csv(path, sep="\t")
-                    # Strip whitespace and remove angle-bracket wrappers (e.g. <I>/mA → I/mA)
-                    df_raw.columns = [c.strip().replace("<", "").replace(">", "")
-                                       for c in df_raw.columns]
-                    # Drop blank "Unnamed: N" columns produced by trailing tab separators
-                    df_raw = df_raw.loc[:, ~df_raw.columns.str.match(r"^Unnamed")]
-            except Exception as exc:
-                messagebox.showerror("Load error", f"{base_short}: {exc}")
-                continue
-
-            color_idx = len(self.files)
-            # When only one unique cycle value exists (e.g. single EIS sweep tagged
-            # cycle 0), pre-select it so the plot loop doesn't skip the file.
-            if ("cycle number" in df_raw.columns
-                    and df_raw["cycle number"].nunique() <= 1):
-                _auto_cycles = sorted(int(c) for c in df_raw["cycle number"].unique())
+            fname = os.path.basename(path)
+            m = self._SEQ_PAT.search(fname)
+            if m and m.group(2).upper() in _MERGE_METHODS:
+                key = (
+                    fname[:m.start()],      # base (before _NN_)
+                    m.group(2).upper(),     # method
+                    m.group(3),             # channel (C01 / C02 / ...)
+                    m.group(4).lower(),     # ext
+                )
+                seq_groups.setdefault(key, []).append((int(m.group(1)), path))
             else:
-                _auto_cycles = []
+                individual.append(path)
 
-            self.files[short] = {
-                "path": path,
-                "df_raw": df_raw,
-                "df": df_raw.copy(),
-                "selected_cycles": _auto_cycles,
-                "r_sol": 0.0,
-                "e_ref": 0.0,
-                "area": "",
-                "color":          _PALETTE[color_idx % len(_PALETTE)],
-                "marker":         _MARKERS[color_idx % len(_MARKERS)],
-                "cycle_gradient": True,
-                "cycle_reverse":  False,
-                "lightness_step": "0.15",
-                "hidden":         False,
-            }
+        # Single-file "groups" (no sibling in the selection) → load normally
+        for key, records in list(seq_groups.items()):
+            if len(records) == 1:
+                individual.append(records[0][1])
+                del seq_groups[key]
+
+        # ── Load individual files ──────────────────────────────────────────
+        for path in individual:
+            short = self._unique_short(os.path.basename(path))
+            try:
+                df_raw = self._read_one_df(path)
+            except Exception as exc:
+                messagebox.showerror("Load error",
+                                     f"{os.path.basename(path)}: {exc}")
+                continue
+            self.files[short] = self._make_file_entry(path, df_raw)
             self.file_listbox.insert(tk.END, short)
 
-        # Save current file's state, then switch to the newly loaded file.
-        # Guard flag prevents <<ListboxSelect>> (fired by selection_set on Windows)
-        # from calling _on_file_select prematurely before we do the explicit switch.
-        # (do NOT replot — the user's current plot is preserved until they click Plot)
+        # ── Auto-merge sequence groups ─────────────────────────────────────
+        merge_log = []   # list of (merged_name, source_fnames, n_cycles)
+        for (base, method, channel, ext), records in seq_groups.items():
+            records.sort(key=lambda r: r[0])
+            sorted_paths = [r[1] for r in records]
+            seq_nums = [r[0] for r in records]
+            seq_range = f"{seq_nums[0]:02d}-{seq_nums[-1]:02d}"
+            merged_name = self._unique_short(
+                f"{base}_{seq_range}_{method}_{channel}_merged.{ext}"
+            )
+            df_merged, n_cycles = self._merge_dfs(sorted_paths)
+            if df_merged is None:
+                continue
+            self.files[merged_name] = self._make_file_entry(
+                sorted_paths[0], df_merged
+            )
+            self.file_listbox.insert(tk.END, merged_name)
+            merge_log.append((
+                merged_name,
+                [os.path.basename(p) for p in sorted_paths],
+                n_cycles,
+            ))
+
+        # ── Switch to last-loaded file ─────────────────────────────────────
         if not self.files:
-            return  # all files failed to load — nothing to switch to
+            return
         last_idx = self.file_listbox.size() - 1
         self.file_listbox.selection_clear(0, tk.END)
         self._loading_files = True
@@ -295,15 +396,27 @@ class FileManagerMixin:
         self._suppress_replot = True
         self._switch_active_file(list(self.files.keys())[last_idx])
         self._suppress_replot = False
-        # Auto-display when no meaningful cycle selection is required:
-        #   • no "cycle number" column at all (e.g. OCV, plain time-series), OR
-        #   • only one unique cycle value (e.g. single EIS sweep labelled cycle 0)
         entry = self.files.get(self.active_file)
         if entry is not None:
             _df = entry["df"]
             if ("cycle number" not in _df.columns
                     or _df["cycle number"].nunique() <= 1):
                 self._auto_replot()
+
+        # ── Notify about auto-merged groups ───────────────────────────────
+        if merge_log:
+            lines = []
+            for merged_name, src_names, n_cycles in merge_log:
+                src_list = "\n    ".join(src_names)
+                lines.append(
+                    f"→ {merged_name}  ({n_cycles} cycles total)\n"
+                    f"    {src_list}"
+                )
+            messagebox.showinfo(
+                "Auto-merged CV Files",
+                f"{len(merge_log)} group(s) were automatically merged "
+                f"during loading:\n\n" + "\n\n".join(lines)
+            )
 
     def _remove_file(self):
         sel = self.file_listbox.curselection()
