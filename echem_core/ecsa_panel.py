@@ -667,17 +667,60 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         # ── Right panel: two independent figures ──────────────────
         right = ttk.Frame(body)
         body.add(right, weight=1)
+        right.rowconfigure(0, weight=0)
+        right.rowconfigure(1, weight=1)
+        right.columnconfigure(0, weight=1)
+
+        # ── Plot size controls (always visible) ──────────────────
+        self.plot_w_var = tk.StringVar(value="21.0")
+        self.plot_h_var = tk.StringVar(value="6.0")
+        _size_bar = ttk.Frame(right)
+        _size_bar.grid(row=0, column=0, sticky="ew", padx=4, pady=2)
+        ttk.Label(_size_bar, text="Plot size (in):").pack(side=tk.LEFT, padx=(4, 2))
+        ttk.Label(_size_bar, text="W").pack(side=tk.LEFT)
+        _pw_e = ttk.Entry(_size_bar, textvariable=self.plot_w_var, width=5)
+        _pw_e.pack(side=tk.LEFT, padx=(1, 6))
+        ttk.Label(_size_bar, text="H").pack(side=tk.LEFT)
+        _ph_e = ttk.Entry(_size_bar, textvariable=self.plot_h_var, width=5)
+        _ph_e.pack(side=tk.LEFT, padx=(1, 0))
+        for _e in (_pw_e, _ph_e):
+            _e.bind("<Return>",   lambda ev: self._apply_plot_size())
+            _e.bind("<FocusOut>", lambda ev: self._apply_plot_size())
+
+        # ── Scrollable plot area ──────────────────────────────────
+        _right_inner = ttk.Frame(right)
+        _right_inner.grid(row=1, column=0, sticky="nsew")
+        _right_inner.rowconfigure(0, weight=1)
+        _right_inner.columnconfigure(0, weight=1)
+        _plot_sc = tk.Canvas(_right_inner, highlightthickness=0)
+        _right_vs = ttk.Scrollbar(_right_inner, orient=tk.VERTICAL,   command=_plot_sc.yview)
+        _right_hs = ttk.Scrollbar(_right_inner, orient=tk.HORIZONTAL, command=_plot_sc.xview)
+        _plot_sc.configure(yscrollcommand=_right_vs.set, xscrollcommand=_right_hs.set)
+        _right_vs.grid(row=0, column=1, sticky="ns")
+        _right_hs.grid(row=1, column=0, sticky="ew")
+        _plot_sc.grid(row=0, column=0, sticky="nsew")
+        _plot_sc.bind("<MouseWheel>",
+                      lambda e: _plot_sc.yview_scroll(-1*(e.delta//120), "units"))
+        _plot_sc.bind("<Shift-MouseWheel>",
+                      lambda e: _plot_sc.xview_scroll(-1*(e.delta//120), "units"))
+        _plots_frame = ttk.Frame(_plot_sc)
+        _plots_win = _plot_sc.create_window((0, 0), window=_plots_frame, anchor=tk.NW)
+        _plots_frame.bind("<Configure>",
+                          lambda e: _plot_sc.configure(scrollregion=_plot_sc.bbox("all")))
+        self._plot_sc = _plot_sc
+
+        _fw = float(self.plot_w_var.get())
+        _fh = float(self.plot_h_var.get())
+        _panel = self
 
         # Upper: CV plot
-        upper = ttk.Frame(right)
-        upper.pack(fill=tk.BOTH, expand=True)
-        self.fig_cv    = Figure(figsize=(6, 3.5), dpi=100, constrained_layout=True)
+        self.fig_cv    = Figure(figsize=(_fw, _fh), dpi=100, constrained_layout=True)
         self.ax_cv     = self.fig_cv.add_subplot(1, 1, 1)
-        self.canvas_cv = FigureCanvasTkAgg(self.fig_cv, master=upper)
-        self.canvas_cv.get_tk_widget().pack(fill=tk.BOTH, expand=True)
-        tb_cv = ttk.Frame(upper)
+        self.canvas_cv = FigureCanvasTkAgg(self.fig_cv, master=_plots_frame)
+        self.canvas_cv.get_tk_widget().pack()
+        self.canvas_cv.get_tk_widget().config(width=int(_fw * 100), height=int(_fh * 100))
+        tb_cv = ttk.Frame(_plots_frame)
         tb_cv.pack(fill=tk.X)
-        _panel = self
         class _CVToolbar(NavigationToolbar2Tk):
             def home(tb_self, *args):
                 _panel._reset_cv_view()
@@ -691,16 +734,15 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         ).pack(side=tk.LEFT, padx=(4, 2), pady=1)
 
         # Separator between plots
-        ttk.Separator(right, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=2)
+        ttk.Separator(_plots_frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=2)
 
         # Lower: Cdl extraction plot
-        lower = ttk.Frame(right)
-        lower.pack(fill=tk.BOTH, expand=True)
-        self.fig_cdl    = Figure(figsize=(6, 3.5), dpi=100, constrained_layout=True)
+        self.fig_cdl    = Figure(figsize=(_fw, _fh), dpi=100, constrained_layout=True)
         self.ax_cdl     = self.fig_cdl.add_subplot(1, 1, 1)
-        self.canvas_cdl = FigureCanvasTkAgg(self.fig_cdl, master=lower)
-        self.canvas_cdl.get_tk_widget().pack(fill=tk.BOTH, expand=True)
-        tb_cdl = ttk.Frame(lower)
+        self.canvas_cdl = FigureCanvasTkAgg(self.fig_cdl, master=_plots_frame)
+        self.canvas_cdl.get_tk_widget().pack()
+        self.canvas_cdl.get_tk_widget().config(width=int(_fw * 100), height=int(_fh * 100))
+        tb_cdl = ttk.Frame(_plots_frame)
         tb_cdl.pack(fill=tk.X)
         class _CdlToolbar(NavigationToolbar2Tk):
             def home(tb_self, *args):
@@ -1285,6 +1327,25 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             _f(self.font_tick_size_var,  8.0),
             self.font_tick_bold_var.get(),
         )
+
+    # ── Plot size helper ─────────────────────────────────────────────
+    def _apply_plot_size(self, event=None):
+        """Resize both figures to the current plot_w_var × plot_h_var (inches)."""
+        try:
+            w = float(self.plot_w_var.get())
+            h = float(self.plot_h_var.get())
+        except ValueError:
+            return
+        w = max(2.0, min(50.0, w))
+        h = max(1.5, min(50.0, h))
+        dpi = 100
+        for fig, cv in ((self.fig_cv, self.canvas_cv), (self.fig_cdl, self.canvas_cdl)):
+            fig.set_size_inches(w, h)
+            cv.get_tk_widget().config(width=int(w * dpi), height=int(h * dpi))
+            cv.draw_idle()
+        self._plot_sc.after(
+            50, lambda: self._plot_sc.configure(
+                scrollregion=self._plot_sc.bbox("all")))
 
     def _apply_font_to_ax(self, ax, canvas):
         ts, tb, ls, lb, ks, kb = self._read_font()

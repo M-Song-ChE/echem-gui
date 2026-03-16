@@ -26,7 +26,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolb
 
 from .file_manager import FileManagerMixin, _COLOR_NAMES, _COLOR_HEX, _default_xcol, _default_ycol, _PLOT_STYLES, _PLOT_STYLE_NAMES
 from .correction import CorrectionMixin
-from .plotting import apply_grid, draw_reflines, _cycle_colors, copy_figure_to_clipboard
+from .plotting import apply_grid, draw_reflines, _cycle_colors, copy_figure_to_clipboard, _scale_legend_spacing
 from .legend_editor import open_legend_editor
 from .checklist import CheckableListbox
 
@@ -428,6 +428,17 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         _step_spin.bind("<Return>",      lambda e: self._on_gradient_change())
         _step_spin.bind("<FocusOut>",    lambda e: self._on_gradient_change())
 
+        # ── Title ─────────────────────────────────────────────────
+        ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
+        _title_row = ttk.Frame(left)
+        _title_row.pack(fill=tk.X, padx=4, pady=(0, 2))
+        ttk.Label(_title_row, text="Title:").pack(side=tk.LEFT)
+        self.plot_title_var = tk.StringVar(value="")
+        _title_entry = ttk.Entry(_title_row, textvariable=self.plot_title_var)
+        _title_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
+        _title_entry.bind("<Return>",   lambda e: self._auto_replot())
+        _title_entry.bind("<FocusOut>", lambda e: self._auto_replot())
+
         # ── Legend options ────────────────────────────────────────
         ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
         ttk.Label(left, text="Legend  (active file)",
@@ -630,28 +641,51 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         right_outer = ttk.Frame(body)
         body.add(right_outer, weight=1)
 
-        # Use grid so the zoom bar always sits at the top, above the canvas area
-        right_outer.rowconfigure(0, weight=0)   # zoom bar — collapses when hidden
-        right_outer.rowconfigure(1, weight=1)   # canvas area
+        # row 0: size bar (permanent), row 1: zoom bar, row 2: canvas area
+        right_outer.rowconfigure(0, weight=0)
+        right_outer.rowconfigure(1, weight=0)
+        right_outer.rowconfigure(2, weight=1)
         right_outer.columnconfigure(0, weight=1)
+
+        # ── Plot size controls (always visible) ──────────────────────
+        self.plot_w_var = tk.StringVar(value="10.5")
+        self.plot_h_var = tk.StringVar(value="5.5")
+        _size_bar = ttk.Frame(right_outer)
+        _size_bar.grid(row=0, column=0, sticky="ew", padx=4, pady=2)
+        ttk.Label(_size_bar, text="Plot size (in):").pack(side=tk.LEFT, padx=(4, 2))
+        ttk.Label(_size_bar, text="W").pack(side=tk.LEFT)
+        _pw_e = ttk.Entry(_size_bar, textvariable=self.plot_w_var, width=5)
+        _pw_e.pack(side=tk.LEFT, padx=(1, 6))
+        ttk.Label(_size_bar, text="H").pack(side=tk.LEFT)
+        _ph_e = ttk.Entry(_size_bar, textvariable=self.plot_h_var, width=5)
+        _ph_e.pack(side=tk.LEFT, padx=(1, 0))
+        for _e in (_pw_e, _ph_e):
+            _e.bind("<Return>",   lambda ev: self._apply_plot_size())
+            _e.bind("<FocusOut>", lambda ev: self._apply_plot_size())
 
         # Zoom bar (hidden initially; shown via grid() in _zoom_file_view)
         self._zoom_bar = ttk.Frame(right_outer)
         ttk.Button(self._zoom_bar, text="← Back to Grid",
                    command=self._unzoom_file_view).pack(side=tk.LEFT, padx=6, pady=3)
-        self._zoom_bar.grid(row=0, column=0, sticky="ew")
+        self._zoom_bar.grid(row=1, column=0, sticky="ew")
         self._zoom_bar.grid_remove()   # hidden until first zoom
 
-        # Canvas container sits in row 1 and fills all remaining space
+        # Canvas container sits in row 2 and fills all remaining space
         _right_inner = ttk.Frame(right_outer)
-        _right_inner.grid(row=1, column=0, sticky="nsew")
+        _right_inner.grid(row=2, column=0, sticky="nsew")
+        _right_inner.rowconfigure(0, weight=1)
+        _right_inner.columnconfigure(0, weight=1)
 
         self._right_canvas = tk.Canvas(_right_inner, highlightthickness=0)
-        right_scroll = ttk.Scrollbar(_right_inner, orient=tk.VERTICAL,
-                                     command=self._right_canvas.yview)
-        self._right_canvas.configure(yscrollcommand=right_scroll.set)
-        right_scroll.pack(side=tk.RIGHT, fill=tk.Y)
-        self._right_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        right_vscroll = ttk.Scrollbar(_right_inner, orient=tk.VERTICAL,
+                                      command=self._right_canvas.yview)
+        right_hscroll = ttk.Scrollbar(_right_inner, orient=tk.HORIZONTAL,
+                                      command=self._right_canvas.xview)
+        self._right_canvas.configure(yscrollcommand=right_vscroll.set,
+                                     xscrollcommand=right_hscroll.set)
+        right_vscroll.grid(row=0, column=1, sticky="ns")
+        right_hscroll.grid(row=1, column=0, sticky="ew")
+        self._right_canvas.grid(row=0, column=0, sticky="nsew")
 
         self._plots_frame = ttk.Frame(self._right_canvas)
         self._plots_win   = self._right_canvas.create_window(
@@ -664,10 +698,11 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         self._right_canvas.bind(
             "<MouseWheel>",
             lambda e: self._right_canvas.yview_scroll(-1 * (e.delta // 120), "units"))
+        self._right_canvas.bind(
+            "<Shift-MouseWheel>",
+            lambda e: self._right_canvas.xview_scroll(-1 * (e.delta // 120), "units"))
 
-        # Two equal-weight columns for the plot grid
-        for _c in range(2):
-            self._plots_frame.columnconfigure(_c, weight=1, uniform="col")
+        # No column weights — each plot keeps its fixed size
 
         # Drop indicator: a thin colored bar shown during drag-to-reorder
         self._drop_line = tk.Frame(self._plots_frame, bg="#1a73e8", height=3)
@@ -749,12 +784,17 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
 
         # ── Content area (canvas + toolbar) ─────────────────────────
         inner = ttk.Frame(frame, padding=(4, 2, 4, 2))
-        inner.pack(fill=tk.BOTH, expand=True)
+        inner.pack()
 
-        fig = Figure(figsize=(5, 3.8), dpi=100, constrained_layout=True)
+        try:
+            _fw = float(self.plot_w_var.get())
+            _fh = float(self.plot_h_var.get())
+        except (ValueError, AttributeError):
+            _fw, _fh = 9.5, 5.5
+        fig = Figure(figsize=(_fw, _fh), dpi=100, constrained_layout=True)
         ax  = fig.add_subplot(111)
         canvas = FigureCanvasTkAgg(fig, master=inner)
-        canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        canvas.get_tk_widget().pack()
 
         tb_frame = ttk.Frame(inner)
         tb_frame.pack(fill=tk.X)
@@ -900,10 +940,9 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         self._relayout_figures()
 
     def _on_right_canvas_configure(self, event):
-        """Keep the plots frame width in sync with the canvas; fill height when zoomed."""
-        self._right_canvas.itemconfig(self._plots_win, width=event.width)
         if self._zoom_file:
-            self._right_canvas.itemconfig(self._plots_win, height=event.height)
+            self._right_canvas.itemconfig(self._plots_win,
+                                          width=event.width, height=event.height)
 
     def _relayout_figures(self):
         """Place every file's plot frame in a max-2-column grid, in load order.
@@ -991,6 +1030,7 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         entry["plot_style"]     = self.plot_style_var.get()
         entry["x_flip"]         = self.x_flip_var.get()
         entry["y_flip"]         = self.y_flip_var.get()
+        entry["custom_title"]   = self.plot_title_var.get()
 
     def _switch_active_file(self, short):
         self.active_file = short
@@ -1028,6 +1068,7 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         entry.setdefault("linewidth",      "1.5")
         entry.setdefault("x_flip",         False)
         entry.setdefault("y_flip",         False)
+        entry.setdefault("custom_title",   "")
 
         df   = entry["df"]
 
@@ -1107,6 +1148,7 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         self.plot_style_var.set(entry.get("plot_style", "Line"))
         self.x_flip_var.set(entry.get("x_flip", False))
         self.y_flip_var.set(entry.get("y_flip", False))
+        self.plot_title_var.set(entry.get("custom_title", ""))
 
         self._auto_replot()
 
@@ -1283,7 +1325,9 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             _y_is_V = (y_unit in _VOLTAGE_UNITS if y_unit != "(auto)"
                        else _y_src in _VOLTAGE_UNITS)
         ax.set_ylabel(f"{y_label}  (vs {ref})" if (ref and _y_is_V) else y_label)
-        ax.set_title(entry.get("custom_title", short), fontsize=9)
+        _title = (self.plot_title_var.get() if short == self.active_file
+                  else entry.get("custom_title", ""))
+        ax.set_title(_title, fontsize=9)
 
         canvas.draw()
         entry["auto_xlim"] = ax.get_xlim()
@@ -1380,26 +1424,53 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
     # ════════════════════════════════════════════════════════════════
     # Subplot zoom (double-click to expand / Back to Grid)
     # ════════════════════════════════════════════════════════════════
+    def _apply_plot_size(self, event=None):
+        """Resize all file figures to the current plot_w_var × plot_h_var (inches)."""
+        try:
+            w = float(self.plot_w_var.get())
+            h = float(self.plot_h_var.get())
+        except ValueError:
+            return
+        w = max(2.0, min(50.0, w))
+        h = max(1.5, min(50.0, h))
+        dpi = 100
+        for entry in self.files.values():
+            fig = entry.get("fig")
+            cv  = entry.get("canvas")
+            if fig and cv:
+                fig.set_size_inches(w, h)
+                cv.get_tk_widget().config(width=int(w * dpi), height=int(h * dpi))
+                cv.draw_idle()
+        self._right_canvas.after(
+            50, lambda: self._right_canvas.configure(
+                scrollregion=self._right_canvas.bbox("all")))
+
     def _zoom_file_view(self, short):
         """Expand the subplot for *short* to fill the full right panel."""
         self._zoom_file = short
-        self._zoom_bar.grid()   # restore to its reserved row-0 slot
-        # Force the canvas window to fill the full canvas area (width + height)
+        self._zoom_bar.grid()
         w = self._right_canvas.winfo_width()
         h = self._right_canvas.winfo_height()
         if w > 1 and h > 1:
             self._right_canvas.itemconfig(self._plots_win, width=w, height=h)
+            entry = self.files.get(short, {})
+            fig   = entry.get("fig")
+            cv    = entry.get("canvas")
+            if fig and cv:
+                dpi = fig.get_dpi()
+                fig.set_size_inches(w / dpi, h / dpi)
+                cv.get_tk_widget().config(width=w, height=h)
+                cv.draw_idle()
         self._relayout_figures()
 
     def _unzoom_file_view(self):
         """Restore the 2-column grid layout."""
         self._zoom_file = None
         self._zoom_bar.grid_remove()
-        # Reset canvas window height to natural/content-driven size (0 = auto)
         self._right_canvas.itemconfig(self._plots_win, height=0)
+        self._apply_plot_size()
         self._relayout_figures()
-        self._right_canvas.configure(
-            scrollregion=self._right_canvas.bbox("all"))
+        self._right_canvas.configure(scrollregion=self._right_canvas.bbox("all"))
 
     # ════════════════════════════════════════════════════════════════
     # File color helper
@@ -1587,6 +1658,10 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         entry["pan_ax"]     = None
 
         if was_resizing:
+            if short == self.active_file:
+                new_sz = entry.get("leg_size", 8.0)
+                self.legend_size_var.set(
+                    str(int(new_sz)) if new_sz == int(new_sz) else str(new_sz))
             return
 
         ax = entry.get("ax")
@@ -1625,8 +1700,11 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         if entry.get("leg_resize") and entry.get("legend") is not None:
             dy     = event.y - entry["leg_resize_start_y"]
             new_sz = max(4.0, min(30.0, entry["leg_resize_start_sz"] + dy / 5.0))
+            prev_sz = entry.get("leg_size", 8.0)
             entry["leg_size"] = new_sz
             leg = entry["legend"]
+            if prev_sz > 0:
+                _scale_legend_spacing(leg, new_sz / prev_sz)
             for t in leg.get_texts():
                 t.set_fontsize(new_sz)
             tt = leg.get_title()

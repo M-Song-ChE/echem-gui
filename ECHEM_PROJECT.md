@@ -14,6 +14,7 @@ echem_gui/
     __main__.py             ← python -m echem_core support
     app.py                  ← EchemGUI (tk.Tk window), EchemPanel class
     multi_echem_panel.py    ← MultiEchemPanel class (Multi E.Chem tab)
+    multi_echem2_panel.py   ← MultiEchem2Panel class (Multi E.Chem 2 tab — group-based overlay)
     ecsa_panel.py           ← ECSAPanel class (dedicated ECSA Calc tab)
     eis_panel.py            ← EISPanel class (Nyquist Plot tab)
     file_manager.py         ← FileManagerMixin: load/remove/switch files; data-type-aware _default_xcol/_default_ycol; column-type predicates (_is_voltage_col, _is_current_col, _is_time_col, _is_impedance_col); _on_file_visibility_change; _on_file_reorder; _MPR_DESIRED frozenset; _read_mpr(path) with retry loop for unknown galvani column IDs (tries <f4>/<f8>/<u4>/<u2> until buffer size matches)
@@ -26,9 +27,10 @@ echem_gui/
 ```
 
 ## Architecture
-The app uses a **four-tab Notebook** at the top level (in this order):
+The app uses a **five-tab Notebook** at the top level (in this order):
 - **General E.Chem tab** → `EchemPanel(ttk.Frame + all mixins)`, `show_log=True`
 - **Multi E.Chem tab** → `MultiEchemPanel(ttk.Frame + FileManagerMixin + CorrectionMixin)`
+- **Multi E.Chem 2 tab** → `MultiEchem2Panel(ttk.Frame + FileManagerMixin + CorrectionMixin)` — group-based overlay; each group has its own figure; files assigned to groups; active group drives left-panel controls
 - **ECSA Calc tab** → `ECSAPanel(ttk.Frame + FileManagerMixin + CorrectionMixin)`
 - **Nyquist Plot tab** → `EISPanel(ttk.Frame + FileManagerMixin)`
 
@@ -95,7 +97,10 @@ Each panel is fully **independent**: its own `files` dict, `active_file`, figure
 - `self._loading_files`: blocks `<<ListboxSelect>>` during programmatic `selection_set()`
 
 **MultiEchemPanel additional per-file field:**
-- `custom_title` — user-edited subplot title string; set by double-clicking the title; used in `_plot_file` instead of the raw filename
+- `custom_title` — user-edited subplot title string (default `""`); set via the Title entry in the left panel or by double-clicking the title strip; used in `_plot_file` (active file reads `plot_title_var`, non-active reads `entry["custom_title"]`)
+
+**MultiEchem2Panel additional per-group field:**
+- `custom_title` — user-edited group plot title (default `""`); set via the Title entry or by double-clicking the title strip; saved in `_save_active_group_state()`, restored in `_switch_active_group()`; `_plot_group()` uses `plot_title_var.get()` for active group, `gentry.get("custom_title", "")` for others
 
 **ECSAPanel additional per-file fields** (set by `setdefault` in `_switch_active_file`):
 - `sr_data`, `e_std`, `cs`, `x_col`, `y_col`, `x_unit`, `y_unit`
@@ -128,6 +133,8 @@ Each panel is fully **independent**: its own `files` dict, `active_file`, figure
 10. **Plot range** — blank = auto; triggers replot on Return / FocusOut
 11. **Cycle checkboxes** — 9-column grid, scrollable, "Select All / Deselect All"
 12. **Legend controls** — show/hide, frame toggle, font size, location, "Edit Labels" dialog (blocking; drag disabled during edit), drag to move, right-drag to resize; **double-click on legend** opens the same editor; dialog supports both rename and ⠿ drag-handle reorder; text-only edits preserve drag position, reorder recreates the legend
+12b. **Legend resize — full live scaling** — `_scale_legend_spacing(leg, ratio)` in `plotting.py` (module-level, imported by all panels); walks the legend's internal box tree; scales `DrawingArea.width/height` (handle icon containers) and the artists inside them (`Line2D` xdata/ydata/markersize, `Rectangle` geometry), plus `sep`/`pad` on all `VPacker`/`HPacker` nodes; called on each `_on_motion` event with ratio = `new_sz / prev_sz`; result: text, handle shapes, and spacing all scale proportionally in real time so the legend box size matches what `ax.legend(fontsize=new_sz)` would produce — no jump on next replot
+12c. **Legend size preservation** — in Multi E.Chem panels, `_on_release` (when `was_resizing=True`) syncs the new `leg_size` back to `legend_size_var` for the active file/group so the next `_plot_file`/`_plot_group` call reads the updated size instead of the stale UI value
 13. **Per-file zoom/pan preservation** — switching files restores each file's last view state
 20. **Flip X / Flip Y** — `x_flip_var` / `y_flip_var` BooleanVars; applied at end of `_apply_axis_range()` via `ax.set_xlim/ylim` reversal; fire `_auto_replot` on toggle
 21. **Swap X↔Y** — `_swap_xy` closure swaps x_var↔y_var, x_unit_var↔y_unit_var, x_min/max↔y_min/max, x_flip↔y_flip; suppresses first `_refresh_unit_opts` replot to avoid double replot
@@ -138,10 +145,10 @@ Each panel is fully **independent**: its own `files` dict, `active_file`, figure
 17b. **Per-file line width** (General tab only) — "Width:" entry in the Color row; changing and pressing Return/FocusOut saves to `entry["linewidth"]` via `_on_linewidth_change()` and replots; `_switch_active_file` restores value; `plotting.py` reads `entry.get("linewidth", "3")` per file inside the plot loop
 17c. **Per-file plot shape** (all tabs) — "Shape:" combobox in the Color/Width row; 13 options: Line, Line+Dot, Line+Circle, Line+Star, Line+Square, Line+Triangle, Line+Diamond, Dot, Circle, Star, Square, Triangle, Diamond; stored as `entry["plot_style"]`; maps to `(linestyle, marker, markersize)` via `_PLOT_STYLES` dict in `file_manager.py`; `_on_plot_style_change()` saves immediately + replots; EIS default = "Line+Circle", others = "Line"
 18. **Cycle color gradient** — when Gradient is checked, cycles within a file are tinted from lightest (first) to darkest (last) so evolution is easy to track; "Reverse" flips the order; "Step" spinbox (0.01–0.30) controls lightness delta per cycle; each file stores its own gradient settings independently
-19. **Editable plot title** — default text "Title"; type in the left-panel title entry or double-click anywhere in the title strip above the plot; both update in sync; persists across replots
+19. **Editable plot title** — default text is **blank**; type in the left-panel title entry or double-click anywhere in the title strip above the plot; both update in sync; persists across replots
 20. **Editable axis labels** (General tab) — double-click the X or Y axis label text on the plot to rename it via a dialog; entering a blank string reverts to the auto-generated label (column + unit); custom label persists across parameter changes until explicitly cleared; stored as `_custom_xlabel` / `_custom_ylabel` on the panel instance
 21. **Label/title spacing** — "Spacing (pt): Title [__] Label [__]" row in the Font section (all tabs); Title pad controls gap between axes frame and title (default 6 pt); Label pad controls gap between tick numbers and axis labels (default 4 pt); stored as `title_pad_var` / `label_pad_var`; applied via `ax.set_title(..., pad=N)` and `ax.set_xlabel(..., labelpad=N)`
-22. **Plot height control** — "Plot height (px):" entry in the Font section (General E.Chem and Nyquist Plot tabs); constrains the canvas widget height; blank = auto-fill; implemented by repacking the canvas widget with `fill=X, expand=False` vs `fill=BOTH, expand=True`
+22. **Plot size controls (all tabs)** — **W [__] H [__] inches** fields in the Font/Size section; resize the matplotlib figure and the canvas widget (`fig.set_size_inches(w, h)` + `canvas.get_tk_widget().config(width=int(w*dpi), height=int(h*dpi))`); maximum 50 inches in either direction; right panel is a scrollable `tk.Canvas` (`_plot_sc`) with both horizontal and vertical `ttk.Scrollbar`s; `_apply_plot_size()` updates `scrollregion` via `after(50, ...)` after `draw_idle()`; defaults: General E.Chem W=21.0/H=12.5, ECSA W=21.0/H=6.0, Nyquist W=21.0/H=12.5, Multi E.Chem 1&2 W=10.5/H=5.5; ECSA `_apply_plot_size()` iterates over both `(fig_cv, canvas_cv)` and `(fig_cdl, canvas_cdl)`; reference stored as `self._plot_sc`
 23. **Copy to clipboard** — "Copy" text button added next to each tab's toolbar (all tabs); copies the current figure to the Windows clipboard as CF_DIB so it can be pasted into Word/PowerPoint; requires Pillow; previous clipboard crash fixed by setting correct `restype=ctypes.c_void_p` on all 64-bit Win32 API calls
 
 ### Multi E.Chem tab
@@ -158,7 +165,7 @@ Each panel is fully **independent**: its own `files` dict, `active_file`, figure
 9. **File colors** — per-file base color from palette; overridable via "Color:" combobox
 10. **Cycle color gradient** — per-file gradient/reverse/step settings; same UX as General tab
 11. **Subplot zoom** — double-click any subplot to expand it to fill the full panel; a "← Back to Grid" bar appears at the top; clicking it restores the 2-column grid; figures remain live (no recreation)
-12. **Editable subplot titles** — double-click the title strip on any subplot to rename it; title stored in `entry["custom_title"]` and persists across replots; double-clicking in a zoomed view is the same gesture but zoom-toggle takes priority unless the cursor is in the title strip
+12. **Editable subplot titles** — **Title entry** in the left panel sets `entry["custom_title"]` for the active file; default is blank `""`; also editable by double-clicking the title strip on any subplot; saved in `_save_active_state()`, restored in `_switch_active_file()` via `entry.setdefault("custom_title", "")` + `plot_title_var.set(...)`; `_plot_file()` uses `plot_title_var.get()` for the active file and `entry.get("custom_title", "")` for non-active files; double-clicking in a zoomed view is the same gesture but zoom-toggle takes priority unless the cursor is in the title strip
 
 ### ECSA Calc tab
 1. **Independent file state** — fully separate from other tabs

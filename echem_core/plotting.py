@@ -181,6 +181,52 @@ def draw_reflines(ax, reflines):
                        linewidth=lw, alpha=0.7, label='_yref')
 
 
+def _scale_legend_spacing(leg, ratio):
+    """Scale the full visual layout of a legend's internal box tree by *ratio*.
+
+    Handles three things so the legend looks identical to what ax.legend()
+    would produce at the new font size:
+      1. sep / pad on every VPacker / HPacker  (spacing between rows/cols)
+      2. DrawingArea width + height            (the handle icon container)
+      3. Artists inside each DrawingArea       (Line2D coords + markersize,
+                                                Rectangle geometry)
+
+    Called on every mouse-motion event during right-drag legend resize.
+    """
+    from matplotlib.lines import Line2D
+    from matplotlib.patches import Rectangle
+
+    def _scale_drawing_area(da):
+        da.width  *= ratio
+        da.height *= ratio
+        for artist in da.get_children():
+            if isinstance(artist, Line2D):
+                artist.set_xdata([x * ratio for x in artist.get_xdata()])
+                artist.set_ydata([y * ratio for y in artist.get_ydata()])
+                ms = artist.get_markersize()
+                if ms:
+                    artist.set_markersize(ms * ratio)
+            elif isinstance(artist, Rectangle):
+                artist.set_x(artist.get_x() * ratio)
+                artist.set_y(artist.get_y() * ratio)
+                artist.set_width(artist.get_width() * ratio)
+                artist.set_height(artist.get_height() * ratio)
+
+    def _walk(box):
+        if type(box).__name__ == 'DrawingArea':
+            _scale_drawing_area(box)
+            return  # artists inside are not OffsetBox — don't recurse further
+        if hasattr(box, 'sep') and isinstance(box.sep, (int, float)):
+            box.sep *= ratio
+        if hasattr(box, 'pad') and isinstance(box.pad, (int, float)):
+            box.pad *= ratio
+        for child in getattr(box, 'get_children', lambda: [])():
+            _walk(child)
+
+    if hasattr(leg, '_legend_box') and leg._legend_box is not None:
+        _walk(leg._legend_box)
+
+
 class PlottingMixin:
     """Mixin that provides plotting behaviour.
 
@@ -367,7 +413,10 @@ class PlottingMixin:
             dy = event.y - self._resize_start_y  # pixels up = larger
             new_size = self._resize_start_size + dy / 5.0
             new_size = max(4.0, min(30.0, new_size))
+            prev_size = self._current_legend_size
             self._current_legend_size = new_size
+            if prev_size > 0:
+                _scale_legend_spacing(self._legend_obj, new_size / prev_size)
             for text in self._legend_obj.get_texts():
                 text.set_fontsize(new_size)
             title = self._legend_obj.get_title()
