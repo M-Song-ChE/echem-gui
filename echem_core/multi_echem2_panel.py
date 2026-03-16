@@ -21,7 +21,7 @@ from .file_manager import (FileManagerMixin, _COLOR_NAMES, _COLOR_HEX,
                             _default_xcol, _default_ycol,
                             _PLOT_STYLES, _PLOT_STYLE_NAMES)
 from .correction import CorrectionMixin
-from .plotting import apply_grid, draw_reflines, _cycle_colors, copy_figure_to_clipboard
+from .plotting import apply_grid, draw_reflines, _cycle_colors, copy_figure_to_clipboard, _scale_legend_spacing
 from .legend_editor import open_legend_editor
 from .checklist import CheckableListbox
 
@@ -421,6 +421,17 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         _ref_cb.pack(padx=4, pady=2)
         _ref_cb.bind("<<ComboboxSelected>>", lambda e: self._auto_replot())
 
+        # ══ TITLE ═════════════════════════════════════════════════
+        ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
+        _title_row = ttk.Frame(left)
+        _title_row.pack(fill=tk.X, padx=4, pady=(0, 2))
+        ttk.Label(_title_row, text="Title:").pack(side=tk.LEFT)
+        self.plot_title_var = tk.StringVar(value="")
+        _title_entry = ttk.Entry(_title_row, textvariable=self.plot_title_var)
+        _title_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
+        _title_entry.bind("<Return>",   lambda e: self._auto_replot())
+        _title_entry.bind("<FocusOut>", lambda e: self._auto_replot())
+
         # ══ LEGEND ════════════════════════════════════════════════
         ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
         ttk.Label(left, text="Legend  (active group)",
@@ -607,25 +618,49 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         # ── Right panel ────────────────────────────────────────────
         right_outer = ttk.Frame(body)
         body.add(right_outer, weight=1)
+        # row 0: size bar (permanent), row 1: zoom bar, row 2: canvas area
         right_outer.rowconfigure(0, weight=0)
-        right_outer.rowconfigure(1, weight=1)
+        right_outer.rowconfigure(1, weight=0)
+        right_outer.rowconfigure(2, weight=1)
         right_outer.columnconfigure(0, weight=1)
+
+        # ── Plot size controls (always visible) ──────────────────────
+        self.plot_w_var = tk.StringVar(value="10.5")
+        self.plot_h_var = tk.StringVar(value="5.5")
+        _size_bar = ttk.Frame(right_outer)
+        _size_bar.grid(row=0, column=0, sticky="ew", padx=4, pady=2)
+        ttk.Label(_size_bar, text="Plot size (in):").pack(side=tk.LEFT, padx=(4, 2))
+        ttk.Label(_size_bar, text="W").pack(side=tk.LEFT)
+        _pw_e = ttk.Entry(_size_bar, textvariable=self.plot_w_var, width=5)
+        _pw_e.pack(side=tk.LEFT, padx=(1, 6))
+        ttk.Label(_size_bar, text="H").pack(side=tk.LEFT)
+        _ph_e = ttk.Entry(_size_bar, textvariable=self.plot_h_var, width=5)
+        _ph_e.pack(side=tk.LEFT, padx=(1, 0))
+        for _e in (_pw_e, _ph_e):
+            _e.bind("<Return>",   lambda ev: self._apply_plot_size())
+            _e.bind("<FocusOut>", lambda ev: self._apply_plot_size())
 
         self._zoom_bar = ttk.Frame(right_outer)
         ttk.Button(self._zoom_bar, text="← Back to Grid",
                    command=self._unzoom_group_view).pack(side=tk.LEFT, padx=6, pady=3)
-        self._zoom_bar.grid(row=0, column=0, sticky="ew")
+        self._zoom_bar.grid(row=1, column=0, sticky="ew")
         self._zoom_bar.grid_remove()
 
         _right_inner = ttk.Frame(right_outer)
-        _right_inner.grid(row=1, column=0, sticky="nsew")
+        _right_inner.grid(row=2, column=0, sticky="nsew")
+        _right_inner.rowconfigure(0, weight=1)
+        _right_inner.columnconfigure(0, weight=1)
 
         self._right_canvas = tk.Canvas(_right_inner, highlightthickness=0)
-        right_scroll = ttk.Scrollbar(_right_inner, orient=tk.VERTICAL,
-                                     command=self._right_canvas.yview)
-        self._right_canvas.configure(yscrollcommand=right_scroll.set)
-        right_scroll.pack(side=tk.RIGHT, fill=tk.Y)
-        self._right_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        right_vscroll = ttk.Scrollbar(_right_inner, orient=tk.VERTICAL,
+                                      command=self._right_canvas.yview)
+        right_hscroll = ttk.Scrollbar(_right_inner, orient=tk.HORIZONTAL,
+                                      command=self._right_canvas.xview)
+        self._right_canvas.configure(yscrollcommand=right_vscroll.set,
+                                     xscrollcommand=right_hscroll.set)
+        right_vscroll.grid(row=0, column=1, sticky="ns")
+        right_hscroll.grid(row=1, column=0, sticky="ew")
+        self._right_canvas.grid(row=0, column=0, sticky="nsew")
 
         self._plots_frame = ttk.Frame(self._right_canvas)
         self._plots_win   = self._right_canvas.create_window(
@@ -638,9 +673,11 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         self._right_canvas.bind(
             "<MouseWheel>",
             lambda e: self._right_canvas.yview_scroll(-1 * (e.delta // 120), "units"))
+        self._right_canvas.bind(
+            "<Shift-MouseWheel>",
+            lambda e: self._right_canvas.xview_scroll(-1 * (e.delta // 120), "units"))
 
-        for _c in range(2):
-            self._plots_frame.columnconfigure(_c, weight=1, uniform="col")
+        # No column weights — each plot keeps its fixed size
 
         # Drop indicator: thin colored bar shown during drag-to-reorder
         self._drop_line = tk.Frame(self._plots_frame, bg="#1a73e8", height=3)
@@ -894,12 +931,17 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         lbl.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=6, pady=3)
 
         inner = ttk.Frame(frame, padding=(4, 2, 4, 2))
-        inner.pack(fill=tk.BOTH, expand=True)
+        inner.pack()
 
-        fig = Figure(figsize=(5, 3.8), dpi=100, constrained_layout=True)
+        try:
+            _fw = float(self.plot_w_var.get())
+            _fh = float(self.plot_h_var.get())
+        except (ValueError, AttributeError):
+            _fw, _fh = 9.5, 5.5
+        fig = Figure(figsize=(_fw, _fh), dpi=100, constrained_layout=True)
         ax  = fig.add_subplot(111)
         canvas = FigureCanvasTkAgg(fig, master=inner)
-        canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        canvas.get_tk_widget().pack()
 
         tb_frame = ttk.Frame(inner)
         tb_frame.pack(fill=tk.X)
@@ -974,9 +1016,9 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
     # Right-panel layout
     # ════════════════════════════════════════════════════════════════
     def _on_right_canvas_configure(self, event):
-        self._right_canvas.itemconfig(self._plots_win, width=event.width)
         if self._zoom_group:
-            self._right_canvas.itemconfig(self._plots_win, height=event.height)
+            self._right_canvas.itemconfig(self._plots_win,
+                                          width=event.width, height=event.height)
 
     def _relayout_figures(self):
         MAX_COLS = 2
@@ -1100,6 +1142,27 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             gentry["ax"].set_ylim(gentry["auto_ylim"])
             gentry["canvas"].draw_idle()
 
+    def _apply_plot_size(self, event=None):
+        """Resize all group figures to the current plot_w_var × plot_h_var (inches)."""
+        try:
+            w = float(self.plot_w_var.get())
+            h = float(self.plot_h_var.get())
+        except ValueError:
+            return
+        w = max(2.0, min(50.0, w))
+        h = max(1.5, min(50.0, h))
+        dpi = 100
+        for gentry in self.groups.values():
+            fig = gentry.get("fig")
+            cv  = gentry.get("canvas")
+            if fig and cv:
+                fig.set_size_inches(w, h)
+                cv.get_tk_widget().config(width=int(w * dpi), height=int(h * dpi))
+                cv.draw_idle()
+        self._right_canvas.after(
+            50, lambda: self._right_canvas.configure(
+                scrollregion=self._right_canvas.bbox("all")))
+
     def _zoom_group_view(self, group_name):
         self._zoom_group = group_name
         self._zoom_bar.grid()
@@ -1107,12 +1170,21 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         h = self._right_canvas.winfo_height()
         if w > 1 and h > 1:
             self._right_canvas.itemconfig(self._plots_win, width=w, height=h)
+            gentry = self.groups.get(group_name, {})
+            fig    = gentry.get("fig")
+            cv     = gentry.get("canvas")
+            if fig and cv:
+                dpi = fig.get_dpi()
+                fig.set_size_inches(w / dpi, h / dpi)
+                cv.get_tk_widget().config(width=w, height=h)
+                cv.draw_idle()
         self._relayout_figures()
 
     def _unzoom_group_view(self):
         self._zoom_group = None
         self._zoom_bar.grid_remove()
         self._right_canvas.itemconfig(self._plots_win, height=0)
+        self._apply_plot_size()
         self._relayout_figures()
         self._right_canvas.configure(scrollregion=self._right_canvas.bbox("all"))
 
@@ -1182,6 +1254,7 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         g["font_tick_bold"] = self.font_tick_bold_var.get()
         g["title_pad"]      = self.title_pad_var.get()
         g["label_pad"]      = self.label_pad_var.get()
+        g["custom_title"]   = self.plot_title_var.get()
         if "ax" in g:
             g["view_xlim"] = g["ax"].get_xlim()
             g["view_ylim"] = g["ax"].get_ylim()
@@ -1247,6 +1320,7 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         g.setdefault("font_tick_bold",  False)
         g.setdefault("title_pad",       "6")
         g.setdefault("label_pad",       "4")
+        g.setdefault("custom_title",    "")
 
         self.x_unit_var.set(g["x_unit"])
         self.y_unit_var.set(g["y_unit"])
@@ -1277,10 +1351,45 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         self.font_tick_bold_var.set(g["font_tick_bold"])
         self.title_pad_var.set(g["title_pad"])
         self.label_pad_var.set(g["label_pad"])
+        self.plot_title_var.set(g.get("custom_title", ""))
 
         self._update_group_column_combos()
         self._update_group_files_lb()
         self._refresh_reflines_lb()
+
+        # Switch active_file to a file in this group so that per-file fields
+        # (area, r_sol, e_ref) reflect the selected group.
+        group_files = g.get("files", [])
+        if group_files:
+            target_file = (self.active_file
+                           if self.active_file in group_files
+                           else group_files[0])
+            if target_file != self.active_file:
+                self._save_active_state()
+                old_suppress = self._suppress_replot
+                self._suppress_replot = True
+                try:
+                    self._switch_active_file(target_file)
+                finally:
+                    self._suppress_replot = old_suppress
+            # Highlight target_file in the group files listbox
+            lb_items = list(self.group_files_lb.get(0, tk.END))
+            if target_file in lb_items:
+                lb_idx = lb_items.index(target_file)
+                self.group_files_lb.selection_clear(0, tk.END)
+                self.group_files_lb.selection_set(lb_idx)
+                self.group_files_lb.see(lb_idx)
+            # Sync the main file listbox highlight (suppress _on_file_select)
+            file_keys = list(self.files.keys())
+            if target_file in file_keys:
+                fidx = file_keys.index(target_file)
+                self._loading_files = True
+                try:
+                    self.file_listbox.selection_clear(0, tk.END)
+                    self.file_listbox.selection_set(fidx)
+                finally:
+                    self._loading_files = False
+
         self._auto_replot()
 
         if "view_xlim" in g and "ax" in g:
@@ -1346,6 +1455,7 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
 
         has_data   = False
         multi_file = len([f for f in gentry["files"] if f in self.files]) > 1
+        gentry["line_to_file"] = {}   # reset line→file map for click detection
 
         for fname in gentry["files"]:
             fentry = self.files.get(fname)
@@ -1417,16 +1527,18 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
                         if sub.empty:
                             continue
                         lbl = f"{fname} C{c}" if multi_file else f"C{c}"
-                        ax.plot(sub[_real_xcol] * x_scale, sub[_real_ycol] * y_scale,
-                                color=cyc_cols[i], label=lbl, linewidth=_lw,
-                                linestyle=_ls, marker=_mk or None,
-                                markersize=_ms if _mk else 0)
+                        ln, = ax.plot(sub[_real_xcol] * x_scale, sub[_real_ycol] * y_scale,
+                                      color=cyc_cols[i], label=lbl, linewidth=_lw,
+                                      linestyle=_ls, marker=_mk or None,
+                                      markersize=_ms if _mk else 0)
+                        gentry["line_to_file"][ln] = fname
                     has_data = True
             else:
-                ax.plot(df[_real_xcol] * x_scale, df[_real_ycol] * y_scale,
-                        color=base_color, label=fname, linewidth=_lw,
-                        linestyle=_ls, marker=_mk or None,
-                        markersize=_ms if _mk else 0)
+                ln, = ax.plot(df[_real_xcol] * x_scale, df[_real_ycol] * y_scale,
+                              color=base_color, label=fname, linewidth=_lw,
+                              linestyle=_ls, marker=_mk or None,
+                              markersize=_ms if _mk else 0)
+                gentry["line_to_file"][ln] = fname
                 has_data = True
 
         # Axis labels from group column + unit settings
@@ -1447,7 +1559,9 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         y_is_V = _is_V(ycol, y_unit) if ycol != "J" else False
         ax.set_xlabel(f"{x_lbl}  (vs {ref})" if (ref and x_is_V) else x_lbl)
         ax.set_ylabel(f"{y_lbl}  (vs {ref})" if (ref and y_is_V) else y_lbl)
-        ax.set_title(gentry.get("custom_title", group_name), fontsize=9)
+        _title = (self.plot_title_var.get() if group_name == self.active_group
+                  else gentry.get("custom_title", ""))
+        ax.set_title(_title, fontsize=9)
 
         canvas.draw()
         gentry["auto_xlim"] = ax.get_xlim()
@@ -1701,6 +1815,41 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         gentry["pan_moved"] = False
         ax = gentry.get("ax")
 
+        # Single left-click on a data line → select that file
+        if (event.button == 1 and ax is not None and event.inaxes is ax
+                and not getattr(event, 'dblclick', False)):
+            for line, fname in gentry.get("line_to_file", {}).items():
+                try:
+                    hit, _ = line.contains(event)
+                except Exception:
+                    hit = False
+                if hit and fname in self.files and fname != self.active_file:
+                    self._save_active_state()
+                    old_supp = self._suppress_replot
+                    self._suppress_replot = True
+                    try:
+                        self._switch_active_file(fname)
+                    finally:
+                        self._suppress_replot = old_supp
+                    # Update "files in group" listbox highlight
+                    lb_items = list(self.group_files_lb.get(0, tk.END))
+                    if fname in lb_items:
+                        idx = lb_items.index(fname)
+                        self.group_files_lb.selection_clear(0, tk.END)
+                        self.group_files_lb.selection_set(idx)
+                        self.group_files_lb.see(idx)
+                    # Sync main file listbox (suppress _on_file_select)
+                    file_keys = list(self.files.keys())
+                    if fname in file_keys:
+                        self._loading_files = True
+                        try:
+                            self.file_listbox.selection_clear(0, tk.END)
+                            self.file_listbox.selection_set(file_keys.index(fname))
+                        finally:
+                            self._loading_files = False
+                    self._auto_replot()
+                    break
+
         if event.button == 1 and getattr(event, 'dblclick', False) and ax is not None:
             canvas = gentry["canvas"]
             if event.inaxes is ax:
@@ -1768,6 +1917,10 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         gentry["panning"]    = False
         gentry["pan_ax"]     = None
         if was_resizing:
+            if group_name == self.active_group:
+                new_sz = gentry.get("leg_size", 8.0)
+                self.legend_size_var.set(
+                    str(int(new_sz)) if new_sz == int(new_sz) else str(new_sz))
             return
         ax = gentry.get("ax")
         if (event.button == 1
@@ -1803,8 +1956,11 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         if gentry.get("leg_resize") and gentry.get("legend") is not None:
             dy     = event.y - gentry["leg_resize_start_y"]
             new_sz = max(4.0, min(30.0, gentry["leg_resize_start_sz"] + dy / 5.0))
+            prev_sz = gentry.get("leg_size", 8.0)
             gentry["leg_size"] = new_sz
             leg = gentry["legend"]
+            if prev_sz > 0:
+                _scale_legend_spacing(leg, new_sz / prev_sz)
             for t in leg.get_texts():
                 t.set_fontsize(new_sz)
             gentry["canvas"].draw()

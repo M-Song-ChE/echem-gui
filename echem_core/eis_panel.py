@@ -492,14 +492,58 @@ class EISPanel(FileManagerMixin, ttk.Frame):
         # ── Right panel: single shared Nyquist figure ─────────────
         right = ttk.Frame(body)
         body.add(right, weight=1)
+        right.rowconfigure(0, weight=0)
+        right.rowconfigure(1, weight=1)
+        right.columnconfigure(0, weight=1)
 
-        self.fig = Figure(figsize=(7, 5), dpi=100, constrained_layout=True)
+        # ── Plot size controls (always visible) ──────────────────
+        self.plot_w_var = tk.StringVar(value="21.0")
+        self.plot_h_var = tk.StringVar(value="12.5")
+        _size_bar = ttk.Frame(right)
+        _size_bar.grid(row=0, column=0, sticky="ew", padx=4, pady=2)
+        ttk.Label(_size_bar, text="Plot size (in):").pack(side=tk.LEFT, padx=(4, 2))
+        ttk.Label(_size_bar, text="W").pack(side=tk.LEFT)
+        _pw_e = ttk.Entry(_size_bar, textvariable=self.plot_w_var, width=5)
+        _pw_e.pack(side=tk.LEFT, padx=(1, 6))
+        ttk.Label(_size_bar, text="H").pack(side=tk.LEFT)
+        _ph_e = ttk.Entry(_size_bar, textvariable=self.plot_h_var, width=5)
+        _ph_e.pack(side=tk.LEFT, padx=(1, 0))
+        for _e in (_pw_e, _ph_e):
+            _e.bind("<Return>",   lambda ev: self._apply_plot_size())
+            _e.bind("<FocusOut>", lambda ev: self._apply_plot_size())
+
+        # ── Scrollable plot area ──────────────────────────────────
+        _right_inner = ttk.Frame(right)
+        _right_inner.grid(row=1, column=0, sticky="nsew")
+        _right_inner.rowconfigure(0, weight=1)
+        _right_inner.columnconfigure(0, weight=1)
+        _plot_sc = tk.Canvas(_right_inner, highlightthickness=0)
+        _right_vs = ttk.Scrollbar(_right_inner, orient=tk.VERTICAL,   command=_plot_sc.yview)
+        _right_hs = ttk.Scrollbar(_right_inner, orient=tk.HORIZONTAL, command=_plot_sc.xview)
+        _plot_sc.configure(yscrollcommand=_right_vs.set, xscrollcommand=_right_hs.set)
+        _right_vs.grid(row=0, column=1, sticky="ns")
+        _right_hs.grid(row=1, column=0, sticky="ew")
+        _plot_sc.grid(row=0, column=0, sticky="nsew")
+        _plot_sc.bind("<MouseWheel>",
+                      lambda e: _plot_sc.yview_scroll(-1*(e.delta//120), "units"))
+        _plot_sc.bind("<Shift-MouseWheel>",
+                      lambda e: _plot_sc.xview_scroll(-1*(e.delta//120), "units"))
+        _plots_frame = ttk.Frame(_plot_sc)
+        _plots_win = _plot_sc.create_window((0, 0), window=_plots_frame, anchor=tk.NW)
+        _plots_frame.bind("<Configure>",
+                          lambda e: _plot_sc.configure(scrollregion=_plot_sc.bbox("all")))
+        self._plot_sc = _plot_sc
+
+        _fw = float(self.plot_w_var.get())
+        _fh = float(self.plot_h_var.get())
+        self.fig = Figure(figsize=(_fw, _fh), dpi=100, constrained_layout=True)
         self.ax  = self.fig.add_subplot(111)
-        self.canvas = FigureCanvasTkAgg(self.fig, master=right)
-        self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        self.canvas = FigureCanvasTkAgg(self.fig, master=_plots_frame)
+        self.canvas.get_tk_widget().pack()
+        self.canvas.get_tk_widget().config(width=int(_fw * 100), height=int(_fh * 100))
 
-        tb_frame = ttk.Frame(right)
-        tb_frame.pack(fill=tk.X, side=tk.BOTTOM)
+        tb_frame = ttk.Frame(_plots_frame)
+        tb_frame.pack(fill=tk.X)
 
         panel_ref = self
 
@@ -816,6 +860,24 @@ class EISPanel(FileManagerMixin, ttk.Frame):
             _f(self.font_tick_size_var,  8.0),
             self.font_tick_bold_var.get(),
         )
+
+    # ── Plot size helper ─────────────────────────────────────────────
+    def _apply_plot_size(self, event=None):
+        """Resize the figure to the current plot_w_var × plot_h_var (inches)."""
+        try:
+            w = float(self.plot_w_var.get())
+            h = float(self.plot_h_var.get())
+        except ValueError:
+            return
+        w = max(2.0, min(50.0, w))
+        h = max(1.5, min(50.0, h))
+        dpi = 100
+        self.fig.set_size_inches(w, h)
+        self.canvas.get_tk_widget().config(width=int(w * dpi), height=int(h * dpi))
+        self.canvas.draw_idle()
+        self._plot_sc.after(
+            50, lambda: self._plot_sc.configure(
+                scrollregion=self._plot_sc.bbox("all")))
 
     def _apply_font_to_ax(self, ax, canvas):
         ts, tb, ls, lb, ks, kb = self._read_font()
