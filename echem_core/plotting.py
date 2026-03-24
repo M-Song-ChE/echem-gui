@@ -262,6 +262,11 @@ class PlottingMixin:
         self._resize_start_y = None
         self._resize_start_size = None
 
+        # Highlight state: True = active file is brought forward; toggled by
+        # file selection (on) and right-click (off)
+        self._plot_highlight = False
+        self._active_cycle   = None   # specific cycle number to highlight (None = whole file)
+
         # Click-annotate state
         self._ann = None              # current matplotlib Annotation artist
         self._ann_dot = None          # highlight marker on the selected data point
@@ -390,8 +395,11 @@ class PlottingMixin:
             self._handle_click_annotate(event)
 
         elif event.button == 3 and not on_legend:
-            # Right-click outside legend → dismiss annotation
+            # Right-click outside legend → dismiss annotation and remove highlight
+            self._plot_highlight = False
+            self._active_cycle = None
             self._clear_annotation()
+            self._apply_highlight_to_axes()
 
     def _on_motion(self, event):
         # ── Panning ─────────────────────────────────────────────────
@@ -556,6 +564,47 @@ class PlottingMixin:
             self.ax.set_ylim(self._auto_ylim)
             self.canvas.draw_idle()
 
+    # ── Highlight active file (unified: glow + zorder + alpha) ──────
+    def _apply_highlight_to_axes(self):
+        """Apply or remove the highlight effect on all plot lines.
+
+        Removes any stale glow lines, redraws glow for the active file,
+        and updates alpha / z-order.  Called after every file selection
+        (listbox or line-click) and after right-click to reset.
+        """
+        active = self.active_file
+        on = (self._plot_highlight and bool(active)
+              and sum(1 for e in self.files.values()
+                      if not e.get("hidden", False)) > 1)
+
+        # Remove stale glow lines from a previous highlight pass
+        for ln in list(self.ax.get_lines()):
+            if ln.get_label() == '_glow':
+                ln.remove()
+
+        for ln in self.ax.get_lines():
+            lbl = ln.get_label() or ""
+            if lbl.startswith("_"):
+                continue
+            is_af_file = (lbl == active or lbl.startswith(active + " "))
+            if on and self._active_cycle is not None and is_af_file:
+                # Narrow to the specific clicked cycle
+                is_af = (lbl == f"{active} C{self._active_cycle}"
+                         or lbl == f"Cycle {self._active_cycle}")
+            else:
+                is_af = is_af_file
+            ln.set_alpha(1.0 if (not on or is_af) else 0.55)
+            ln.set_zorder(3.0 if (on and is_af) else 2.0)
+            if on and is_af:
+                # Draw glow shadow behind this active line
+                self.ax.plot(ln.get_xdata(), ln.get_ydata(),
+                             color=ln.get_color(),
+                             linewidth=ln.get_linewidth() * 2.5,
+                             linestyle=ln.get_linestyle(),
+                             alpha=0.18, label='_glow', zorder=1.9)
+
+        self.canvas.draw_idle()
+
     # ── Auto-replot helper ──────────────────────────────────────────
     def _auto_replot(self):
         """Silently re-plot if data and axes are available."""
@@ -645,9 +694,20 @@ class PlottingMixin:
         has_legend = False
         self._legend_stable_keys = []   # reset for this replot
 
-        for short, entry in self.files.items():
-            if entry.get("hidden", False):
-                continue
+        # Determine highlight state (active file brought to front with glow)
+        _visible_shorts = [s for s, e in self.files.items()
+                           if not e.get("hidden", False)]
+        _active_short   = self.active_file
+        _highlight      = (self._plot_highlight
+                           and len(_visible_shorts) > 1 and bool(_active_short)
+                           and _active_short in _visible_shorts)
+
+        # ── Draw all files in INSERTION ORDER at full alpha ─────────────
+        # Drawing in insertion order keeps legend entries in a stable order.
+        # Z-order and glow are applied in a post-draw pass so they never
+        # affect legend symbol alpha or entry ordering.
+        for short in _visible_shorts:
+            entry = self.files[short]
             df = entry["df"]
             if _real_xcol not in df.columns or _real_ycol not in df.columns:
                 continue
@@ -778,6 +838,10 @@ class PlottingMixin:
             # Restore dragged position (overrides loc= argument)
             if self._legend_manual_pos is not None:
                 self._legend_obj._loc = self._legend_manual_pos
+
+        # Dim non-active lines AFTER legend is built so legend handles
+        # (proxy copies created at ax.legend() time) retain alpha=1.0
+        self._apply_highlight_to_axes()
 
         _xgv = getattr(self, 'x_grid_var', None)
         if _xgv is not None:

@@ -846,6 +846,8 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             "ax":         ax,
             "canvas":     canvas,
             "plot_frame": frame,
+            "hdr_frame":  header,
+            "hdr_label":  handle_lbl,
             "legend":     None,
             "leg_size":   8.0,
             "auto_xlim":  None,
@@ -986,10 +988,6 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         if not self.active_file or self.active_file not in self.files:
             return
         entry = self.files[self.active_file]
-        # Preserve current zoom/pan view so it can be restored on file switch-back
-        if "ax" in entry:
-            entry["view_xlim"] = entry["ax"].get_xlim()
-            entry["view_ylim"] = entry["ax"].get_ylim()
         entry["selected_cycles"] = self._selected_cycles()
         try:
             entry["r_sol"] = float(self.r_sol_var.get())
@@ -1152,14 +1150,9 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
 
         self._auto_replot()
 
-        # Restore per-file zoom/pan view if the user had previously zoomed/panned
-        _entry = self.files.get(short)
-        if _entry and "view_xlim" in _entry and "ax" in _entry:
-            _entry["ax"].set_xlim(_entry["view_xlim"])
-            _entry["ax"].set_ylim(_entry["view_ylim"])
-            _entry["canvas"].draw_idle()
-
         self._refresh_reflines_lb()
+        self._highlight_active_header()
+        self._scroll_to_active_file(short)
 
     # ════════════════════════════════════════════════════════════════
     # Replot
@@ -1265,6 +1258,9 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         ax     = entry["ax"]
         canvas = entry["canvas"]
 
+        # Capture current view before clearing so user's zoom/pan survives the replot
+        _prev_view = (ax.get_xlim(), ax.get_ylim()) if entry.get("auto_xlim") is not None else None
+
         self._clear_ann(short, redraw=False)
         # Save dragged legend position before discarding old legend
         _old_leg = entry.get("legend")
@@ -1333,7 +1329,12 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         entry["auto_xlim"] = ax.get_xlim()
         entry["auto_ylim"] = ax.get_ylim()
 
-        # Apply manual axis range
+        # Restore the user's previous zoom/pan before applying manual range
+        if _prev_view is not None:
+            ax.set_xlim(_prev_view[0])
+            ax.set_ylim(_prev_view[1])
+
+        # Apply manual axis range (overrides restored view if values are set)
         self._apply_range(short, x_min_s, x_max_s, y_min_s, y_max_s)
 
         # Reference lines — each entry carries its own style and color
@@ -1355,12 +1356,19 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             entry["legend"].set_draggable(True)
             entry["legend"].get_frame().set_visible(leg_frm)
             entry["leg_size"] = leg_size
-            # Restore custom labels if count matches
-            custom = entry.get("legend_labels", [])
-            if custom:
-                for text_obj, lbl in zip(entry["legend"].get_texts(), custom):
+            # Restore custom labels using stable key dict {short:Cc → label}
+            label_map = entry.get("legend_labels", {})
+            if label_map and isinstance(label_map, dict):
+                texts = entry["legend"].get_texts()
+                if "cycle number" in df.columns and selected:
+                    for c, text_obj in zip(selected, texts):
+                        lbl = label_map.get(f"{short}:C{c}", "")
+                        if lbl:
+                            text_obj.set_text(lbl)
+                elif texts:
+                    lbl = label_map.get(short, "")
                     if lbl:
-                        text_obj.set_text(lbl)
+                        texts[0].set_text(lbl)
             # Restore dragged position
             if entry.get("legend_manual_pos") is not None:
                 entry["legend"]._loc = entry["legend_manual_pos"]
@@ -1945,6 +1953,42 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
                                      checked=not entry.get("hidden", False))
 
     # ════════════════════════════════════════════════════════════════
+    # Active-file highlight helpers
+    # ════════════════════════════════════════════════════════════════
+    _HDR_BG_DEFAULT = "#c0cfe4"
+    _HDR_BG_ACTIVE  = "#ffd54f"
+
+    def _highlight_active_header(self):
+        """Gold header for the active file, default blue-gray for all others."""
+        for fname, entry in self.files.items():
+            color = self._HDR_BG_ACTIVE if fname == self.active_file else self._HDR_BG_DEFAULT
+            hdr = entry.get("hdr_frame")
+            lbl = entry.get("hdr_label")
+            if hdr:
+                hdr.configure(bg=color)
+            if lbl:
+                lbl.configure(bg=color)
+
+    def _scroll_to_active_file(self, short):
+        """Scroll the right panel so the active file's plot frame is visible."""
+        def _do():
+            entry = self.files.get(short)
+            if not entry:
+                return
+            frame = entry.get("plot_frame")
+            if not frame or not frame.winfo_exists():
+                return
+            sr = self._right_canvas.bbox("all")
+            if not sr:
+                return
+            total_h = sr[3] - sr[1]
+            if total_h <= 0:
+                return
+            frac = max(0.0, frame.winfo_y() / total_h)
+            self._right_canvas.yview_moveto(frac)
+        self.after_idle(_do)
+
+    # ════════════════════════════════════════════════════════════════
     # Click-to-select: clicking any plot selects that file
     # ════════════════════════════════════════════════════════════════
     def _activate_file(self, short):
@@ -1987,10 +2031,19 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             self, leg, entry["canvas"], entry.get("leg_size", 8.0))
         if entry.get("legend") is not None:
             entry["legend"].set_draggable(True)
-            # Persist labels so they survive the next replot
-            entry["legend_labels"] = [
-                t.get_text() for t in entry["legend"].get_texts()
-            ]
+            # Persist labels with stable keys {short:Cc → label}
+            short = self.active_file
+            label_map = entry.get("legend_labels") if isinstance(entry.get("legend_labels"), dict) else {}
+            df = entry.get("df")
+            if df is not None and "cycle number" in df.columns:
+                sel = entry.get("selected_cycles", [])
+                for c, t in zip(sel, entry["legend"].get_texts()):
+                    label_map[f"{short}:C{c}"] = t.get_text()
+            else:
+                texts = entry["legend"].get_texts()
+                if texts:
+                    label_map[short] = texts[0].get_text()
+            entry["legend_labels"] = label_map
 
     # ════════════════════════════════════════════════════════════════
     # Reference line helpers

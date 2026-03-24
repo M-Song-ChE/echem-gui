@@ -27,7 +27,8 @@ from .checklist import CheckableListbox
 
 _CYCLE_BG        = "#e8f0fe"
 _CYCLE_ACTIVE_BG = "#cce0ff"
-_GROUP_HDR_BG    = "#c8e6c9"   # light green — distinct from Multi E.Chem blue
+_GROUP_HDR_BG     = "#c8e6c9"   # light green — distinct from Multi E.Chem blue
+_GROUP_HDR_ACTIVE = "#ffd54f"   # gold — matches Multi E.Chem 1 active header
 _CLICK_CYCLE_PX  = 8
 
 _J_TO_BASE = {"A/cm²": "A", "mA/cm²": "mA", "µA/cm²": "µA", "nA/cm²": "nA"}
@@ -73,6 +74,8 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         self._cycle_vars      = {}
         self._zoom_group      = None
         self._drag            = None   # drag-to-reorder state
+        self._plot_highlight  = False
+        self._active_cycle    = None   # specific cycle number highlighted (None = whole file)
         self._build_panel()
 
     # ════════════════════════════════════════════════════════════════
@@ -839,12 +842,20 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             self._save_active_group_state()
             self._switch_active_group(name)
 
+    def _on_file_select(self, event):
+        """Enable highlight whenever the user selects a file from the listbox."""
+        self._plot_highlight = True
+        self._active_cycle = None   # listbox → highlight whole file
+        super()._on_file_select(event)
+
     def _on_group_file_select(self, event):
         sel = self.group_files_lb.curselection()
         if not sel:
             return
         fname = self.group_files_lb.get(sel[0])
         if fname in self.files and fname != self.active_file:
+            self._plot_highlight = True
+            self._active_cycle = None   # group listbox → highlight whole file
             self._save_active_state()
             self._switch_active_file(fname)
             items = list(self.file_listbox.get(0, tk.END))
@@ -985,6 +996,8 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             "ax":         ax,
             "canvas":     canvas,
             "plot_frame": frame,
+            "hdr_frame":  header,
+            "hdr_label":  lbl,
             "legend":     None,
             "leg_size":   8.0,
             "auto_xlim":  None,
@@ -1255,9 +1268,6 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         g["title_pad"]      = self.title_pad_var.get()
         g["label_pad"]      = self.label_pad_var.get()
         g["custom_title"]   = self.plot_title_var.get()
-        if "ax" in g:
-            g["view_xlim"] = g["ax"].get_xlim()
-            g["view_ylim"] = g["ax"].get_ylim()
 
     def _switch_active_file(self, short):
         """Override: update only per-file UI, not group axes."""
@@ -1392,11 +1402,6 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
 
         self._auto_replot()
 
-        if "view_xlim" in g and "ax" in g:
-            g["ax"].set_xlim(g["view_xlim"])
-            g["ax"].set_ylim(g["view_ylim"])
-            g["canvas"].draw_idle()
-
     # ════════════════════════════════════════════════════════════════
     # Plotting
     # ════════════════════════════════════════════════════════════════
@@ -1443,6 +1448,9 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         ax     = gentry["ax"]
         canvas = gentry["canvas"]
 
+        # Capture current view before clearing so user's zoom/pan survives the replot
+        _prev_view = (ax.get_xlim(), ax.get_ylim()) if gentry.get("auto_xlim") is not None else None
+
         # Save legend position before clearing
         _old_leg = gentry.get("legend")
         if _old_leg is not None:
@@ -1455,12 +1463,18 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
 
         has_data   = False
         multi_file = len([f for f in gentry["files"] if f in self.files]) > 1
-        gentry["line_to_file"] = {}   # reset line→file map for click detection
+        gentry["line_to_file"]  = {}   # reset line→file map for click detection
+        gentry["line_to_cycle"] = {}   # reset line→cycle map for cycle-specific highlight
 
-        for fname in gentry["files"]:
-            fentry = self.files.get(fname)
-            if fentry is None or fentry.get("hidden", False):
-                continue
+        # Determine highlight state
+        _visible_fnames = [f for f in gentry["files"]
+                           if self.files.get(f) and not self.files[f].get("hidden", False)]
+        _af_in_group    = self.active_file in _visible_fnames
+        _highlight      = self._plot_highlight and len(_visible_fnames) > 1 and _af_in_group
+
+        # Draw all files in INSERTION ORDER at full alpha (stable legend)
+        for fname in _visible_fnames:
+            fentry = self.files[fname]
             df = fentry["df"]
 
             is_af = (fname == self.active_file)
@@ -1517,7 +1531,7 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             else:
                 y_scale, _ = self._get_unit_scale(_real_ycol, y_unit)
 
-            # Plot
+            # Plot (all at alpha=1.0; glow/zorder applied in post-draw pass)
             if "cycle number" in df.columns:
                 if selected:
                     cyc_cols = (_cycle_colors(base_color, len(selected), _step, _rev)
@@ -1531,7 +1545,8 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
                                       color=cyc_cols[i], label=lbl, linewidth=_lw,
                                       linestyle=_ls, marker=_mk or None,
                                       markersize=_ms if _mk else 0)
-                        gentry["line_to_file"][ln] = fname
+                        gentry["line_to_file"][ln]  = fname
+                        gentry["line_to_cycle"][ln] = c
                     has_data = True
             else:
                 ln, = ax.plot(df[_real_xcol] * x_scale, df[_real_ycol] * y_scale,
@@ -1567,6 +1582,12 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         gentry["auto_xlim"] = ax.get_xlim()
         gentry["auto_ylim"] = ax.get_ylim()
 
+        # Restore the user's previous zoom/pan before applying manual range
+        if _prev_view is not None:
+            ax.set_xlim(_prev_view[0])
+            ax.set_ylim(_prev_view[1])
+
+        # Apply manual axis range (overrides restored view if values are set)
         self._apply_group_range(group_name, x_min_s, x_max_s, y_min_s, y_max_s, is_active)
         draw_reflines(ax, gentry.get("reflines", []))
 
@@ -1584,14 +1605,39 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             gentry["legend"].set_draggable(True)
             gentry["legend"].get_frame().set_visible(leg_frm)
             gentry["leg_size"] = leg_size
-            custom = gentry.get("legend_labels", [])
-            if custom:
-                for t_obj, lbl in zip(gentry["legend"].get_texts(), custom):
-                    if lbl:
-                        t_obj.set_text(lbl)
+            # Restore custom labels using stable key dict {fname:Cc → label}
+            label_map = gentry.get("legend_labels", {})
+            if label_map and isinstance(label_map, dict):
+                text_objs = gentry["legend"].get_texts()
+                idx = 0
+                for fname in _visible_fnames:
+                    fentry = self.files.get(fname)
+                    if not fentry:
+                        continue
+                    _fdf = fentry.get("df")
+                    _fsel = (self._selected_cycles() if fname == self.active_file
+                             else fentry.get("selected_cycles", []))
+                    if _fdf is not None and "cycle number" in _fdf.columns and _fsel:
+                        for c in _fsel:
+                            if _fdf[_fdf["cycle number"] == c].empty:
+                                continue
+                            if idx < len(text_objs):
+                                lbl = label_map.get(f"{fname}:C{c}", "")
+                                if lbl:
+                                    text_objs[idx].set_text(lbl)
+                                idx += 1
+                    else:
+                        if idx < len(text_objs):
+                            lbl = label_map.get(fname, "")
+                            if lbl:
+                                text_objs[idx].set_text(lbl)
+                            idx += 1
             if gentry.get("legend_manual_pos") is not None:
                 gentry["legend"]._loc = gentry["legend_manual_pos"]
             canvas.draw()
+
+        # Dim non-active lines AFTER legend is built so legend handles keep alpha=1.0
+        self._apply_highlight_to_group(group_name)
 
         self._apply_font_to_group(group_name)
 
@@ -1751,9 +1797,30 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             self, leg, gentry["canvas"], gentry.get("leg_size", 8.0))
         if gentry.get("legend") is not None:
             gentry["legend"].set_draggable(True)
-            gentry["legend_labels"] = [
-                t.get_text() for t in gentry["legend"].get_texts()
-            ]
+            # Persist labels with stable keys {fname:Cc → label}
+            label_map = gentry.get("legend_labels") if isinstance(gentry.get("legend_labels"), dict) else {}
+            _vis = [f for f in gentry.get("files", [])
+                    if self.files.get(f) and not self.files[f].get("hidden", False)]
+            text_objs = gentry["legend"].get_texts()
+            idx = 0
+            for fname in _vis:
+                fentry = self.files.get(fname)
+                if not fentry:
+                    continue
+                _fdf = fentry.get("df")
+                _fsel = fentry.get("selected_cycles", [])
+                if _fdf is not None and "cycle number" in _fdf.columns and _fsel:
+                    for c in _fsel:
+                        if _fdf[_fdf["cycle number"] == c].empty:
+                            continue
+                        if idx < len(text_objs):
+                            label_map[f"{fname}:C{c}"] = text_objs[idx].get_text()
+                            idx += 1
+                else:
+                    if idx < len(text_objs):
+                        label_map[fname] = text_objs[idx].get_text()
+                        idx += 1
+            gentry["legend_labels"] = label_map
 
     # ════════════════════════════════════════════════════════════════
     # Per-file change handlers
@@ -1788,6 +1855,68 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         self._auto_replot()
 
     # ════════════════════════════════════════════════════════════════
+    # ── Highlight active file within a group (direct alpha update) ───
+    def _apply_highlight_to_group(self, group_name):
+        """Apply or remove the highlight effect on all lines in a group's axes.
+
+        Removes stale glow lines, redraws glow for the active file, and
+        updates alpha / z-order.  Called after every file selection and
+        after right-click to reset.
+        """
+        gentry = self.groups.get(group_name)
+        if not gentry or "ax" not in gentry:
+            return
+        ax           = gentry["ax"]
+        canvas       = gentry["canvas"]
+        active       = self.active_file
+        visible      = [f for f in gentry.get("files", [])
+                        if self.files.get(f) and not self.files[f].get("hidden", False)]
+        on = self._plot_highlight and bool(active) and active in visible and len(visible) > 1
+
+        # Remove stale glow lines
+        for ln in list(ax.get_lines()):
+            if ln.get_label() == '_glow':
+                ln.remove()
+
+        line_to_file  = gentry.get("line_to_file",  {})
+        line_to_cycle = gentry.get("line_to_cycle", {})
+        for ln in ax.get_lines():
+            lbl = ln.get_label() or ""
+            if lbl.startswith("_"):
+                continue
+            fname = line_to_file.get(ln)
+            is_af_file = (fname == active) if fname else (lbl == active or lbl.startswith(active + " "))
+            if on and self._active_cycle is not None:
+                # Cycle-specific: only highlight the exact file + cycle combination
+                cycle_n = line_to_cycle.get(ln)
+                is_af = (is_af_file and cycle_n == self._active_cycle)
+            else:
+                is_af = is_af_file
+            ln.set_alpha(1.0 if (not on or is_af) else 0.55)
+            ln.set_zorder(3.0 if (on and is_af) else 2.0)
+            if on and is_af:
+                ax.plot(ln.get_xdata(), ln.get_ydata(),
+                        color=ln.get_color(),
+                        linewidth=ln.get_linewidth() * 2.5,
+                        linestyle=ln.get_linestyle(),
+                        alpha=0.18, label='_glow', zorder=1.9)
+
+        canvas.draw_idle()
+        self._highlight_active_headers()
+
+    def _highlight_active_headers(self):
+        """Gold header on all group plots that contain the active file; green otherwise."""
+        for gname, gentry in self.groups.items():
+            is_active = (self._plot_highlight and bool(self.active_file)
+                         and self.active_file in gentry.get("files", []))
+            color = _GROUP_HDR_ACTIVE if is_active else _GROUP_HDR_BG
+            hdr = gentry.get("hdr_frame")
+            lbl_w = gentry.get("hdr_label")
+            if hdr and hdr.winfo_exists():
+                hdr.configure(bg=color)
+            if lbl_w and lbl_w.winfo_exists():
+                lbl_w.configure(bg=color)
+
     # Matplotlib interactions (per group figure)
     # ════════════════════════════════════════════════════════════════
     def _on_scroll(self, event, group_name):
@@ -1823,30 +1952,35 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
                     hit, _ = line.contains(event)
                 except Exception:
                     hit = False
-                if hit and fname in self.files and fname != self.active_file:
-                    self._save_active_state()
-                    old_supp = self._suppress_replot
-                    self._suppress_replot = True
-                    try:
-                        self._switch_active_file(fname)
-                    finally:
-                        self._suppress_replot = old_supp
-                    # Update "files in group" listbox highlight
-                    lb_items = list(self.group_files_lb.get(0, tk.END))
-                    if fname in lb_items:
-                        idx = lb_items.index(fname)
-                        self.group_files_lb.selection_clear(0, tk.END)
-                        self.group_files_lb.selection_set(idx)
-                        self.group_files_lb.see(idx)
-                    # Sync main file listbox (suppress _on_file_select)
-                    file_keys = list(self.files.keys())
-                    if fname in file_keys:
-                        self._loading_files = True
+                if hit and fname in self.files:
+                    # Capture specific cycle (None for non-cycle files)
+                    clicked_cycle = gentry.get("line_to_cycle", {}).get(line)
+                    if fname != self.active_file:
+                        self._save_active_state()
+                        old_supp = self._suppress_replot
+                        self._suppress_replot = True
                         try:
-                            self.file_listbox.selection_clear(0, tk.END)
-                            self.file_listbox.selection_set(file_keys.index(fname))
+                            self._switch_active_file(fname)
                         finally:
-                            self._loading_files = False
+                            self._suppress_replot = old_supp
+                        # Update "files in group" listbox highlight
+                        lb_items = list(self.group_files_lb.get(0, tk.END))
+                        if fname in lb_items:
+                            idx = lb_items.index(fname)
+                            self.group_files_lb.selection_clear(0, tk.END)
+                            self.group_files_lb.selection_set(idx)
+                            self.group_files_lb.see(idx)
+                        # Sync main file listbox (suppress _on_file_select)
+                        file_keys = list(self.files.keys())
+                        if fname in file_keys:
+                            self._loading_files = True
+                            try:
+                                self.file_listbox.selection_clear(0, tk.END)
+                                self.file_listbox.selection_set(file_keys.index(fname))
+                            finally:
+                                self._loading_files = False
+                    self._active_cycle   = clicked_cycle
+                    self._plot_highlight = True
                     self._auto_replot()
                     break
 
@@ -1936,7 +2070,10 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
                     pass
             self._annotate(event, group_name)
         elif event.button == 3 and event.inaxes is ax:
+            self._plot_highlight = False
+            self._active_cycle = None
             self._clear_ann(group_name)
+            self._apply_highlight_to_group(group_name)
 
     def _on_motion(self, event, group_name):
         gentry = self.groups.get(group_name)

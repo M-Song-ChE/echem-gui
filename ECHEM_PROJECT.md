@@ -2,7 +2,8 @@
 
 ## Project Overview
 Electrochemistry GUI built with Python/tkinter + matplotlib.
-**Location:** `C:\Users\thsrk\echem_gui\echem-gui\`
+**Repo:** https://github.com/M-Song-ChE/echem-gui
+**Location:** `C:\Users\Mefford\PycharmProjects\echem_gui\`
 **Launch:** `python run_echem.py` or `python -m echem_core`
 
 ## Package Structure
@@ -42,8 +43,10 @@ Each panel is fully **independent**: its own `files` dict, `active_file`, figure
 - Right panel: single matplotlib `Figure` + `NavigationToolbar2Tk` (custom Home → `_reset_view()`)
 - Optional sections: `show_ecsa=True` adds legacy ECSA Calc block; `show_log=True` adds Log widget
 - **J virtual column**: when all loaded files have a positive electrode area, a "J" entry appears in both column comboboxes; selecting it computes current density (raw current / area) per file at plot time. Unit range combobox shows A/cm², mA/cm², µA/cm², nA/cm²
-- **Per-file view preservation**: `_save_active_state` saves `ax.get_xlim()/get_ylim()` to `entry["view_xlim"/"view_ylim"]`; `_switch_active_file` restores them after replot
+- **Per-file view preservation**: `_plot()` captures `ax.get_xlim()/get_ylim()` into `_prev_view` before `ax.clear()` (only when `auto_xlim` is not None); restores them after auto-scale and before `_apply_axis_range()` so manual-range inputs still override
 - **Click-to-switch**: `_sync_file_selection_from_line` (called on annotate click) saves current state, suppresses replot, switches active file, and restores xlim/ylim so clicking any plot line updates the full left-panel to that file's settings
+- **Highlight (Origin-style)**: `_plot_highlight` bool (default `False`); set True on listbox select or line click, reset on right-click; `_apply_highlight_to_axes()` dims unselected lines to alpha=0.55, raises active file to zorder=3, draws a glow shadow (`linewidth×2.5, alpha=0.18, label='_glow'`); called after legend so legend handles keep alpha=1.0; `_active_cycle` (int|None) narrows highlight to a single cycle when set by clicking a cycle line
+- **Cycle-specific highlight**: clicking a cycle line (`f"{short} C{c}"`) in `_sync_file_selection_from_line` sets `self._active_cycle = c`; `_apply_highlight_to_axes` checks `_active_cycle` to glow only that cycle; listbox select resets `_active_cycle = None` (whole-file highlight)
 - **Reference lines**: panel-level `self._reflines` (list of `('x'|'y', float, style, color)` 4-tuples); persists across file adds/removes; drawn on the shared overlay plot via `draw_reflines()`
 - **Overrides** `_save_active_state`, `_switch_active_file`, `_get_column_list`, `_clear_plot` from mixins
 
@@ -53,9 +56,11 @@ Each panel is fully **independent**: its own `files` dict, `active_file`, figure
 - Right panel: scrollable canvas holding one `tk.Frame + Figure` per loaded file, arranged in a 2-column grid; each frame has a blue-gray `⠿  {short}` header strip (`cursor="fleur"`) that serves as both a visual label and a drag handle for reordering; figures remain visible simultaneously
 - **Click-to-select**: clicking anywhere on a file's plot or toolbar frame calls `_activate_file(short)`, which updates the listbox selection and switches the left panel to that file
 - **J virtual column**: per-file check — "J" appears in column comboboxes only when the active file has area > 0; each file's J is computed with its own stored area
-- **Per-file view preservation**: `_save_active_state` saves each file's `ax.get_xlim()/get_ylim()` to `entry["view_xlim"/"view_ylim"]`; `_switch_active_file` restores them after replot
+- **Per-file view preservation**: `_plot_file(short)` captures `ax.get_xlim()/get_ylim()` into `_prev_view` before `ax.clear()` (only when `auto_xlim` is not None); restores them after auto-scale and before `_apply_range()` so manual inputs still override; `view_xlim`/`view_ylim` in entry dict still used by `_on_file_visibility_change` for hide/unhide snapshots
 - **Reference lines**: per-file `entry["reflines"]` (list of `('x'|'y', float, style, color)` 4-tuples); listbox refreshes on `_switch_active_file`; drawn in `_plot_file` via `draw_reflines()`
-- **Key methods**: `_create_file_figure`, `_relayout_figures`, `_plot_file(short)`, `_activate_file(short)`, `_reset_file_view(short)`
+- **Highlight (gold header)**: `_highlight_active_header()` sets active file's header strip to `#ffd54f` (gold), others to `#c0cfe4` (default blue-gray); called from `_switch_active_file`; each file's `hdr_frame`/`hdr_label` stored in its entry dict at figure-creation time
+- **Scroll to active**: `_scroll_to_active_file(short)` scrolls `_right_canvas` so the active file's frame is visible; called from `_switch_active_file` via `after_idle`
+- **Key methods**: `_create_file_figure`, `_relayout_figures`, `_plot_file(short)`, `_activate_file(short)`, `_reset_file_view(short)`, `_highlight_active_header()`, `_scroll_to_active_file(short)`
 
 ### ECSAPanel (ECSA Calc)
 - Inherits: `FileManagerMixin, CorrectionMixin, ttk.Frame`
@@ -89,7 +94,7 @@ Each panel is fully **independent**: its own `files` dict, `active_file`, figure
   - `selected_cycles` is always `[]` on first load; user picks manually
   - `area` = electrode area string (cm²); used for J density calculation
   - `hidden` = bool (default `False`); set by `_on_file_visibility_change`; plot loops skip entries where `hidden=True`
-  - `view_xlim`, `view_ylim` = saved axis limits for zoom/pan preservation (set on first file switch away)
+  - `view_xlim`, `view_ylim` = axis limit snapshot used by `MultiEchemPanel._on_file_visibility_change` for hide/unhide; general zoom preservation is now handled internally by `_plot_file`/`_plot_group` via `_prev_view` local variable
   - **Color/marker fields** (set in `file_manager._load_files`): `"color"` (hex string from Tab10-like palette), `"marker"` (matplotlib marker string); palette cycles through 10 named colors so successive files auto-differentiate
   - **Per-file gradient fields** (defaulted in `_switch_active_file`): `"cycle_gradient"` (bool, default `True`), `"cycle_reverse"` (bool, default `False`), `"lightness_step"` (str float, default `"0.15"`); saved by `_save_active_state` / `_on_gradient_change`
 - `self.active_file`: currently selected filename
@@ -101,6 +106,10 @@ Each panel is fully **independent**: its own `files` dict, `active_file`, figure
 
 **MultiEchem2Panel additional per-group field:**
 - `custom_title` — user-edited group plot title (default `""`); set via the Title entry or by double-clicking the title strip; saved in `_save_active_group_state()`, restored in `_switch_active_group()`; `_plot_group()` uses `plot_title_var.get()` for active group, `gentry.get("custom_title", "")` for others
+- `hdr_frame`, `hdr_label` — header strip `tk.Frame` and `tk.Label` widgets stored in gentry at creation time; used by `_highlight_active_headers()` to set gold/green background
+- `line_to_file` — `{Line2D: filename}` dict rebuilt on every `_plot_group()`; used for click-to-select
+- `line_to_cycle` — `{Line2D: cycle_int}` dict rebuilt on every `_plot_group()`; used for cycle-specific highlight
+- `legend_labels` — `dict` keyed by `"{fname}:C{c}"` (or `fname` for non-cycle files) mapping to custom label strings; replaces the old positional list so labels survive cycle add/remove and file reordering
 
 **ECSAPanel additional per-file fields** (set by `setdefault` in `_switch_active_file`):
 - `sr_data`, `e_std`, `cs`, `x_col`, `y_col`, `x_unit`, `y_unit`
@@ -156,7 +165,9 @@ Each panel is fully **independent**: its own `files` dict, `active_file`, figure
 2. **Per-file settings** — axis columns, units, plot range, reference electrode, IR/RHE correction, cycle selection, legend options all independent per file
 3. **J (current density) column** — per-file check: "J" added to combos only when active file has area > 0
 4. **Click-to-select** — clicking any plot or its toolbar selects that file in the listbox and updates left controls
-5. **Per-file zoom/pan preservation** — switching files or clicking plots restores each file's last view state
+5. **Per-file zoom/pan preservation** — `_plot_file` captures view before `ax.clear()` and restores after auto-scale; first plot still auto-scales; Home toolbar resets to `auto_xlim`/`auto_ylim`
+5b. **Gold header on selection** — active file's header turns gold (`#ffd54f`); others stay blue-gray; `_highlight_active_header()` called on `_switch_active_file`; auto-scrolls to the selected file's subplot
+5c. **Legend label stable-key system** — `entry["legend_labels"]` is now a `dict` keyed by `"{short}:C{c}"` (or `short` for non-cycle files); labels survive cycle add/remove without positional mismatch
 6. **Shared axis/unit UI** — left controls show settings of the currently active (selected) file only
 7. **Legend controls** — per-file show/hide, frame, size, location; legend draggable and font-resizable; "Edit Labels" / double-click-on-legend dialog (blocking; drag disabled during edit); supports rename + ⠿ drag-handle reorder
 12. **Flip X / Flip Y** — per-file `x_flip`/`y_flip` saved in entry dict; active file uses vars, non-active files read from `entry.get("x_flip/y_flip", False)` during full relayout
@@ -166,6 +177,20 @@ Each panel is fully **independent**: its own `files` dict, `active_file`, figure
 10. **Cycle color gradient** — per-file gradient/reverse/step settings; same UX as General tab
 11. **Subplot zoom** — double-click any subplot to expand it to fill the full panel; a "← Back to Grid" bar appears at the top; clicking it restores the 2-column grid; figures remain live (no recreation)
 12. **Editable subplot titles** — **Title entry** in the left panel sets `entry["custom_title"]` for the active file; default is blank `""`; also editable by double-clicking the title strip on any subplot; saved in `_save_active_state()`, restored in `_switch_active_file()` via `entry.setdefault("custom_title", "")` + `plot_title_var.set(...)`; `_plot_file()` uses `plot_title_var.get()` for the active file and `entry.get("custom_title", "")` for non-active files; double-clicking in a zoomed view is the same gesture but zoom-toggle takes priority unless the cursor is in the title strip
+
+### Multi E.Chem 2 tab
+1. **Group-based overlay** — files assigned to named groups; each group has its own subplot in a 2-column grid; multiple files overlaid per subplot
+2. **Drag-to-reorder groups** — group header `cursor="fleur"` + `_on_frame_press/drag/release` → `_reorder_groups()`; `_drop_line` blue bar shows drop target
+3. **Per-group settings** — axis columns/units, plot range, legend, grid, font, reference lines, title — all independent per group; active group drives left-panel controls
+4. **Per-file settings (within groups)** — color, linewidth, style, area, cycles, IR/RHE correction independent per file; cycle checkboxes update on active-file switch
+5. **Gold header on selection** — when a file is selected (listbox or line click), ALL group headers containing that file turn gold (`#ffd54f`); others stay green (`#c8e6c9`); `_highlight_active_headers()` called from `_apply_highlight_to_group()`
+6. **Highlight (Origin-style)** — `_plot_highlight` bool + `_active_cycle` int|None; set on file/line click, reset on right-click; `_apply_highlight_to_group()` dims unselected lines, raises active file/cycle with glow shadow; called after legend build so legend handles keep alpha=1.0
+7. **Cycle-specific highlight** — clicking a specific cycle line sets `_active_cycle`; only that `(file, cycle)` combination glows; other cycles from the same file are dimmed; listbox select resets `_active_cycle=None` (whole-file)
+8. **Per-group zoom/pan preservation** — `_plot_group` captures view before `ax.clear()` and restores after auto-scale; first plot auto-scales; Home toolbar resets to `auto_xlim`/`auto_ylim`
+9. **Legend label stable-key system** — `gentry["legend_labels"]` is a `dict` keyed by `"{fname}:C{c}"` (or `fname` for non-cycle); survives file add/remove and cycle selection changes
+10. **`line_to_file` + `line_to_cycle`** — dicts rebuilt on every `_plot_group()`; used for click-to-select (file switch) and cycle-specific highlight respectively
+11. **Sync listboxes** — clicking a line or selecting from any listbox syncs both the main file listbox and the group-files listbox
+12. **Reference lines** — per-group; style/color per line; drawn via `draw_reflines()` after `_apply_group_range()`
 
 ### ECSA Calc tab
 1. **Independent file state** — fully separate from other tabs
@@ -310,10 +335,14 @@ git rm --cached <file>      # unstage without deleting the local file
 - **CorrectionMixin column names** — `_apply_correction` looks for `"Ewe/V"` and `"I/mA"`; silently no-ops if columns absent (since recent cleanup of correction.py)
 - **`open_legend_editor` returns the legend object** — if the entry order changed, the legend is recreated via `ax.legend(handles, labels, ...)` and the new object is returned; if only text changed, the original object is returned (Text objects updated in-place to preserve drag position). All callers must assign the return value: `self._legend_obj = open_legend_editor(...)`. The old legend ref is stale after recreation. The dialog uses ⠿ drag handles (not ↑/↓ buttons) — `_on_press/_on_drag/_on_release` handlers, `drop_line` indicator, same pattern as `CheckableListbox`.
 - **`open_legend_editor` must be blocking** — uses `dlg.grab_set()` + `parent.wait_window(dlg)`; without `wait_window`, the function returns immediately and matplotlib's `DraggableLegend` handler stays in "dragging" state (never receives button_release); always call `legend.set_draggable(False)` before opening and re-enable after
-- **Legend label stable-key system** — `_legend_stable_map = {"{short}:C{c}": custom_label}`; `_legend_stable_keys = []` is rebuilt on every `_plot()` call alongside the plotted lines; keys are always file-qualified (`f"{short}:C{c}"`) so they survive single↔multi-file label-format changes (`"Cycle 1"` → `"file.csv C1"`). Same for EIS where key = `short`. Multi/ECSA keep per-file list approach (already isolated). `_legend_auto_labels` is captured after `ax.legend()` for change-detection in the edit dialog.
+- **Legend label stable-key system** — General tab: `_legend_stable_map = {"{short}:C{c}": custom_label}`; `_legend_stable_keys = []` rebuilt on every `_plot()`; keys always file-qualified so they survive single↔multi-file format changes. Multi E.Chem 1: `entry["legend_labels"]` is a `dict` keyed by `"{short}:C{c}"` (or `short`); `_edit_legend_labels` reconstructs keys from `entry["selected_cycles"]` + `self.active_file`. Multi E.Chem 2: `gentry["legend_labels"]` is a `dict` keyed by `"{fname}:C{c}"` (or `fname`); save/restore iterates group files in plot-loop order, skipping empty sub-DataFrames. Do NOT use positional lists — they break when cycles are added/removed or when two files share cycle numbers. `_legend_auto_labels` is captured after `ax.legend()` for change-detection in the General tab edit dialog.
 - **Legend location dropdown override** — `_on_leg_loc_select` must set `self._legend_obj._loc = 0` (non-tuple) in addition to clearing `_legend_manual_pos = None`; otherwise `_plot()` reads the still-alive tuple from the old legend object before `ax.clear()` and re-saves it, defeating the dropdown selection
 - **`draw_reflines` tuple format** — each entry is a 4-tuple `('x'|'y', float, style, color)`; style is a key into `_GRID_STYLE_MAP`; labels start with `'_'` so they are excluded from the legend automatically; call after `_apply_axis_range()` / `_apply_range()` so reflines don't perturb autoscaling; call before `apply_grid()` / `canvas.draw()`
 - **ECSAPanel `_auto_xlim_cdl` / `_auto_ylim_cdl`** — only set after `canvas_cdl.draw()` completes inside `_replot_cdl` and `_extract_cdl_ecsa`; if either function crashes before that point, the reset-view button will silently do nothing (value stays `None`)
+- **Zoom preservation in `_plot_file`/`_plot_group`** — capture `_prev_view = (ax.get_xlim(), ax.get_ylim())` before `ax.clear()` (skip if `auto_xlim is None` = first plot); restore after `canvas.draw()` saves `auto_xlim`; then call `_apply_range()` which overrides with any user-entered min/max values. This order means: toolbar Home → `auto_xlim` restored → becomes next `_prev_view`; user-entered range → applied after restore → overrides zoom. Do NOT save/restore `view_xlim` in `_save_active_state` for these panels; the plot function handles it directly.
+- **Highlight legend integrity** — all lines drawn at `alpha=1.0` in insertion order; `ax.legend()` called → proxy handles created at alpha=1.0; THEN `_apply_highlight_to_axes()`/`_apply_highlight_to_group()` dims non-active lines. This ensures legend symbols always stay at full alpha regardless of highlight state.
+- **Highlight glow pattern** — draw `ax.plot(..., linewidth×2.5, alpha=0.18, label='_glow', zorder=1.9)` for each highlighted line; `label='_glow'` (starts with `_`) auto-excludes from legend; remove all `label='_glow'` lines before redrawing to avoid stale glows after file switch.
+- **`_active_cycle` scope** — shared panel-level attribute; reset to `None` on listbox select, right-click, or group-file-listbox select; set to `int` when clicking a cycle line; used by both `_apply_highlight_to_axes` (General) and `_apply_highlight_to_group` (Multi 2) to narrow glow to a single `(file, cycle)` pair.
 - **`_switch_active_file` UI-restore ordering (critical)** — `FileManagerMixin._switch_active_file` sets `self.active_file = short` and then calls `_auto_replot()`; `_auto_replot` → `_plot/_plot_file` → `_save_active_state` will immediately write the current UI var values into `self.files[short]` (the new file). If UI vars still hold the old file's values at that moment, the new file's settings are clobbered. **Fix:** always restore per-file UI vars (color, gradient, etc.) **before** calling `super()._switch_active_file()` in any panel override.
 - **`_cycle_colors(base_color, n, step, reverse)`** (module-level in `plotting.py`) — converts the base color to HLS, offsets lightness linearly across `n` cycles. `reverse=False` → first cycle lightest, last darkest (most recently evolved = most visible). `reverse=True` flips. Clamps lightness to [0.15, 0.85]. Uses `colorsys` + `matplotlib.colors`; returns a list of `(r, g, b)` tuples.
 - **`file_manager` palette constants** — `_COLOR_NAMES`, `_COLOR_HEX`, `_PALETTE`, `_MARKERS`, `_PLOT_STYLES`, `_PLOT_STYLE_NAMES` defined at module level; imported by all panel files. `_PLOT_STYLES` maps style name → `(linestyle, marker, markersize)` for the 13 plot shape options.

@@ -1054,6 +1054,14 @@ class EchemPanel(
                     # Restore the view that was in place before the switch
                     self.ax.set_xlim(xlim)
                     self.ax.set_ylim(ylim)
+                # Extract specific cycle if label is "{short} C{n}"
+                rest = label[len(short):].strip()
+                if rest.startswith("C") and rest[1:].isdigit():
+                    self._active_cycle = int(rest[1:])
+                else:
+                    self._active_cycle = None
+                self._plot_highlight = True
+                self._apply_highlight_to_axes()
                 break
 
     def _on_columns_changed(self):
@@ -1061,6 +1069,12 @@ class EchemPanel(
         fn = getattr(self, '_do_refresh_unit_combos', None)
         if fn:
             fn()
+
+    def _on_file_select(self, event):
+        """Enable highlight whenever the user selects a file from the listbox."""
+        self._plot_highlight = True
+        self._active_cycle = None   # listbox → highlight whole file
+        super()._on_file_select(event)
 
     def _save_active_state(self):
         """Extend base save to preserve the current plot view and gradient settings per file."""
