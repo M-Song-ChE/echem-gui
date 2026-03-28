@@ -95,6 +95,7 @@ class EISPanel(FileManagerMixin, ttk.Frame):
         self.e_ref_var = tk.StringVar(value="0.0")
 
         self._build_panel()
+        self.after(500, self._auto_set_initial_size)
 
     # ════════════════════════════════════════════════════════════════
     # Panel construction
@@ -862,6 +863,20 @@ class EISPanel(FileManagerMixin, ttk.Frame):
         )
 
     # ── Plot size helper ─────────────────────────────────────────────
+    def _auto_set_initial_size(self):
+        """Resize the Nyquist figure to fill the right panel on first show."""
+        w = self._plot_sc.winfo_width()
+        h = self._plot_sc.winfo_height()
+        if w <= 1 or h <= 1:
+            self.after(100, self._auto_set_initial_size)
+            return
+        dpi = 100
+        plot_w = max(4.0, (w - 20) / dpi)
+        plot_h = max(3.0, (h - 50) / dpi)
+        self.plot_w_var.set(f"{plot_w:.1f}")
+        self.plot_h_var.set(f"{plot_h:.1f}")
+        self._apply_plot_size()
+
     def _apply_plot_size(self, event=None):
         """Resize the figure to the current plot_w_var × plot_h_var (inches)."""
         try:

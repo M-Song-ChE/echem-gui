@@ -73,10 +73,11 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         self._loading_files   = False
         self._cycle_vars      = {}
         self._zoom_group      = None
-        self._drag            = None   # drag-to-reorder state
+        self._drag            = None   # drag-to-reorder group subplot frames
         self._plot_highlight  = False
         self._active_cycle    = None   # specific cycle number highlighted (None = whole file)
         self._build_panel()
+        self.after(500, self._auto_set_initial_size)
 
     # ════════════════════════════════════════════════════════════════
     # Panel construction
@@ -120,7 +121,9 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
 
         # ══ GROUPS ══════════════════════════════════════════════════
         ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=4)
-        ttk.Label(left, text="Groups:", font=("", 9, "bold")).pack(anchor=tk.W, padx=4)
+        _grp_hdr = ttk.Frame(left)
+        _grp_hdr.pack(fill=tk.X, padx=4)
+        ttk.Label(_grp_hdr, text="Groups:", font=("", 9, "bold")).pack(side=tk.LEFT)
         gb = ttk.Frame(left)
         gb.pack(fill=tk.X, padx=4, pady=(2, 0))
         ttk.Button(gb, text="New Group", command=self._new_group).pack(side=tk.LEFT, padx=(0, 2))
@@ -129,27 +132,25 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
 
         glf = ttk.Frame(left)
         glf.pack(fill=tk.X, padx=4, pady=2)
-        self.group_listbox = tk.Listbox(glf, height=3, selectmode=tk.SINGLE,
-                                        exportselection=False)
-        _gsb = ttk.Scrollbar(glf, orient=tk.VERTICAL, command=self.group_listbox.yview)
-        self.group_listbox.configure(yscrollcommand=_gsb.set)
-        _gsb.pack(side=tk.RIGHT, fill=tk.Y)
-        self.group_listbox.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.group_listbox = CheckableListbox(glf, height=3,
+                                              on_check=self._on_group_visibility_change,
+                                              on_reorder=self._on_group_reorder)
+        self.group_listbox.pack(fill=tk.X, expand=True)
         self.group_listbox.bind("<<ListboxSelect>>", self._on_group_select)
 
         ttk.Button(left, text="↓ Add Selected Files to Group",
                    command=self._add_files_to_group).pack(fill=tk.X, padx=4, pady=(2, 0))
 
-        ttk.Label(left, text="Files in selected group:",
-                  font=("", 8), foreground="gray").pack(anchor=tk.W, padx=4, pady=(4, 0))
+        _fgrp_hdr = ttk.Frame(left)
+        _fgrp_hdr.pack(fill=tk.X, padx=4, pady=(4, 0))
+        ttk.Label(_fgrp_hdr, text="Files in selected group:",
+                  font=("", 8), foreground="gray").pack(side=tk.LEFT)
         gif = ttk.Frame(left)
         gif.pack(fill=tk.X, padx=4, pady=2)
-        self.group_files_lb = tk.Listbox(gif, height=3, selectmode=tk.EXTENDED,
-                                         exportselection=False)
-        _gfsb = ttk.Scrollbar(gif, orient=tk.VERTICAL, command=self.group_files_lb.yview)
-        self.group_files_lb.configure(yscrollcommand=_gfsb.set)
-        _gfsb.pack(side=tk.RIGHT, fill=tk.Y)
-        self.group_files_lb.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.group_files_lb = CheckableListbox(gif, height=3,
+                                               on_check=self._on_group_file_visibility_change,
+                                               on_reorder=self._on_group_file_reorder)
+        self.group_files_lb.pack(fill=tk.X, expand=True)
         self.group_files_lb.bind("<<ListboxSelect>>", self._on_group_file_select)
 
         ttk.Button(left, text="↑ Remove Selected from Group",
@@ -695,6 +696,21 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
     # ════════════════════════════════════════════════════════════════
     # Group management
     # ════════════════════════════════════════════════════════════════
+    def _rebuild_group_listbox(self):
+        """Rebuild the groups CheckableListbox from self.groups (preserves visibility states)."""
+        self.group_listbox.clear()
+        for gn, gentry in self.groups.items():
+            vis = not gentry.get("hidden", False)
+            self.group_listbox.insert(tk.END, gn, checked=vis)
+        if self.active_group and self.active_group in self.groups:
+            idx = list(self.groups.keys()).index(self.active_group)
+            self._loading_files = True
+            try:
+                self.group_listbox.selection_clear(0, tk.END)
+                self.group_listbox.selection_set(idx)
+            finally:
+                self._loading_files = False
+
     def _new_group(self):
         name = simpledialog.askstring("New Group", "Group name:", parent=self)
         if not name:
@@ -703,10 +719,7 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         if not name or name in self.groups:
             return
         self.groups[name] = {"files": [], "reflines": []}
-        self.group_listbox.insert(tk.END, name)
-        idx = self.group_listbox.size() - 1
-        self.group_listbox.selection_clear(0, tk.END)
-        self.group_listbox.selection_set(idx)
+        self._rebuild_group_listbox()
         self._create_group_figure(name)
         self._save_active_group_state()
         self._switch_active_group(name)
@@ -715,7 +728,7 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         sel = self.group_listbox.curselection()
         if not sel:
             return
-        old = self.group_listbox.get(sel[0])
+        old = list(self.groups.keys())[sel[0]]
         new = simpledialog.askstring("Rename Group", "New name:",
                                      initialvalue=old, parent=self)
         if not new:
@@ -728,11 +741,9 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         for k, v in self.groups.items():
             new_groups[new if k == old else k] = v
         self.groups = new_groups
-        self.group_listbox.delete(sel[0])
-        self.group_listbox.insert(sel[0], new)
-        self.group_listbox.selection_set(sel[0])
         if self.active_group == old:
             self.active_group = new
+        self._rebuild_group_listbox()
         gentry = self.groups.get(new, {})
         if "ax" in gentry:
             gentry["ax"].set_title(gentry.get("custom_title", new), fontsize=9)
@@ -742,21 +753,21 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         sel = self.group_listbox.curselection()
         if not sel:
             return
-        name = self.group_listbox.get(sel[0])
+        name = list(self.groups.keys())[sel[0]]
         self._destroy_group_figure(name)
         del self.groups[name]
-        self.group_listbox.delete(sel[0])
         if self.active_group == name:
             self.active_group = None
-            self.group_files_lb.delete(0, tk.END)
+            self.group_files_lb.clear()
         if not self.groups:
+            self._rebuild_group_listbox()
             self._placeholder.grid(row=0, column=0, columnspan=2, pady=60)
         else:
+            self._rebuild_group_listbox()
             self._relayout_figures()
             new_idx = min(sel[0], self.group_listbox.size() - 1)
             if new_idx >= 0:
-                self.group_listbox.selection_set(new_idx)
-                self._switch_active_group(self.group_listbox.get(new_idx))
+                self._switch_active_group(list(self.groups.keys())[new_idx])
 
     def _add_files_to_group(self):
         if not self.active_group:
@@ -767,8 +778,14 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         gentry = self.groups[self.active_group]
         for i in sel:
             fname = self.file_listbox.get(i)
-            if fname not in gentry["files"]:
+            if fname and fname not in gentry["files"]:
                 gentry["files"].append(fname)
+                # Seed independent per-group state from current file defaults
+                fentry = self.files.get(fname, {})
+                fp = gentry.setdefault("file_params", {}).setdefault(fname, {})
+                fp.setdefault("selected_cycles", list(fentry.get("selected_cycles", [])))
+                fp.setdefault("r_sol", float(fentry.get("r_sol", 0.0)))
+                fp.setdefault("e_ref", float(fentry.get("e_ref", 0.0)))
         self._update_group_files_lb()
         self._update_group_column_combos()
         self._plot_group(self.active_group)
@@ -780,20 +797,26 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         if not sel:
             return
         gentry = self.groups[self.active_group]
+        files = gentry["files"]
+        file_hidden = gentry.get("file_hidden", {})
         for i in sorted(sel, reverse=True):
-            fname = self.group_files_lb.get(i)
-            if fname in gentry["files"]:
-                gentry["files"].remove(fname)
+            if i < len(files):
+                fname = files[i]
+                files.pop(i)
+                file_hidden.pop(fname, None)
         self._update_group_files_lb()
         self._update_group_column_combos()
         self._plot_group(self.active_group)
 
     def _update_group_files_lb(self):
-        self.group_files_lb.delete(0, tk.END)
+        self.group_files_lb.clear()
         if not self.active_group or self.active_group not in self.groups:
             return
-        for fname in self.groups[self.active_group]["files"]:
-            self.group_files_lb.insert(tk.END, fname)
+        gentry = self.groups[self.active_group]
+        file_hidden = gentry.get("file_hidden", {})
+        for fname in gentry["files"]:
+            vis = not file_hidden.get(fname, False)
+            self.group_files_lb.insert(tk.END, fname, checked=vis)
 
     def _update_group_column_combos(self):
         """Populate x/y combos with union of columns from group's files."""
@@ -834,33 +857,55 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             fn()
 
     def _on_group_select(self, event):
+        if self._loading_files:
+            return
         sel = self.group_listbox.curselection()
         if not sel:
             return
-        name = self.group_listbox.get(sel[0])
+        keys = list(self.groups.keys())
+        if sel[0] >= len(keys):
+            return
+        name = keys[sel[0]]
         if name != self.active_group:
+            self._save_active_state()       # flush current file's corrections into group params
             self._save_active_group_state()
             self._switch_active_group(name)
 
+    def _load_files(self):
+        """Override: reset highlight state before and after loading files."""
+        self._plot_highlight = False
+        self._active_cycle = None
+        super()._load_files()
+        self._plot_highlight = False
+        self._active_cycle = None
+        for gname in list(self.groups.keys()):
+            self._apply_highlight_to_group(gname)
+
     def _on_file_select(self, event):
-        """Enable highlight whenever the user selects a file from the listbox."""
+        if self._loading_files:
+            return
         self._plot_highlight = True
         self._active_cycle = None   # listbox → highlight whole file
         super()._on_file_select(event)
 
     def _on_group_file_select(self, event):
+        if self._loading_files:
+            return
         sel = self.group_files_lb.curselection()
         if not sel:
             return
-        fname = self.group_files_lb.get(sel[0])
+        gf_list = self.groups.get(self.active_group, {}).get("files", [])
+        if sel[0] >= len(gf_list):
+            return
+        fname = gf_list[sel[0]]
         if fname in self.files and fname != self.active_file:
             self._plot_highlight = True
             self._active_cycle = None   # group listbox → highlight whole file
             self._save_active_state()
             self._switch_active_file(fname)
-            items = list(self.file_listbox.get(0, tk.END))
-            if fname in items:
-                idx = items.index(fname)
+            file_keys = list(self.files.keys())
+            if fname in file_keys:
+                idx = file_keys.index(fname)
                 self.file_listbox.selection_clear(0, tk.END)
                 self.file_listbox.selection_set(idx)
 
@@ -975,11 +1020,12 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         header.bind("<MouseWheel>",   _fwd_scroll)
         tb_frame.bind("<MouseWheel>", _fwd_scroll)
 
-        # Drag on the header strip → reorder group subplots
+        # Drag on the header strip → reorder group subplots; double-click → zoom
         for _w in (header, lbl):
             _w.bind("<ButtonPress-1>",   lambda e, g=group_name: self._on_frame_press(e, g))
             _w.bind("<B1-Motion>",       lambda e, g=group_name: self._on_frame_drag(e, g))
             _w.bind("<ButtonRelease-1>", lambda e, g=group_name: self._on_frame_release(e, g))
+            _w.bind("<Double-Button-1>", lambda e, g=group_name: self._toggle_zoom(g))
 
         def _activate(e=None):
             self._activate_group(group_name)
@@ -1137,16 +1183,41 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         to_idx = keys.index(to_group)
         keys.insert(to_idx if before else to_idx + 1, from_group)
         self.groups = OrderedDict((k, self.groups[k]) for k in keys)
-        # Rebuild the group listbox to match new order
-        self.group_listbox.delete(0, tk.END)
-        for gn in self.groups:
-            self.group_listbox.insert(tk.END, gn)
-        # Restore active-group highlight
-        if self.active_group in self.groups:
-            idx = list(self.groups.keys()).index(self.active_group)
-            self.group_listbox.selection_clear(0, tk.END)
-            self.group_listbox.selection_set(idx)
+        self._rebuild_group_listbox()
         self._relayout_figures()
+
+    def _on_group_visibility_change(self, group_name, visible):
+        """Called when a group's checkbox is toggled — hide/show its subplot."""
+        gentry = self.groups.get(group_name)
+        if gentry is None:
+            return
+        gentry["hidden"] = not visible
+        self._relayout_figures()
+        self._right_canvas.after(50, lambda: self._right_canvas.configure(
+            scrollregion=self._right_canvas.bbox("all")))
+
+    def _on_group_reorder(self, new_names):
+        """Called when CheckableListbox drag-to-reorder finishes for groups."""
+        self.groups = OrderedDict((n, self.groups[n]) for n in new_names if n in self.groups)
+        self._relayout_figures()
+
+    def _on_group_file_visibility_change(self, fname, visible):
+        """Called when a file's checkbox is toggled in the group files list."""
+        if not self.active_group or self.active_group not in self.groups:
+            return
+        gentry = self.groups[self.active_group]
+        gentry.setdefault("file_hidden", {})[fname] = not visible
+        self._plot_group(self.active_group)
+
+    def _on_group_file_reorder(self, new_names):
+        """Called when CheckableListbox drag-to-reorder finishes for files in a group."""
+        if not self.active_group or self.active_group not in self.groups:
+            return
+        self.groups[self.active_group]["files"] = [
+            n for n in new_names
+            if n in self.groups[self.active_group].get("files", [])
+        ]
+        self._plot_group(self.active_group)
 
     def _reset_group_view(self, group_name):
         gentry = self.groups.get(group_name)
@@ -1154,6 +1225,63 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             gentry["ax"].set_xlim(gentry["auto_xlim"])
             gentry["ax"].set_ylim(gentry["auto_ylim"])
             gentry["canvas"].draw_idle()
+
+    def _toggle_zoom(self, group_name):
+        """Toggle full-screen view for group (called from header double-click)."""
+        if self._zoom_group is None:
+            self._zoom_group_view(group_name)
+        else:
+            self._unzoom_group_view()
+
+    def _auto_set_initial_size(self):
+        """Set default figure size to fill the right panel on first show."""
+        w = self._right_canvas.winfo_width()
+        h = self._right_canvas.winfo_height()
+        if w <= 1 or h <= 1:
+            self.after(100, self._auto_set_initial_size)
+            return
+        dpi = 100
+        # 2-column grid: each plot gets half the panel width
+        plot_w = max(3.0, (w / 2 - 30) / dpi)
+        plot_h = max(2.0, round(plot_w * 0.6, 1))
+        self.plot_w_var.set(f"{plot_w:.1f}")
+        self.plot_h_var.set(f"{plot_h:.1f}")
+        self._apply_plot_size()
+
+    # ════════════════════════════════════════════════════════════════
+    # Correction overrides (group-scoped per-file R_sol / E_ref)
+    # ════════════════════════════════════════════════════════════════
+    def _apply_correction(self):
+        """Save R_sol/E_ref to active group's file_params and replot."""
+        if not self.active_file or self.active_file not in self.files:
+            return
+        if not self.active_group or self.active_group not in self.groups:
+            return
+        try:
+            r_sol = float(self.r_sol_var.get())
+        except ValueError:
+            r_sol = 0.0
+        try:
+            e_ref = float(self.e_ref_var.get())
+        except ValueError:
+            e_ref = 0.0
+        gentry = self.groups[self.active_group]
+        fp = gentry.setdefault("file_params", {}).setdefault(self.active_file, {})
+        fp["r_sol"] = r_sol
+        fp["e_ref"] = e_ref
+        self._auto_replot()
+
+    def _reset_correction(self):
+        """Clear group-scoped corrections for the active (group, file) pair."""
+        if not self.active_file or not self.active_group:
+            return
+        gentry = self.groups.get(self.active_group)
+        if gentry:
+            gentry.setdefault("file_params", {}).pop(self.active_file, None)
+        self.r_sol_var.set("0")
+        self.e_ref_var.set("0")
+        self._auto_replot()
+
 
     def _apply_plot_size(self, event=None):
         """Resize all group figures to the current plot_w_var × plot_h_var (inches)."""
@@ -1179,6 +1307,7 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
     def _zoom_group_view(self, group_name):
         self._zoom_group = group_name
         self._zoom_bar.grid()
+        self.update_idletasks()
         w = self._right_canvas.winfo_width()
         h = self._right_canvas.winfo_height()
         if w > 1 and h > 1:
@@ -1188,10 +1317,15 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             cv     = gentry.get("canvas")
             if fig and cv:
                 dpi = fig.get_dpi()
-                fig.set_size_inches(w / dpi, h / dpi)
-                cv.get_tk_widget().config(width=w, height=h)
+                # Subtract header strip (~28px), toolbar (~32px), padding (~12px)
+                fig_w = max(100, w - 8)
+                fig_h = max(100, h - 72)
+                fig.set_size_inches(fig_w / dpi, fig_h / dpi)
+                cv.get_tk_widget().config(width=fig_w, height=fig_h)
                 cv.draw_idle()
         self._relayout_figures()
+        self._right_canvas.xview_moveto(0)
+        self._right_canvas.yview_moveto(0)
 
     def _unzoom_group_view(self):
         self._zoom_group = None
@@ -1202,7 +1336,7 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         self._right_canvas.configure(scrollregion=self._right_canvas.bbox("all"))
 
     def _activate_group(self, group_name):
-        items = list(self.group_listbox.get(0, tk.END))
+        items = list(self.groups.keys())
         if group_name in items:
             idx = items.index(group_name)
             self.group_listbox.selection_clear(0, tk.END)
@@ -1220,10 +1354,15 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             return
         entry = self.files[self.active_file]
         entry["selected_cycles"] = self._selected_cycles()
-        try:    entry["r_sol"] = float(self.r_sol_var.get())
-        except ValueError: pass
-        try:    entry["e_ref"] = float(self.e_ref_var.get())
-        except ValueError: pass
+        # Corrections are group-scoped: save to the active group's file_params
+        if self.active_group and self.active_group in self.groups:
+            gentry = self.groups[self.active_group]
+            fp = gentry.setdefault("file_params", {}).setdefault(self.active_file, {})
+            try:    fp["r_sol"] = float(self.r_sol_var.get())
+            except ValueError: fp.setdefault("r_sol", 0.0)
+            try:    fp["e_ref"] = float(self.e_ref_var.get())
+            except ValueError: fp.setdefault("e_ref", 0.0)
+            fp["selected_cycles"] = self._selected_cycles()
         entry["area"]           = self.area_var.get()
         entry["color"]          = _COLOR_HEX.get(self.file_color_var.get(), "#1f77b4")
         entry["linewidth"]      = self.linewidth_var.get()
@@ -1273,8 +1412,12 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         """Override: update only per-file UI, not group axes."""
         self.active_file = short
         entry = self.files[short]
-        self.r_sol_var.set(str(entry.get("r_sol", 0.0)))
-        self.e_ref_var.set(str(entry.get("e_ref", 0.0)))
+        # Load corrections from the active group's file_params (group-scoped)
+        fp = {}
+        if self.active_group and self.active_group in self.groups:
+            fp = self.groups[self.active_group].get("file_params", {}).get(short, {})
+        self.r_sol_var.set(str(fp.get("r_sol", 0.0)))
+        self.e_ref_var.set(str(fp.get("e_ref", 0.0)))
         self.area_var.set(entry.get("area", ""))
         color = entry.get("color", "#1f77b4")
         cname = next((n for n, h in _COLOR_HEX.items() if h == color), "Blue")
@@ -1290,7 +1433,8 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         df = entry["df"]
         if "cycle number" in df.columns:
             cycles = sorted(int(c) for c in df["cycle number"].unique())
-            self._populate_cycle_checkboxes(cycles, entry.get("selected_cycles", []))
+            sel_cycles = fp.get("selected_cycles", entry.get("selected_cycles", []))
+            self._populate_cycle_checkboxes(cycles, sel_cycles)
         else:
             self._populate_cycle_checkboxes([], [])
         self._suppress_replot = old
@@ -1331,6 +1475,7 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         g.setdefault("title_pad",       "6")
         g.setdefault("label_pad",       "4")
         g.setdefault("custom_title",    "")
+        g.setdefault("file_params",     {})   # per-(group,file) corrections
 
         self.x_unit_var.set(g["x_unit"])
         self.y_unit_var.set(g["y_unit"])
@@ -1374,20 +1519,27 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             target_file = (self.active_file
                            if self.active_file in group_files
                            else group_files[0])
-            if target_file != self.active_file:
-                self._save_active_state()
-                old_suppress = self._suppress_replot
-                self._suppress_replot = True
+            # Always refresh per-file UI from the new group's file_params,
+            # even if target_file == active_file (cycles/corrections are group-scoped).
+            # Do NOT call _save_active_state() here — active_group is already the new
+            # group at this point, so saving would contaminate the new group's file_params
+            # with the old group's UI state.  Callers are responsible for saving first.
+            old_suppress = self._suppress_replot
+            self._suppress_replot = True
+            try:
+                self._switch_active_file(target_file)
+            finally:
+                self._suppress_replot = old_suppress
+            # Highlight target_file in the group files listbox (suppress _on_group_file_select)
+            gf_list = g.get("files", [])
+            if target_file in gf_list:
+                lb_idx = gf_list.index(target_file)
+                self._loading_files = True
                 try:
-                    self._switch_active_file(target_file)
+                    self.group_files_lb.selection_clear(0, tk.END)
+                    self.group_files_lb.selection_set(lb_idx)
                 finally:
-                    self._suppress_replot = old_suppress
-            # Highlight target_file in the group files listbox
-            lb_items = list(self.group_files_lb.get(0, tk.END))
-            if target_file in lb_items:
-                lb_idx = lb_items.index(target_file)
-                self.group_files_lb.selection_clear(0, tk.END)
-                self.group_files_lb.selection_set(lb_idx)
+                    self._loading_files = False
                 self.group_files_lb.see(lb_idx)
             # Sync the main file listbox highlight (suppress _on_file_select)
             file_keys = list(self.files.keys())
@@ -1467,15 +1619,29 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         gentry["line_to_cycle"] = {}   # reset line→cycle map for cycle-specific highlight
 
         # Determine highlight state
+        _fhidden = gentry.get("file_hidden", {})
         _visible_fnames = [f for f in gentry["files"]
-                           if self.files.get(f) and not self.files[f].get("hidden", False)]
+                           if self.files.get(f)
+                           and not self.files[f].get("hidden", False)
+                           and not _fhidden.get(f, False)]
         _af_in_group    = self.active_file in _visible_fnames
-        _highlight      = self._plot_highlight and len(_visible_fnames) > 1 and _af_in_group
+        _highlight      = self._plot_highlight and _af_in_group
 
         # Draw all files in INSERTION ORDER at full alpha (stable legend)
         for fname in _visible_fnames:
             fentry = self.files[fname]
-            df = fentry["df"]
+            # Apply group-scoped corrections on top of raw data (independent per group)
+            fp    = gentry.get("file_params", {}).get(fname, {})
+            _rsol = fp.get("r_sol", 0.0)
+            _eref = fp.get("e_ref", 0.0)
+            if _rsol != 0.0 or _eref != 0.0:
+                df = fentry["df_raw"].copy()
+                if _rsol != 0.0 and "Ewe/V" in df.columns and "I/mA" in df.columns:
+                    df["Ewe/V"] = df["Ewe/V"] - (df["I/mA"] / 1000.0) * _rsol
+                if _eref != 0.0 and "Ewe/V" in df.columns:
+                    df["Ewe/V"] = df["Ewe/V"] + _eref
+            else:
+                df = fentry["df_raw"]
 
             is_af = (fname == self.active_file)
             base_color = (_COLOR_HEX.get(self.file_color_var.get(), "#1f77b4")
@@ -1488,7 +1654,11 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             _rev   = self.cycle_reverse_var.get()  if is_af else fentry.get("cycle_reverse", False)
             try:    _step = float(self.lightness_step_var.get() if is_af else fentry.get("lightness_step", "0.15"))
             except: _step = 0.15
-            selected = (self._selected_cycles() if is_af else fentry.get("selected_cycles", []))
+            # Use live UI only when rendering the active file in its active group;
+            # all other combinations (same file, different group) use group-scoped state.
+            _is_af_ui = is_af and (group_name == self.active_group)
+            selected = (self._selected_cycles() if _is_af_ui
+                        else fp.get("selected_cycles", []))
             area_s = self.area_var.get() if is_af else fentry.get("area", "")
             try:    _farea = float(area_s) if area_s else 0.0
             except: _farea = 0.0
@@ -1869,9 +2039,12 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         ax           = gentry["ax"]
         canvas       = gentry["canvas"]
         active       = self.active_file
-        visible      = [f for f in gentry.get("files", [])
-                        if self.files.get(f) and not self.files[f].get("hidden", False)]
-        on = self._plot_highlight and bool(active) and active in visible and len(visible) > 1
+        _fh      = gentry.get("file_hidden", {})
+        visible  = [f for f in gentry.get("files", [])
+                    if self.files.get(f)
+                    and not self.files[f].get("hidden", False)
+                    and not _fh.get(f, False)]
+        on = self._plot_highlight and bool(active) and active in visible
 
         # Remove stale glow lines
         for ln in list(ax.get_lines()):
@@ -1964,9 +2137,9 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
                         finally:
                             self._suppress_replot = old_supp
                         # Update "files in group" listbox highlight
-                        lb_items = list(self.group_files_lb.get(0, tk.END))
-                        if fname in lb_items:
-                            idx = lb_items.index(fname)
+                        gf_list = self.groups.get(self.active_group, {}).get("files", [])
+                        if fname in gf_list:
+                            idx = gf_list.index(fname)
                             self.group_files_lb.selection_clear(0, tk.END)
                             self.group_files_lb.selection_set(idx)
                             self.group_files_lb.see(idx)

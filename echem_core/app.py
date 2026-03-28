@@ -750,6 +750,7 @@ class EchemPanel(
         ).pack(side=tk.LEFT, padx=(4, 2), pady=1)
 
         self._init_plot_interactions()
+        self.after(500, self._auto_set_initial_size)
 
     # ── Log helper ──────────────────────────────────────────────────
     def _log(self, message: str):
@@ -915,6 +916,21 @@ class EchemPanel(
             50, lambda: self._plot_sc.configure(
                 scrollregion=self._plot_sc.bbox("all")))
 
+    def _auto_set_initial_size(self):
+        """Resize the plot to fill the right panel on first show."""
+        w = self._plot_sc.winfo_width()
+        h = self._plot_sc.winfo_height()
+        if w <= 1 or h <= 1:
+            self.after(100, self._auto_set_initial_size)
+            return
+        dpi = 100
+        # Leave room for toolbar (~40px) and scrollbar (~17px)
+        plot_w = max(4.0, (w - 20) / dpi)
+        plot_h = max(3.0, (h - 50) / dpi)
+        self.plot_w_var.set(f"{plot_w:.1f}")
+        self.plot_h_var.set(f"{plot_h:.1f}")
+        self._apply_plot_size()
+
     # ── Line width helper ─────────────────────────────────────────────
     def _on_linewidth_change(self):
         """Persist line width to the active file's entry, then replot."""
@@ -1072,6 +1088,8 @@ class EchemPanel(
 
     def _on_file_select(self, event):
         """Enable highlight whenever the user selects a file from the listbox."""
+        if self._loading_files:
+            return
         self._plot_highlight = True
         self._active_cycle = None   # listbox → highlight whole file
         super()._on_file_select(event)
@@ -1119,7 +1137,7 @@ class EchemGUI(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Electrochemistry Analysis")
-        self.geometry("1100x750")
+        self.state("zoomed")   # start maximized / full-screen
         self._build_ui()
 
     def _build_ui(self):

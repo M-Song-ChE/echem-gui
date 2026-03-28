@@ -76,6 +76,7 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         self._zoom_file       = None
         self._drag            = None   # drag-to-reorder state
         self._build_panel()
+        self.after(500, self._auto_set_initial_size)
 
     # ════════════════════════════════════════════════════════════════
     # Panel construction
@@ -828,11 +829,12 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         frame.bind("<Button-1>",    _activate, add="+")
         tb_frame.bind("<Button-1>", _activate, add="+")
 
-        # Drag on the header strip → reorder subplots
+        # Drag on the header strip → reorder subplots; double-click → zoom
         for _w in (header, handle_lbl):
             _w.bind("<ButtonPress-1>",   lambda e, s=short: self._on_frame_press(e, s))
             _w.bind("<B1-Motion>",       lambda e, s=short: self._on_frame_drag(e, s))
             _w.bind("<ButtonRelease-1>", lambda e, s=short: self._on_frame_release(e, s))
+            _w.bind("<Double-Button-1>", lambda e, s=short: self._toggle_zoom(s))
 
         # Per-figure matplotlib interactions
         canvas.mpl_connect("scroll_event",         lambda ev: self._on_scroll(ev, short))
@@ -1457,6 +1459,7 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         """Expand the subplot for *short* to fill the full right panel."""
         self._zoom_file = short
         self._zoom_bar.grid()
+        self.update_idletasks()
         w = self._right_canvas.winfo_width()
         h = self._right_canvas.winfo_height()
         if w > 1 and h > 1:
@@ -1466,10 +1469,15 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             cv    = entry.get("canvas")
             if fig and cv:
                 dpi = fig.get_dpi()
-                fig.set_size_inches(w / dpi, h / dpi)
-                cv.get_tk_widget().config(width=w, height=h)
+                # Subtract header strip (~28px), toolbar (~32px), padding (~12px)
+                fig_w = max(100, w - 8)
+                fig_h = max(100, h - 72)
+                fig.set_size_inches(fig_w / dpi, fig_h / dpi)
+                cv.get_tk_widget().config(width=fig_w, height=fig_h)
                 cv.draw_idle()
         self._relayout_figures()
+        self._right_canvas.xview_moveto(0)
+        self._right_canvas.yview_moveto(0)
 
     def _unzoom_file_view(self):
         """Restore the 2-column grid layout."""
@@ -1479,6 +1487,29 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         self._apply_plot_size()
         self._relayout_figures()
         self._right_canvas.configure(scrollregion=self._right_canvas.bbox("all"))
+
+    def _toggle_zoom(self, short):
+        """Toggle full-screen view for *short* (called from header double-click)."""
+        if self._zoom_file is None:
+            self._zoom_file_view(short)
+        else:
+            self._unzoom_file_view()
+
+    def _auto_set_initial_size(self):
+        """Set default figure size to fill the right panel on first show."""
+        w = self._right_canvas.winfo_width()
+        h = self._right_canvas.winfo_height()
+        if w <= 1 or h <= 1:
+            self.after(100, self._auto_set_initial_size)
+            return
+        dpi = 100
+        # 2-column grid: each plot gets half the panel width
+        plot_w = max(3.0, (w / 2 - 30) / dpi)
+        # Height ~60% of width for a reasonable aspect ratio
+        plot_h = max(2.0, round(plot_w * 0.6, 1))
+        self.plot_w_var.set(f"{plot_w:.1f}")
+        self.plot_h_var.set(f"{plot_h:.1f}")
+        self._apply_plot_size()
 
     # ════════════════════════════════════════════════════════════════
     # File color helper

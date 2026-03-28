@@ -168,8 +168,8 @@ Every control in the left panel (axis columns, units, range, cycles, correction,
 - The custom title is saved per file and persists across replots and file switches.
 
 ### 4.4 Subplot Zoom
-- **Double-click** any subplot to expand it to fill the entire right panel.
-- A **← Back to Grid** button appears at the top. Click it to return to the 2-column grid.
+- **Double-click the ⠿ header strip** of any subplot to expand it to fill the entire right panel.
+- Double-click the header strip again, or click the **← Back to Grid** button at the top, to return to the 2-column grid.
 - Figures remain live during zoom — no data is lost.
 
 ### 4.5 Axis Orientation
@@ -192,21 +192,27 @@ Use this tab to organise files into named **groups**, where each group produces 
 
 ### 5.1 Group Management
 - **Create a group** — type a group name in the entry box at the top and click **New Group** (or press Enter).
-- **Add files to a group** — load files first, then drag them into the group's file list, or use the add button.
+- **Add files to a group** — load files first, select one or more in the Loaded Files list, then click **↓ Add Selected Files to Group**.
+- **Remove files from a group** — select a file in the Files in Selected Group list and click **↑ Remove Selected from Group**.
 - **Rename / remove a group** — select the group name and use the rename/remove controls.
-- Groups are shown in a listbox on the left. Click a group name to make it the **active group** — the left panel updates to show that group's settings.
+- Groups are shown in a **CheckableListbox** on the left:
+  - **Uncheck** a group to hide its subplot from the grid without deleting it. Re-check to restore.
+  - **Drag the ⠿ handle** to reorder groups; the subplot grid rearranges to match.
+  - **Click the group name** to make it the active group — the left panel updates to show that group's settings.
+- The **Files in Selected Group** list also uses checkboxes and drag handles:
+  - **Uncheck** a file to hide it from that group's plot only. It remains in other groups unaffected.
+  - **Drag the ⠿ handle** to reorder files within the group (controls overlay draw order).
 
 ### 5.2 Per-Group Settings
 Every control in the left panel (axis columns, units, range, reference electrode, legend, reference lines, font sizes) applies **only to the active group**. Each group remembers its own settings independently.
 
-### 5.3 Plot Title
+### 5.3 Per-File Settings Within a Group
+Cycle selection, IR compensation (R_sol), and RHE conversion (E_ref) are stored **independently per file per group**. Adding the same file to two groups and changing its cycles in group 1 does not affect group 2. Color, line style, and gradient are global per file (same appearance in all groups).
+
+### 5.4 Plot Title
 - The **Title** entry in the left panel sets the title of the active group's plot. Default is blank.
 - You can also **double-click** the title strip on any group's subplot to rename it inline.
 - The custom title is saved per group and persists across replots.
-
-### 5.4 File Order within a Group
-- Drag the **⠿ handle** next to each file in the group's file list to reorder the overlay draw order.
-- Each file in a group can have its own color, line style, and cycle selection.
 
 ### 5.5 Plot Size
 - **W [__] H [__] inches** — set the figure size for all group plots. Default is W=10.5, H=5.5. Maximum is 50 inches.
@@ -344,7 +350,8 @@ The legend size is preserved when any other plot change is made (cycle selection
 
 ## 9. Tips and Shortcuts
 
-- **Per-file independence** — every control in the left panel saves its value to the currently active file. Switch files freely; settings are never mixed up between files.
+- **Per-file independence** — every control in the left panel saves its value to the currently active file. Switch files freely; settings are never mixed up between files. In Multi E.Chem 2, cycle selection and corrections are also independent per file *per group* — the same file can have different cycles selected in different groups.
+- **Plot highlight** — clicking a file in the list or clicking a line on the plot activates highlight mode: the selected line glows and others are dimmed. Right-click anywhere on the plot to clear the highlight. Highlight is never activated automatically when loading files.
 - **Hide without losing settings** — unchecking a file in the file list removes it from the plot instantly. All cycles, corrections, zoom state, colors, and gradient settings are preserved. Re-check to restore the exact same view. *(Not available in the ECSA Calc tab.)*
 - **Drag to reorder** — grab the **⠿** handle in the file list to drag files up or down. In Multi E.Chem you can also drag the **⠿ header strip** on each subplot to reorder the grid. The legend editor uses the same drag-handle pattern.
 - **Axis swap shortcut** — use **⇄ Swap X↔Y** to instantly swap axes when you want to flip between, e.g., E vs. I and I vs. E without manually changing each dropdown.
@@ -356,7 +363,7 @@ The legend size is preserved when any other plot change is made (cycle selection
 - **Cycle order matters** — cycles are plotted in the order they appear in the data file, so the gradient naturally reflects temporal evolution.
 - **E_std (Rec)** — the green **Rec:** value shown next to the E_std field is the midpoint of your data's actual potential range. This is a reliable starting point for the non-Faradaic region.
 - **Cs value** — the default 0.040 mF/cm² is appropriate for Pt in 0.1 M HClO₄. Adjust for your material and electrolyte.
-- **Multi E.Chem zoom** — use the zoom feature to inspect a single file in detail without losing the grid view; double-click anywhere on the subplot (not on the title) to zoom.
+- **Multi E.Chem zoom** — double-click the **⠿ header strip** of any subplot to zoom it to full panel; double-click the header again (or click ← Back to Grid) to return to the grid.
 - **Plot size for publication** — use the W/H fields to set an exact figure size in inches. The scrollable canvas accommodates very wide or tall figures (up to 50 inches). Default sizes are chosen to match common publication column widths.
 - **Blank titles by default** — all tabs default to no title. Type in the Title field or double-click the title strip to add one only when needed.
 - **Legend resize** — right-drag the legend to resize it. The entire legend box (text, handle icons, and spacing) scales live as you drag. The size is remembered and not reset by subsequent plot changes.
