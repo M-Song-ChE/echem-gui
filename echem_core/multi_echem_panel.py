@@ -1299,13 +1299,14 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
                         linestyle=_ls, marker=_mk or None,
                         markersize=_ms if _mk else 0)
             has_data = True
-        else:
-            # No cycle filter (no "cycle number" column, or no cycles selected yet)
+        elif "cycle number" not in df.columns:
+            # No cycle column — plot all data as one line
             ax.plot(df[_real_xcol] * x_scale, df[_real_ycol] * y_scale,
                     color=base_color, label=short, linewidth=_lw,
                     linestyle=_ls, marker=_mk or None,
                     markersize=_ms if _mk else 0)
             has_data = True
+        # else: cycle column exists but no cycles selected → plot nothing
 
         # Append "(vs Ref)" only to voltage-type axes; J is never voltage
         if _x_is_J:
