@@ -94,6 +94,29 @@ _CLICK_CYCLE_PX = 8
 _GRID_STYLE_MAP = {"solid": "-", "dashed": "--", "dotted": ":", "dash-dot": "-."}
 
 
+def _reorder_legend_handles(handles, labels, saved_order, handle_to_key):
+    """Reorder (handles, labels) according to saved_order (list of stable keys).
+
+    Handles whose key appears in saved_order are placed first (in saved order).
+    Remaining handles (new entries added since the last editor session) are
+    appended at the end preserving their current relative order.
+    Returns (new_handles, new_labels).
+    """
+    if not saved_order:
+        return list(handles), list(labels)
+    order_idx = {k: i for i, k in enumerate(saved_order)}
+    keyed, unkeyed = [], []
+    for h, l in zip(handles, labels):
+        k = handle_to_key.get(h)
+        if k is not None and k in order_idx:
+            keyed.append((order_idx[k], h, l))
+        else:
+            unkeyed.append((h, l))
+    keyed.sort(key=lambda x: x[0])
+    return ([h for _, h, _ in keyed] + [h for h, _ in unkeyed],
+            [l for _, _, l in keyed] + [l for _, l in unkeyed])
+
+
 def _cycle_colors(base_color, n, step=0.08, reverse=False):
     """Return n colors with linearly varying lightness around base_color.
 
@@ -246,6 +269,7 @@ class PlottingMixin:
         self._legend_stable_map  = {}    # {stable_key: custom_label}
         self._legend_stable_keys = []    # stable keys emitted during the last _plot()
         self._legend_auto_labels = []    # auto-labels from the last _plot() (for edit diffing)
+        self._legend_order       = []    # stable-key order saved by legend editor
         self._custom_xlabel      = None  # user-set axis label override (double-click)
         self._custom_ylabel      = None
         self._legend_manual_pos = None   # saved dragged position (axes-fraction tuple)
@@ -829,10 +853,15 @@ class PlottingMixin:
                 legend_size = 8.0
             self._current_legend_size = legend_size
             legend_loc = self.legend_loc_var.get() or "best"
-            # Rank-1 (plotted last for z-order) should appear first in legend
+            # Rank-1 (plotted last for z-order) should appear first in legend;
+            # then apply any custom order saved by the legend editor.
             _lh, _ll = self.ax.get_legend_handles_labels()
-            self._legend_obj = self.ax.legend(
-                list(reversed(_lh)), list(reversed(_ll)),
+            _lh, _ll = list(reversed(_lh)), list(reversed(_ll))
+            _lh, _ll = _reorder_legend_handles(
+                _lh, _ll,
+                getattr(self, '_legend_order', []),
+                self._legend_handle_to_key)
+            self._legend_obj = self.ax.legend(_lh, _ll,
                 fontsize=legend_size, loc=legend_loc)
             self._legend_obj.set_draggable(True)
             frame_visible = getattr(self, "legend_frame_var", None)

@@ -15,7 +15,7 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 
 from .file_manager import FileManagerMixin, _COLOR_NAMES, _COLOR_HEX, _PLOT_STYLES, _PLOT_STYLE_NAMES
-from .plotting import apply_grid, draw_reflines, copy_figure_to_clipboard
+from .plotting import apply_grid, draw_reflines, copy_figure_to_clipboard, _reorder_legend_handles
 from .legend_editor import open_legend_editor
 from .checklist import CheckableListbox
 
@@ -78,6 +78,7 @@ class EISPanel(FileManagerMixin, ttk.Frame):
         self._legend_stable_map  = {}    # {stable_key: custom_label}
         self._legend_stable_keys = []    # stable keys from the last _plot()
         self._legend_auto_labels = []    # auto-labels from the last _plot() (for edit diffing)
+        self._legend_order       = []    # stable-key order saved by legend editor
         self._auto_xlim            = None
         self._auto_ylim            = None
 
@@ -1028,10 +1029,13 @@ class EISPanel(FileManagerMixin, ttk.Frame):
         )
 
         if show_leg and has_data:
-            # Rank-1 (plotted last for z-order) should appear first in legend
+            # Rank-1 (plotted last for z-order) should appear first; then
+            # restore any custom order saved by the legend editor.
             _lh, _ll = self.ax.get_legend_handles_labels()
-            self._legend_obj = self.ax.legend(
-                list(reversed(_lh)), list(reversed(_ll)),
+            _lh, _ll = list(reversed(_lh)), list(reversed(_ll))
+            _lh, _ll = _reorder_legend_handles(
+                _lh, _ll, self._legend_order, self._legend_handle_to_key)
+            self._legend_obj = self.ax.legend(_lh, _ll,
                 fontsize=leg_size, loc=leg_loc)
             self._legend_obj.set_draggable(True)
             self._legend_obj.get_frame().set_visible(leg_frame)
@@ -1355,8 +1359,10 @@ class EISPanel(FileManagerMixin, ttk.Frame):
             self, self._legend_obj, self.canvas, self._current_legend_size)
         if self._legend_obj is not None:
             self._legend_obj.set_draggable(True)
-            # Persist labels — handle-based so reordering in editor doesn't corrupt mapping
             h2k = getattr(self, '_legend_handle_to_key', {})
+            # Save display order as stable-key list
+            self._legend_order = [h2k[h] for h in self._legend_obj.legend_handles if h in h2k]
+            # Persist labels — handle-based so reordering doesn't corrupt mapping
             for handle, text_obj in zip(self._legend_obj.legend_handles,
                                         self._legend_obj.get_texts()):
                 key = h2k.get(handle)

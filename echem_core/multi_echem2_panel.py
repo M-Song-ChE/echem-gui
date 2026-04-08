@@ -21,7 +21,7 @@ from .file_manager import (FileManagerMixin, _COLOR_NAMES, _COLOR_HEX,
                             _default_xcol, _default_ycol,
                             _PLOT_STYLES, _PLOT_STYLE_NAMES)
 from .correction import CorrectionMixin
-from .plotting import apply_grid, draw_reflines, _cycle_colors, copy_figure_to_clipboard, _scale_legend_spacing
+from .plotting import apply_grid, draw_reflines, _cycle_colors, copy_figure_to_clipboard, _scale_legend_spacing, _reorder_legend_handles
 from .legend_editor import open_legend_editor
 from .checklist import CheckableListbox
 
@@ -1779,10 +1779,19 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         apply_grid(ax, _xg, _yg, _xgi, _ygi, _gs, linewidth=_glw, color=_gc)
 
         if leg_show and has_data and ax.get_lines():
-            # Rank-1 (plotted last for z-order) should appear first in legend
+            # Rank-1 (plotted last for z-order) should appear first; then
+            # restore any custom order saved by the legend editor.
             _lh, _ll = ax.get_legend_handles_labels()
-            gentry["legend"] = ax.legend(
-                list(reversed(_lh)), list(reversed(_ll)),
+            _lh, _ll = list(reversed(_lh)), list(reversed(_ll))
+            _l2f = gentry.get("line_to_file", {})
+            _l2c = gentry.get("line_to_cycle", {})
+            def _h2k(h):
+                f = _l2f.get(h); c = _l2c.get(h)
+                return f"{f}:C{c}" if (f and c is not None) else (f or None)
+            _h2k_map = {h: _h2k(h) for h in _lh}
+            _lh, _ll = _reorder_legend_handles(
+                _lh, _ll, gentry.get("legend_order", []), _h2k_map)
+            gentry["legend"] = ax.legend(_lh, _ll,
                 fontsize=leg_size, loc=leg_loc)
             gentry["legend"].set_draggable(True)
             gentry["legend"].get_frame().set_visible(leg_frm)
@@ -1971,19 +1980,24 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             self, leg, gentry["canvas"], gentry.get("leg_size", 8.0))
         if gentry.get("legend") is not None:
             gentry["legend"].set_draggable(True)
-            # Persist labels — handle-based so reordering in editor doesn't corrupt mapping
-            label_map = gentry.get("legend_labels") if isinstance(gentry.get("legend_labels"), dict) else {}
             _l2f = gentry.get("line_to_file", {})
             _l2c = gentry.get("line_to_cycle", {})
+            # Save display order as stable-key list
+            legend_order = []
+            label_map = gentry.get("legend_labels") if isinstance(gentry.get("legend_labels"), dict) else {}
             for handle, text_obj in zip(gentry["legend"].legend_handles,
                                         gentry["legend"].get_texts()):
                 fname = _l2f.get(handle)
                 cycle = _l2c.get(handle)
                 if fname is not None and cycle is not None:
-                    label_map[f"{fname}:C{cycle}"] = text_obj.get_text()
+                    key = f"{fname}:C{cycle}"
+                    label_map[key] = text_obj.get_text()
+                    legend_order.append(key)
                 elif fname is not None:
                     label_map[fname] = text_obj.get_text()
+                    legend_order.append(fname)
             gentry["legend_labels"] = label_map
+            gentry["legend_order"]  = legend_order
 
     # ════════════════════════════════════════════════════════════════
     # Per-file change handlers

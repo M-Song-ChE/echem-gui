@@ -26,7 +26,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolb
 
 from .file_manager import FileManagerMixin, _COLOR_NAMES, _COLOR_HEX, _default_xcol, _default_ycol, _PLOT_STYLES, _PLOT_STYLE_NAMES
 from .correction import CorrectionMixin
-from .plotting import apply_grid, draw_reflines, _cycle_colors, copy_figure_to_clipboard, _scale_legend_spacing
+from .plotting import apply_grid, draw_reflines, _cycle_colors, copy_figure_to_clipboard, _scale_legend_spacing, _reorder_legend_handles
 from .legend_editor import open_legend_editor
 from .checklist import CheckableListbox
 
@@ -1288,23 +1288,26 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         _ls, _mk, _ms = _PLOT_STYLES.get(_sname, ("-", "", 0))
 
         has_data = False
+        _h2k_map = {}  # handle → stable key for legend ordering
         if "cycle number" in df.columns and selected:
             cycle_cols = (_cycle_colors(base_color, len(selected), _step, _rev)
                           if _grad else [base_color] * len(selected))
             for i, c in enumerate(selected):
                 sub = df[df["cycle number"] == c]
-                ax.plot(sub[_real_xcol] * x_scale,
-                        sub[_real_ycol] * y_scale,
-                        color=cycle_cols[i], label=f"C{c}", linewidth=_lw,
-                        linestyle=_ls, marker=_mk or None,
-                        markersize=_ms if _mk else 0)
+                _ln, = ax.plot(sub[_real_xcol] * x_scale,
+                               sub[_real_ycol] * y_scale,
+                               color=cycle_cols[i], label=f"C{c}", linewidth=_lw,
+                               linestyle=_ls, marker=_mk or None,
+                               markersize=_ms if _mk else 0)
+                _h2k_map[_ln] = f"{short}:C{c}"
             has_data = True
         elif "cycle number" not in df.columns:
             # No cycle column — plot all data as one line
-            ax.plot(df[_real_xcol] * x_scale, df[_real_ycol] * y_scale,
-                    color=base_color, label=short, linewidth=_lw,
-                    linestyle=_ls, marker=_mk or None,
-                    markersize=_ms if _mk else 0)
+            _ln, = ax.plot(df[_real_xcol] * x_scale, df[_real_ycol] * y_scale,
+                           color=base_color, label=short, linewidth=_lw,
+                           linestyle=_ls, marker=_mk or None,
+                           markersize=_ms if _mk else 0)
+            _h2k_map[_ln] = short
             has_data = True
         # else: cycle column exists but no cycles selected → plot nothing
 
@@ -1355,23 +1358,21 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
 
         # Legend
         if leg_show and has_data and ax.get_lines():
-            entry["legend"] = ax.legend(fontsize=leg_size, loc=leg_loc)
+            _lh, _ll = ax.get_legend_handles_labels()
+            _lh, _ll = _reorder_legend_handles(
+                _lh, _ll, entry.get("legend_order", []), _h2k_map)
+            entry["legend"] = ax.legend(_lh, _ll, fontsize=leg_size, loc=leg_loc)
             entry["legend"].set_draggable(True)
             entry["legend"].get_frame().set_visible(leg_frm)
             entry["leg_size"] = leg_size
-            # Restore custom labels using stable key dict {short:Cc → label}
+            # Restore custom labels — handle-based, order-independent
             label_map = entry.get("legend_labels", {})
             if label_map and isinstance(label_map, dict):
-                texts = entry["legend"].get_texts()
-                if "cycle number" in df.columns and selected:
-                    for c, text_obj in zip(selected, texts):
-                        lbl = label_map.get(f"{short}:C{c}", "")
-                        if lbl:
-                            text_obj.set_text(lbl)
-                elif texts:
-                    lbl = label_map.get(short, "")
+                for handle, text_obj in zip(entry["legend"].legend_handles,
+                                            entry["legend"].get_texts()):
+                    lbl = label_map.get(_h2k_map.get(handle, ""), "")
                     if lbl:
-                        texts[0].set_text(lbl)
+                        text_obj.set_text(lbl)
             # Restore dragged position
             if entry.get("legend_manual_pos") is not None:
                 entry["legend"]._loc = entry["legend_manual_pos"]
@@ -2071,22 +2072,26 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             self, leg, entry["canvas"], entry.get("leg_size", 8.0))
         if entry.get("legend") is not None:
             entry["legend"].set_draggable(True)
-            # Persist labels — handle-based so reordering in editor doesn't corrupt mapping
             short = self.active_file
             label_map = entry.get("legend_labels") if isinstance(entry.get("legend_labels"), dict) else {}
             df = entry.get("df")
+            legend_order = []
             for handle, text_obj in zip(entry["legend"].legend_handles,
                                         entry["legend"].get_texts()):
                 orig_lbl = handle.get_label()
                 if df is not None and "cycle number" in df.columns and orig_lbl.startswith("C"):
                     try:
                         c = int(orig_lbl[1:])
-                        label_map[f"{short}:C{c}"] = text_obj.get_text()
+                        key = f"{short}:C{c}"
+                        label_map[key] = text_obj.get_text()
+                        legend_order.append(key)
                     except ValueError:
                         pass
                 elif orig_lbl and not orig_lbl.startswith("_"):
                     label_map[short] = text_obj.get_text()
+                    legend_order.append(short)
             entry["legend_labels"] = label_map
+            entry["legend_order"]  = legend_order
 
     # ════════════════════════════════════════════════════════════════
     # Reference line helpers
