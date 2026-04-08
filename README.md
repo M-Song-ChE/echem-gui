@@ -121,6 +121,7 @@ Files with a `cycle number` column show a grid of cycle checkboxes.
 - **Location** — choose legend anchor position, or drag the legend freely with the mouse.
 - **Edit Labels** — opens a dialog to **rename and reorder** legend entries. Drag the **⠿** handle on any row to reorder. Renaming without reordering preserves any drag position; reordering recreates the legend in the new order.
 - **Double-click the legend** directly on the plot to open the same edit dialog instantly.
+- **Legend order** — entries follow file rank order (rank-1 file first) with cycles in ascending numeric order (1, 2, 3…) within each file. Reordering files in the file list resets the legend to the new rank order. Custom order set in the editor is preserved until the file rank changes.
 
 ### 3.9 Reference Lines
 Add horizontal or vertical guide lines to the plot:
@@ -201,7 +202,7 @@ Use this tab to organise files into named **groups**, where each group produces 
   - **Click the group name** to make it the active group — the left panel updates to show that group's settings.
 - The **Files in Selected Group** list also uses checkboxes and drag handles:
   - **Uncheck** a file to hide it from that group's plot only. It remains in other groups unaffected.
-  - **Drag the ⠿ handle** to reorder files within the group (controls overlay draw order).
+  - **Drag the ⠿ handle** to reorder files within the group (controls overlay draw order and legend rank order; legend resets to the new rank when file order changes).
 
 ### 5.2 Per-Group Settings
 Every control in the left panel (axis columns, units, range, reference electrode, legend, reference lines, font sizes) applies **only to the active group**. Each group remembers its own settings independently.
@@ -360,7 +361,7 @@ The legend size is preserved when any other plot change is made (cycle selection
 - **EIS units** — when plotting EIS data in the General or Multi E.Chem tab, the unit dropdowns offer impedance units (mΩ, Ω, kΩ, MΩ), frequency units (Hz, kHz, MHz), and phase units (deg, rad). Data is scaled automatically when you switch.
 - **Newer EC-Lab firmware files** — `.mpr` files that contain column types not yet known to galvani now load automatically; unrecognised columns are silently skipped.
 - **Gradient for tracking evolution** — turn on Gradient to see how your CV cycles evolve: lightest = earliest, darkest = latest (most evolved).
-- **Cycle order matters** — cycles are plotted in the order they appear in the data file, so the gradient naturally reflects temporal evolution.
+- **Cycle order** — cycles are always plotted and listed in the legend in ascending numeric order (1, 2, 3…), so the gradient naturally reflects temporal evolution from lightest (earliest) to darkest (latest).
 - **E_std (Rec)** — the green **Rec:** value shown next to the E_std field is the midpoint of your data's actual potential range. This is a reliable starting point for the non-Faradaic region.
 - **Cs value** — the default 0.040 mF/cm² is appropriate for Pt in 0.1 M HClO₄. Adjust for your material and electrolyte.
 - **Multi E.Chem zoom** — double-click the **⠿ header strip** of any subplot to zoom it to full panel; double-click the header again (or click ← Back to Grid) to return to the grid.

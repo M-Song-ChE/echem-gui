@@ -98,6 +98,7 @@ Enter values in the **X min / X max / Y min / Y max** boxes to fix the axis rang
 - **Edit Labels** — rename and reorder legend entries via ⠿ drag handles.
 - **Double-click the legend** on the plot to open the same editor.
 - **Right-drag the legend** to resize it live — text, handle icons, and spacing all scale together; size is preserved across replots.
+- **Legend order** — entries follow file rank order (rank-1 file first) with cycles in ascending numeric order (1, 2, 3…) within each file. Reordering files in the file list resets the legend to the new rank order. Custom order set in the editor is preserved until the file rank changes.
 
 ### 3.9 Reference Lines
 Add X (vertical) or Y (horizontal) guide lines with individual style and color.
@@ -163,7 +164,7 @@ All left-panel controls apply only to the active group. Each group remembers its
 - Also double-click the title strip on any group subplot.
 
 ### 5.4 File Order within a Group
-Drag the **⠿ handle** next to each file in the group to reorder the overlay draw order.
+Drag the **⠿ handle** next to each file in the group to reorder the overlay draw order. Reordering files within a group resets the legend to the new rank order.
 
 ### 5.5 Plot Size
 - **W [__] H [__] inches** — figure size for all group plots. Default W=10.5, H=5.5. Maximum 50 inches.
