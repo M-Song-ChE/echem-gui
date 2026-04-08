@@ -21,7 +21,7 @@ from .file_manager import (FileManagerMixin, _COLOR_NAMES, _COLOR_HEX,
                             _default_xcol, _default_ycol,
                             _PLOT_STYLES, _PLOT_STYLE_NAMES)
 from .correction import CorrectionMixin
-from .plotting import apply_grid, draw_reflines, _cycle_colors, copy_figure_to_clipboard, _scale_legend_spacing, _reorder_legend_handles
+from .plotting import apply_grid, draw_reflines, _cycle_colors, copy_figure_to_clipboard, _scale_legend_spacing, _reorder_legend_handles, _build_legend_order
 from .legend_editor import open_legend_editor
 from .checklist import CheckableListbox
 
@@ -1213,10 +1213,10 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         """Called when CheckableListbox drag-to-reorder finishes for files in a group."""
         if not self.active_group or self.active_group not in self.groups:
             return
-        self.groups[self.active_group]["files"] = [
-            n for n in new_names
-            if n in self.groups[self.active_group].get("files", [])
-        ]
+        gentry = self.groups[self.active_group]
+        gentry["files"] = [n for n in new_names if n in gentry.get("files", [])]
+        # Reset legend order so it rebuilds from new file rank
+        gentry["legend_order"] = []
         self._plot_group(self.active_group)
 
     def _reset_group_view(self, group_name):
@@ -1779,16 +1779,21 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         apply_grid(ax, _xg, _yg, _xgi, _ygi, _gs, linewidth=_glw, color=_gc)
 
         if leg_show and has_data and ax.get_lines():
-            # Rank-1 (plotted last for z-order) should appear first; then
-            # restore any custom order saved by the legend editor.
+            # Build legend: rank-1 file first, cycles ascending; then apply custom order.
             _lh, _ll = ax.get_legend_handles_labels()
-            _lh, _ll = list(reversed(_lh)), list(reversed(_ll))
             _l2f = gentry.get("line_to_file", {})
             _l2c = gentry.get("line_to_cycle", {})
             def _h2k(h):
                 f = _l2f.get(h); c = _l2c.get(h)
                 return f"{f}:C{c}" if (f and c is not None) else (f or None)
             _h2k_map = {h: _h2k(h) for h in _lh}
+            _fhidden = gentry.get("file_hidden", {})
+            _rank_fnames = [f for f in gentry["files"]
+                            if self.files.get(f)
+                            and not self.files[f].get("hidden", False)
+                            and not _fhidden.get(f, False)]
+            _lh, _ll = _build_legend_order(
+                _lh, _ll, _h2k_map, _rank_fnames)
             _lh, _ll = _reorder_legend_handles(
                 _lh, _ll, gentry.get("legend_order", []), _h2k_map)
             gentry["legend"] = ax.legend(_lh, _ll,

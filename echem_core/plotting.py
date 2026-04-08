@@ -94,6 +94,45 @@ _CLICK_CYCLE_PX = 8
 _GRID_STYLE_MAP = {"solid": "-", "dashed": "--", "dotted": ":", "dash-dot": "-."}
 
 
+def _build_legend_order(handles, labels, handle_to_key, file_rank_order):
+    """Order legend: files in rank_order (rank-1 first), cycles ascending within each file.
+
+    handle_to_key maps Line2D → stable key ("{fname}:C{c}" or "fname").
+    file_rank_order is an iterable of filenames in desired display rank.
+    Handles not matched to any ranked file are appended at the end.
+    """
+    from collections import defaultdict
+    file_items = defaultdict(list)   # fname → [(cycle_int, handle, label)]
+    unmatched  = []
+    for h, l in zip(handles, labels):
+        key = handle_to_key.get(h)
+        if key is None:
+            unmatched.append((h, l))
+            continue
+        if ':C' in key:
+            fname, cpart = key.rsplit(':C', 1)
+            try:    cycle = int(cpart)
+            except: cycle = 0
+        else:
+            fname = key
+            cycle = -1   # whole-file line, no cycle → sort before cycles
+        file_items[fname].append((cycle, h, l))
+
+    ordered_h, ordered_l = [], []
+    seen = set()
+    for fname in file_rank_order:
+        if fname in seen:
+            continue
+        seen.add(fname)
+        for _, h, l in sorted(file_items.get(fname, []), key=lambda x: x[0]):
+            ordered_h.append(h)
+            ordered_l.append(l)
+    for h, l in unmatched:
+        ordered_h.append(h)
+        ordered_l.append(l)
+    return ordered_h, ordered_l
+
+
 def _reorder_legend_handles(handles, labels, saved_order, handle_to_key):
     """Reorder (handles, labels) according to saved_order (list of stable keys).
 
@@ -721,10 +760,10 @@ class PlottingMixin:
         self._legend_handle_to_key = {} # handle → stable key (for order-independent save)
 
         # Determine highlight state (active file brought to front with glow)
-        _visible_shorts = [s for s, e in self.files.items()
-                           if not e.get("hidden", False)]
+        _rank_shorts    = [s for s, e in self.files.items()
+                           if not e.get("hidden", False)]   # rank order (rank-1 first)
         # Rank 1 (index 0, top of file list) drawn last → appears in front
-        _visible_shorts = list(reversed(_visible_shorts))
+        _visible_shorts = list(reversed(_rank_shorts))
         _active_short   = self.active_file
         _highlight      = (self._plot_highlight
                            and len(_visible_shorts) > 1 and bool(_active_short)
@@ -853,10 +892,11 @@ class PlottingMixin:
                 legend_size = 8.0
             self._current_legend_size = legend_size
             legend_loc = self.legend_loc_var.get() or "best"
-            # Rank-1 (plotted last for z-order) should appear first in legend;
+            # Build legend: rank-1 file first, cycles ascending within each file;
             # then apply any custom order saved by the legend editor.
             _lh, _ll = self.ax.get_legend_handles_labels()
-            _lh, _ll = list(reversed(_lh)), list(reversed(_ll))
+            _lh, _ll = _build_legend_order(
+                _lh, _ll, self._legend_handle_to_key, _rank_shorts)
             _lh, _ll = _reorder_legend_handles(
                 _lh, _ll,
                 getattr(self, '_legend_order', []),

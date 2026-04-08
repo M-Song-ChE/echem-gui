@@ -472,6 +472,8 @@ class FileManagerMixin:
             if name not in new_files:
                 new_files[name] = entry
         self.files = new_files
+        # Reset legend order so it rebuilds from new file rank
+        self._legend_order = []
         self._auto_replot()
 
     def _on_file_select(self, event):
