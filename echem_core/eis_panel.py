@@ -892,6 +892,7 @@ class EISPanel(FileManagerMixin, ttk.Frame):
         _leg = self.ax.get_legend()
         if _leg is not None: _leg.set_visible(False)
         self.fig.tight_layout(pad=0.5)
+        self.fig.set_layout_engine('none')
         if _leg is not None: _leg.set_visible(True)
         self.canvas.draw_idle()
         self._plot_sc.after(
@@ -912,6 +913,7 @@ class EISPanel(FileManagerMixin, ttk.Frame):
         if _leg is not None:
             _leg.set_visible(False)
         ax.figure.tight_layout()
+        ax.figure.set_layout_engine('none')
         if _leg is not None:
             _leg.set_visible(True)
         canvas.draw()
@@ -921,6 +923,7 @@ class EISPanel(FileManagerMixin, ttk.Frame):
             if _leg is not None:
                 _leg.set_visible(False)
             ax.figure.tight_layout()
+            ax.figure.set_layout_engine('none')
             if _leg is not None:
                 _leg.set_visible(True)
             canvas.draw()

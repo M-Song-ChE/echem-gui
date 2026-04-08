@@ -804,6 +804,7 @@ class PlottingMixin:
 
         # Store auto-scaled limits before user overrides
         self.fig.tight_layout()
+        self.fig.set_layout_engine('none')
         self.canvas.draw()
         self._auto_xlim = self.ax.get_xlim()
         self._auto_ylim = self.ax.get_ylim()

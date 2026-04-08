@@ -1361,6 +1361,7 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             _legs = [a.get_legend() for a in fig.get_axes() if a.get_legend() is not None]
             for _l in _legs: _l.set_visible(False)
             fig.tight_layout(pad=0.5)
+            fig.set_layout_engine('none')
             for _l in _legs: _l.set_visible(True)
             cv.draw_idle()
         self._plot_sc.after(
@@ -1381,6 +1382,7 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         if _leg is not None:
             _leg.set_visible(False)
         ax.figure.tight_layout()
+        ax.figure.set_layout_engine('none')
         if _leg is not None:
             _leg.set_visible(True)
         canvas.draw()
@@ -1390,6 +1392,7 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             if _leg is not None:
                 _leg.set_visible(False)
             ax.figure.tight_layout()
+            ax.figure.set_layout_engine('none')
             if _leg is not None:
                 _leg.set_visible(True)
             canvas.draw()

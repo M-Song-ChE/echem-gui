@@ -1302,6 +1302,7 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
                 _legs = [a.get_legend() for a in fig.get_axes() if a.get_legend() is not None]
                 for _l in _legs: _l.set_visible(False)
                 fig.tight_layout(pad=0.5)
+                fig.set_layout_engine('none')
                 for _l in _legs: _l.set_visible(True)
                 cv.draw_idle()
         self._right_canvas.after(
@@ -1926,6 +1927,7 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         ax.set_ylabel(ax.get_ylabel(), fontsize=ls, fontweight=lb, labelpad=lpad)
         ax.tick_params(axis='both', labelsize=ks)
         ax.figure.tight_layout()
+        ax.figure.set_layout_engine('none')
         if _leg is not None: _leg.set_visible(True)
         canvas.draw()
         if kb:
@@ -1933,6 +1935,7 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
                 lbl.set_fontweight('bold')
             if _leg is not None: _leg.set_visible(False)
             ax.figure.tight_layout()
+            ax.figure.set_layout_engine('none')
             if _leg is not None: _leg.set_visible(True)
             canvas.draw()
 
