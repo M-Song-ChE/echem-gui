@@ -970,7 +970,8 @@ class EISPanel(FileManagerMixin, ttk.Frame):
             _lw = 1.5
 
         has_data = False
-        self._legend_stable_keys = []   # reset for this replot
+        self._legend_stable_keys = []    # reset for this replot
+        self._legend_handle_to_key = {}  # handle → stable key
         # Rank 1 (index 0, top of file list) drawn last → appears in front
         _visible_items = [(s, e) for s, e in self.files.items()
                           if not e.get("hidden", False)]
@@ -985,7 +986,7 @@ class EISPanel(FileManagerMixin, ttk.Frame):
             file_line    = "-" if connect_lines else ""
             if not file_marker and not file_line:
                 file_marker = "o"
-            self.ax.plot(
+            _ln, = self.ax.plot(
                 df[xcol] * x_scale,
                 df[ycol] * y_scale,
                 color=base_color,
@@ -996,6 +997,7 @@ class EISPanel(FileManagerMixin, ttk.Frame):
                 label=short,
             )
             self._legend_stable_keys.append(short)
+            self._legend_handle_to_key[_ln] = short
             has_data = True
 
         try: _lpad = float(self.label_pad_var.get())
@@ -1026,17 +1028,23 @@ class EISPanel(FileManagerMixin, ttk.Frame):
         )
 
         if show_leg and has_data:
-            self._legend_obj = self.ax.legend(fontsize=leg_size, loc=leg_loc)
+            # Rank-1 (plotted last for z-order) should appear first in legend
+            _lh, _ll = self.ax.get_legend_handles_labels()
+            self._legend_obj = self.ax.legend(
+                list(reversed(_lh)), list(reversed(_ll)),
+                fontsize=leg_size, loc=leg_loc)
             self._legend_obj.set_draggable(True)
             self._legend_obj.get_frame().set_visible(leg_frame)
             self._current_legend_size = leg_size
-            # Capture auto-labels, then apply custom labels by stable key
-            self._legend_auto_labels = [t.get_text() for t in self._legend_obj.get_texts()]
-            for i, text_obj in enumerate(self._legend_obj.get_texts()):
-                if i < len(self._legend_stable_keys):
-                    custom = self._legend_stable_map.get(self._legend_stable_keys[i])
+            # Apply custom labels — handle-based, order-independent
+            for handle, text_obj in zip(self._legend_obj.legend_handles,
+                                        self._legend_obj.get_texts()):
+                key = self._legend_handle_to_key.get(handle)
+                if key:
+                    custom = self._legend_stable_map.get(key)
                     if custom:
                         text_obj.set_text(custom)
+            self._legend_auto_labels = [t.get_text() for t in self._legend_obj.get_texts()]
             # Restore dragged position
             if self._legend_manual_pos is not None:
                 self._legend_obj._loc = self._legend_manual_pos
@@ -1287,6 +1295,7 @@ class EISPanel(FileManagerMixin, ttk.Frame):
             fontsize=8,
             zorder=10,
         )
+        self._ann.set_in_layout(False)  # exclude from tight_layout bounding box
         self._ann_dot, = self.ax.plot(
             x, y, "o",
             color=ln.get_color(),
@@ -1346,12 +1355,17 @@ class EISPanel(FileManagerMixin, ttk.Frame):
             self, self._legend_obj, self.canvas, self._current_legend_size)
         if self._legend_obj is not None:
             self._legend_obj.set_draggable(True)
-            # Persist labels by stable key so they survive file show/hide transitions.
-            new_texts = [t.get_text() for t in self._legend_obj.get_texts()]
-            for i, (key, new_text) in enumerate(
-                    zip(self._legend_stable_keys, new_texts)):
-                auto = (self._legend_auto_labels[i]
-                        if i < len(self._legend_auto_labels) else new_text)
+            # Persist labels — handle-based so reordering in editor doesn't corrupt mapping
+            h2k = getattr(self, '_legend_handle_to_key', {})
+            for handle, text_obj in zip(self._legend_obj.legend_handles,
+                                        self._legend_obj.get_texts()):
+                key = h2k.get(handle)
+                if key is None:
+                    continue
+                new_text = text_obj.get_text()
+                auto = next((self._legend_auto_labels[i]
+                             for i, k in enumerate(self._legend_stable_keys) if k == key),
+                            new_text)
                 if new_text and new_text != auto:
                     self._legend_stable_map[key] = new_text
                 else:

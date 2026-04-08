@@ -829,13 +829,18 @@ class EchemPanel(
             self, self._legend_obj, self.canvas, self._current_legend_size)
         if self._legend_obj is not None:
             self._legend_obj.set_draggable(True)
-            # Persist labels by stable key (file:cycle) so they survive
-            # single↔multi-file display format changes.
-            new_texts = [t.get_text() for t in self._legend_obj.get_texts()]
-            for i, (key, new_text) in enumerate(
-                    zip(self._legend_stable_keys, new_texts)):
-                auto = (self._legend_auto_labels[i]
-                        if i < len(self._legend_auto_labels) else new_text)
+            # Persist labels by stable key — handle-based so reordering doesn't corrupt mapping
+            h2k = getattr(self, '_legend_handle_to_key', {})
+            for handle, text_obj in zip(self._legend_obj.legend_handles,
+                                        self._legend_obj.get_texts()):
+                key      = h2k.get(handle)
+                if key is None:
+                    continue
+                new_text = text_obj.get_text()
+                # Only store if changed from the auto label
+                auto = next((self._legend_auto_labels[i]
+                             for i, k in enumerate(self._legend_stable_keys) if k == key),
+                            new_text)
                 if new_text and new_text != auto:
                     self._legend_stable_map[key] = new_text
                 else:

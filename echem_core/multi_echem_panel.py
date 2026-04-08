@@ -1818,6 +1818,7 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             arrowprops=dict(arrowstyle="->", color="gray", lw=1.2),
             fontsize=8, zorder=10,
         )
+        entry["ann"].set_in_layout(False)  # exclude from tight_layout bounding box
         entry["ann_dot"], = ax.plot(x, y, "o", color=ln.get_color(),
                                     markersize=7, zorder=11, label="_ann_dot")
         entry["canvas"].draw_idle()
@@ -2070,18 +2071,21 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             self, leg, entry["canvas"], entry.get("leg_size", 8.0))
         if entry.get("legend") is not None:
             entry["legend"].set_draggable(True)
-            # Persist labels with stable keys {short:Cc → label}
+            # Persist labels — handle-based so reordering in editor doesn't corrupt mapping
             short = self.active_file
             label_map = entry.get("legend_labels") if isinstance(entry.get("legend_labels"), dict) else {}
             df = entry.get("df")
-            if df is not None and "cycle number" in df.columns:
-                sel = entry.get("selected_cycles", [])
-                for c, t in zip(sel, entry["legend"].get_texts()):
-                    label_map[f"{short}:C{c}"] = t.get_text()
-            else:
-                texts = entry["legend"].get_texts()
-                if texts:
-                    label_map[short] = texts[0].get_text()
+            for handle, text_obj in zip(entry["legend"].legend_handles,
+                                        entry["legend"].get_texts()):
+                orig_lbl = handle.get_label()
+                if df is not None and "cycle number" in df.columns and orig_lbl.startswith("C"):
+                    try:
+                        c = int(orig_lbl[1:])
+                        label_map[f"{short}:C{c}"] = text_obj.get_text()
+                    except ValueError:
+                        pass
+                elif orig_lbl and not orig_lbl.startswith("_"):
+                    label_map[short] = text_obj.get_text()
             entry["legend_labels"] = label_map
 
     # ════════════════════════════════════════════════════════════════

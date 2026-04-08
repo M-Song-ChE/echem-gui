@@ -523,6 +523,7 @@ class PlottingMixin:
             fontsize=8,
             zorder=10,
         )
+        self._ann.set_in_layout(False)  # exclude from tight_layout bounding box
 
         # Highlight dot on the selected data point (labeled with "_" → excluded from legend)
         self._ann_dot, = self.ax.plot(
@@ -693,6 +694,7 @@ class PlottingMixin:
         multi = len(self.files) > 1
         has_legend = False
         self._legend_stable_keys = []   # reset for this replot
+        self._legend_handle_to_key = {} # handle → stable key (for order-independent save)
 
         # Determine highlight state (active file brought to front with glow)
         _visible_shorts = [s for s, e in self.files.items()
@@ -742,23 +744,26 @@ class PlottingMixin:
                 for i, c in enumerate(cycles):
                     sub   = df[df["cycle number"] == c]
                     label = f"{short} C{c}" if multi else f"Cycle {c}"
-                    self.ax.plot(sub[_real_xcol] * x_scale,
-                                 sub[_real_ycol] * y_scale,
-                                 color=cycle_cols[i], label=label, linewidth=_lw,
-                                 linestyle=_ls, marker=_mk or None,
-                                 markersize=_ms if _mk else 0)
+                    _ln, = self.ax.plot(sub[_real_xcol] * x_scale,
+                                        sub[_real_ycol] * y_scale,
+                                        color=cycle_cols[i], label=label, linewidth=_lw,
+                                        linestyle=_ls, marker=_mk or None,
+                                        markersize=_ms if _mk else 0)
                     # Stable key always includes filename → survives single↔multi transitions
-                    self._legend_stable_keys.append(f"{short}:C{c}")
+                    _key = f"{short}:C{c}"
+                    self._legend_stable_keys.append(_key)
+                    self._legend_handle_to_key[_ln] = _key
                 has_legend = True
             else:
                 label = short if multi else None
-                self.ax.plot(df[_real_xcol] * x_scale,
-                            df[_real_ycol] * y_scale,
-                            color=base_color, label=label, linewidth=_lw,
-                            linestyle=_ls, marker=_mk or None,
-                            markersize=_ms if _mk else 0)
+                _ln, = self.ax.plot(df[_real_xcol] * x_scale,
+                                    df[_real_ycol] * y_scale,
+                                    color=base_color, label=label, linewidth=_lw,
+                                    linestyle=_ls, marker=_mk or None,
+                                    markersize=_ms if _mk else 0)
                 if label:
                     self._legend_stable_keys.append(short)
+                    self._legend_handle_to_key[_ln] = short
                     has_legend = True
 
         # ── Axis labels: append "(vs Ref)" only for voltage-type axes ──────────
@@ -824,20 +829,26 @@ class PlottingMixin:
                 legend_size = 8.0
             self._current_legend_size = legend_size
             legend_loc = self.legend_loc_var.get() or "best"
-            self._legend_obj = self.ax.legend(fontsize=legend_size, loc=legend_loc)
+            # Rank-1 (plotted last for z-order) should appear first in legend
+            _lh, _ll = self.ax.get_legend_handles_labels()
+            self._legend_obj = self.ax.legend(
+                list(reversed(_lh)), list(reversed(_ll)),
+                fontsize=legend_size, loc=legend_loc)
             self._legend_obj.set_draggable(True)
             frame_visible = getattr(self, "legend_frame_var", None)
             self._legend_obj.get_frame().set_visible(
                 frame_visible.get() if frame_visible is not None else True
             )
-            # Capture auto-labels (used in edit dialog for change-detection)
-            self._legend_auto_labels = [t.get_text() for t in self._legend_obj.get_texts()]
-            # Apply custom labels by stable key (survives single↔multi-file transitions)
-            for i, text_obj in enumerate(self._legend_obj.get_texts()):
-                if i < len(self._legend_stable_keys):
-                    custom = self._legend_stable_map.get(self._legend_stable_keys[i])
+            # Apply custom labels by stable key — handle-based, order-independent
+            for handle, text_obj in zip(self._legend_obj.legend_handles,
+                                        self._legend_obj.get_texts()):
+                key = self._legend_handle_to_key.get(handle)
+                if key:
+                    custom = self._legend_stable_map.get(key)
                     if custom:
                         text_obj.set_text(custom)
+            # Capture auto-labels after custom-label restoration
+            self._legend_auto_labels = [t.get_text() for t in self._legend_obj.get_texts()]
             # Restore dragged position (overrides loc= argument)
             if self._legend_manual_pos is not None:
                 self._legend_obj._loc = self._legend_manual_pos

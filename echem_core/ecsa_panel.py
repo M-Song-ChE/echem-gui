@@ -1036,6 +1036,7 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             arrowprops=dict(arrowstyle="->", color="gray", lw=1.2),
             fontsize=8, zorder=10,
         )
+        self._ann.set_in_layout(False)  # exclude from tight_layout bounding box
         self._ann_dot, = ax.plot(x, y, "o", color=ln.get_color(),
                                   markersize=7, zorder=11, label="_ann_dot")
         self._get_canvas(ax).draw_idle()

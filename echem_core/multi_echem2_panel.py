@@ -1779,37 +1779,31 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         apply_grid(ax, _xg, _yg, _xgi, _ygi, _gs, linewidth=_glw, color=_gc)
 
         if leg_show and has_data and ax.get_lines():
-            gentry["legend"] = ax.legend(fontsize=leg_size, loc=leg_loc)
+            # Rank-1 (plotted last for z-order) should appear first in legend
+            _lh, _ll = ax.get_legend_handles_labels()
+            gentry["legend"] = ax.legend(
+                list(reversed(_lh)), list(reversed(_ll)),
+                fontsize=leg_size, loc=leg_loc)
             gentry["legend"].set_draggable(True)
             gentry["legend"].get_frame().set_visible(leg_frm)
             gentry["leg_size"] = leg_size
-            # Restore custom labels using stable key dict {fname:Cc → label}
+            # Restore custom labels — handle-based, order-independent
             label_map = gentry.get("legend_labels", {})
             if label_map and isinstance(label_map, dict):
-                text_objs = gentry["legend"].get_texts()
-                idx = 0
-                for fname in _visible_fnames:
-                    fentry = self.files.get(fname)
-                    if not fentry:
-                        continue
-                    _fdf = fentry.get("df")
-                    _fsel = (self._selected_cycles() if fname == self.active_file
-                             else fentry.get("selected_cycles", []))
-                    if _fdf is not None and "cycle number" in _fdf.columns and _fsel:
-                        for c in _fsel:
-                            if _fdf[_fdf["cycle number"] == c].empty:
-                                continue
-                            if idx < len(text_objs):
-                                lbl = label_map.get(f"{fname}:C{c}", "")
-                                if lbl:
-                                    text_objs[idx].set_text(lbl)
-                                idx += 1
+                _l2f = gentry.get("line_to_file", {})
+                _l2c = gentry.get("line_to_cycle", {})
+                for handle, text_obj in zip(gentry["legend"].legend_handles,
+                                            gentry["legend"].get_texts()):
+                    fname = _l2f.get(handle)
+                    cycle = _l2c.get(handle)
+                    if fname is not None and cycle is not None:
+                        lbl = label_map.get(f"{fname}:C{cycle}", "")
+                    elif fname is not None:
+                        lbl = label_map.get(fname, "")
                     else:
-                        if idx < len(text_objs):
-                            lbl = label_map.get(fname, "")
-                            if lbl:
-                                text_objs[idx].set_text(lbl)
-                            idx += 1
+                        lbl = ""
+                    if lbl:
+                        text_obj.set_text(lbl)
             if gentry.get("legend_manual_pos") is not None:
                 gentry["legend"]._loc = gentry["legend_manual_pos"]
             canvas.draw()
@@ -1977,29 +1971,18 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             self, leg, gentry["canvas"], gentry.get("leg_size", 8.0))
         if gentry.get("legend") is not None:
             gentry["legend"].set_draggable(True)
-            # Persist labels with stable keys {fname:Cc → label}
+            # Persist labels — handle-based so reordering in editor doesn't corrupt mapping
             label_map = gentry.get("legend_labels") if isinstance(gentry.get("legend_labels"), dict) else {}
-            _vis = [f for f in gentry.get("files", [])
-                    if self.files.get(f) and not self.files[f].get("hidden", False)]
-            text_objs = gentry["legend"].get_texts()
-            idx = 0
-            for fname in _vis:
-                fentry = self.files.get(fname)
-                if not fentry:
-                    continue
-                _fdf = fentry.get("df")
-                _fsel = fentry.get("selected_cycles", [])
-                if _fdf is not None and "cycle number" in _fdf.columns and _fsel:
-                    for c in _fsel:
-                        if _fdf[_fdf["cycle number"] == c].empty:
-                            continue
-                        if idx < len(text_objs):
-                            label_map[f"{fname}:C{c}"] = text_objs[idx].get_text()
-                            idx += 1
-                else:
-                    if idx < len(text_objs):
-                        label_map[fname] = text_objs[idx].get_text()
-                        idx += 1
+            _l2f = gentry.get("line_to_file", {})
+            _l2c = gentry.get("line_to_cycle", {})
+            for handle, text_obj in zip(gentry["legend"].legend_handles,
+                                        gentry["legend"].get_texts()):
+                fname = _l2f.get(handle)
+                cycle = _l2c.get(handle)
+                if fname is not None and cycle is not None:
+                    label_map[f"{fname}:C{cycle}"] = text_obj.get_text()
+                elif fname is not None:
+                    label_map[fname] = text_obj.get_text()
             gentry["legend_labels"] = label_map
 
     # ════════════════════════════════════════════════════════════════
@@ -2338,6 +2321,7 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             arrowprops=dict(arrowstyle="->", color="gray", lw=1.2),
             fontsize=8, zorder=10,
         )
+        gentry["ann"].set_in_layout(False)  # exclude from tight_layout bounding box
         gentry["ann_dot"], = ax.plot(x, y, "o", color=ln.get_color(),
                                      markersize=7, zorder=11, label="_ann_dot")
         gentry["canvas"].draw_idle()
