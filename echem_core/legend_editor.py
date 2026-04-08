@@ -169,12 +169,16 @@ def open_legend_editor(parent, legend_obj, canvas, font_size):
     _rebuild_rows()
 
     # ── Buttons ──────────────────────────────────────────────────────
-    result = [legend_obj]   # mutable container so _apply can write back
+    # result[0] = legend object, result[1] = permutation list
+    # permutation[new_pos] = orig_pos (index into handles_orig / texts_orig)
+    result = [legend_obj, list(range(len(items)))]
 
     def _apply():
         new_handles   = [item[0] for item in items]
         new_labels    = [item[1].get() for item in items]
         order_changed = (new_handles != handles_orig)
+        # Permutation: new position i came from original position j
+        result[1] = [handles_orig.index(item[0]) for item in items]
 
         if order_changed:
             # Recreate the legend with the new handle/label order
@@ -219,4 +223,4 @@ def open_legend_editor(parent, legend_obj, canvas, font_size):
     dlg.geometry(f"+{cx}+{cy}")
     parent.wait_window(dlg)
 
-    return result[0]
+    return result[0], result[1]

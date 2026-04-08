@@ -1796,23 +1796,17 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             gentry["legend"].set_draggable(True)
             gentry["legend"].get_frame().set_visible(leg_frm)
             gentry["leg_size"] = leg_size
-            # Restore custom labels — handle-based, order-independent
+            # Store key order (position → stable key) for this legend
+            _key_order = [_h2k_map.get(h) for h in _lh]
+            gentry["legend_key_order"] = _key_order
+            # Restore custom labels — position-based (legend_key_order[i] → label_map)
             label_map = gentry.get("legend_labels", {})
             if label_map and isinstance(label_map, dict):
-                _l2f = gentry.get("line_to_file", {})
-                _l2c = gentry.get("line_to_cycle", {})
-                for handle, text_obj in zip(gentry["legend"].legend_handles,
-                                            gentry["legend"].get_texts()):
-                    fname = _l2f.get(handle)
-                    cycle = _l2c.get(handle)
-                    if fname is not None and cycle is not None:
-                        lbl = label_map.get(f"{fname}:C{cycle}", "")
-                    elif fname is not None:
-                        lbl = label_map.get(fname, "")
-                    else:
-                        lbl = ""
-                    if lbl:
-                        text_obj.set_text(lbl)
+                for i, text_obj in enumerate(gentry["legend"].get_texts()):
+                    if i < len(_key_order):
+                        lbl = label_map.get(_key_order[i], "")
+                        if lbl:
+                            text_obj.set_text(lbl)
             if gentry.get("legend_manual_pos") is not None:
                 gentry["legend"]._loc = gentry["legend_manual_pos"]
             canvas.draw()
@@ -1976,28 +1970,21 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             messagebox.showinfo("Info", "Plot data first to create a legend.")
             return
         leg.set_draggable(False)
-        gentry["legend"] = open_legend_editor(
+        gentry["legend"], perm = open_legend_editor(
             self, leg, gentry["canvas"], gentry.get("leg_size", 8.0))
         if gentry.get("legend") is not None:
             gentry["legend"].set_draggable(True)
-            _l2f = gentry.get("line_to_file", {})
-            _l2c = gentry.get("line_to_cycle", {})
-            # Save display order as stable-key list
-            legend_order = []
+            orig_key_order = gentry.get("legend_key_order", [])
+            # perm[new_pos] = orig_pos — produced by legend_editor
+            legend_order = [orig_key_order[j] for j in perm
+                            if j < len(orig_key_order) and orig_key_order[j] is not None]
+            gentry["legend_order"] = legend_order
+            # Persist custom label text: new position i → key = legend_order[i]
             label_map = gentry.get("legend_labels") if isinstance(gentry.get("legend_labels"), dict) else {}
-            for handle, text_obj in zip(gentry["legend"].legend_handles,
-                                        gentry["legend"].get_texts()):
-                fname = _l2f.get(handle)
-                cycle = _l2c.get(handle)
-                if fname is not None and cycle is not None:
-                    key = f"{fname}:C{cycle}"
-                    label_map[key] = text_obj.get_text()
-                    legend_order.append(key)
-                elif fname is not None:
-                    label_map[fname] = text_obj.get_text()
-                    legend_order.append(fname)
+            for i, text_obj in enumerate(gentry["legend"].get_texts()):
+                if i < len(legend_order):
+                    label_map[legend_order[i]] = text_obj.get_text()
             gentry["legend_labels"] = label_map
-            gentry["legend_order"]  = legend_order
 
     # ════════════════════════════════════════════════════════════════
     # Per-file change handlers

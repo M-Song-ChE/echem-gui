@@ -1035,6 +1035,8 @@ class EISPanel(FileManagerMixin, ttk.Frame):
             _lh, _ll = list(reversed(_lh)), list(reversed(_ll))
             _lh, _ll = _reorder_legend_handles(
                 _lh, _ll, self._legend_order, self._legend_handle_to_key)
+            # Capture key order from real handles before ax.legend replaces them with proxies
+            self._legend_key_order = [self._legend_handle_to_key.get(h) for h in _lh]
             self._legend_obj = self.ax.legend(_lh, _ll,
                 fontsize=leg_size, loc=leg_loc)
             self._legend_obj.set_draggable(True)
@@ -1355,22 +1357,21 @@ class EISPanel(FileManagerMixin, ttk.Frame):
             messagebox.showinfo("Info", "Plot data first to create a legend.")
             return
         self._legend_obj.set_draggable(False)
-        self._legend_obj = open_legend_editor(
+        self._legend_obj, perm = open_legend_editor(
             self, self._legend_obj, self.canvas, self._current_legend_size)
         if self._legend_obj is not None:
             self._legend_obj.set_draggable(True)
-            h2k = getattr(self, '_legend_handle_to_key', {})
-            # Save display order as stable-key list
-            self._legend_order = [h2k[h] for h in self._legend_obj.legend_handles if h in h2k]
-            # Persist labels — handle-based so reordering doesn't corrupt mapping
-            for handle, text_obj in zip(self._legend_obj.legend_handles,
-                                        self._legend_obj.get_texts()):
-                key = h2k.get(handle)
-                if key is None:
-                    continue
+            orig_key_order = getattr(self, '_legend_key_order', [])
+            self._legend_order = [orig_key_order[j] for j in perm
+                                  if j < len(orig_key_order) and orig_key_order[j] is not None]
+            # Persist labels by stable key using new order
+            for i, text_obj in enumerate(self._legend_obj.get_texts()):
+                if i >= len(self._legend_order):
+                    break
+                key      = self._legend_order[i]
                 new_text = text_obj.get_text()
-                auto = next((self._legend_auto_labels[i]
-                             for i, k in enumerate(self._legend_stable_keys) if k == key),
+                auto = next((self._legend_auto_labels[j]
+                             for j, k in enumerate(getattr(self, '_legend_stable_keys', [])) if k == key),
                             new_text)
                 if new_text and new_text != auto:
                     self._legend_stable_map[key] = new_text

@@ -1365,14 +1365,17 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             entry["legend"].set_draggable(True)
             entry["legend"].get_frame().set_visible(leg_frm)
             entry["leg_size"] = leg_size
-            # Restore custom labels — handle-based, order-independent
+            # Store key order (position → stable key) for this legend
+            _key_order = [_h2k_map.get(h) for h in _lh]
+            entry["legend_key_order"] = _key_order
+            # Restore custom labels — position-based
             label_map = entry.get("legend_labels", {})
             if label_map and isinstance(label_map, dict):
-                for handle, text_obj in zip(entry["legend"].legend_handles,
-                                            entry["legend"].get_texts()):
-                    lbl = label_map.get(_h2k_map.get(handle, ""), "")
-                    if lbl:
-                        text_obj.set_text(lbl)
+                for i, text_obj in enumerate(entry["legend"].get_texts()):
+                    if i < len(_key_order):
+                        lbl = label_map.get(_key_order[i], "")
+                        if lbl:
+                            text_obj.set_text(lbl)
             # Restore dragged position
             if entry.get("legend_manual_pos") is not None:
                 entry["legend"]._loc = entry["legend_manual_pos"]
@@ -2068,30 +2071,19 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             messagebox.showinfo("Info", "Plot data first to create a legend.")
             return
         leg.set_draggable(False)
-        entry["legend"] = open_legend_editor(
+        entry["legend"], perm = open_legend_editor(
             self, leg, entry["canvas"], entry.get("leg_size", 8.0))
         if entry.get("legend") is not None:
             entry["legend"].set_draggable(True)
-            short = self.active_file
+            orig_key_order = entry.get("legend_key_order", [])
+            legend_order = [orig_key_order[j] for j in perm
+                            if j < len(orig_key_order) and orig_key_order[j] is not None]
+            entry["legend_order"] = legend_order
             label_map = entry.get("legend_labels") if isinstance(entry.get("legend_labels"), dict) else {}
-            df = entry.get("df")
-            legend_order = []
-            for handle, text_obj in zip(entry["legend"].legend_handles,
-                                        entry["legend"].get_texts()):
-                orig_lbl = handle.get_label()
-                if df is not None and "cycle number" in df.columns and orig_lbl.startswith("C"):
-                    try:
-                        c = int(orig_lbl[1:])
-                        key = f"{short}:C{c}"
-                        label_map[key] = text_obj.get_text()
-                        legend_order.append(key)
-                    except ValueError:
-                        pass
-                elif orig_lbl and not orig_lbl.startswith("_"):
-                    label_map[short] = text_obj.get_text()
-                    legend_order.append(short)
+            for i, text_obj in enumerate(entry["legend"].get_texts()):
+                if i < len(legend_order):
+                    label_map[legend_order[i]] = text_obj.get_text()
             entry["legend_labels"] = label_map
-            entry["legend_order"]  = legend_order
 
     # ════════════════════════════════════════════════════════════════
     # Reference line helpers

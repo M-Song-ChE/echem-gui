@@ -861,6 +861,8 @@ class PlottingMixin:
                 _lh, _ll,
                 getattr(self, '_legend_order', []),
                 self._legend_handle_to_key)
+            # Capture key order from real handles (before ax.legend replaces them with proxies)
+            self._legend_key_order = [self._legend_handle_to_key.get(h) for h in _lh]
             self._legend_obj = self.ax.legend(_lh, _ll,
                 fontsize=legend_size, loc=legend_loc)
             self._legend_obj.set_draggable(True)
