@@ -715,7 +715,7 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         _panel = self
 
         # Upper: CV plot
-        self.fig_cv    = Figure(figsize=(_fw, _fh), dpi=100, constrained_layout=True)
+        self.fig_cv    = Figure(figsize=(_fw, _fh), dpi=100)
         self.ax_cv     = self.fig_cv.add_subplot(1, 1, 1)
         self.canvas_cv = FigureCanvasTkAgg(self.fig_cv, master=_plots_frame)
         self.canvas_cv.get_tk_widget().pack()
@@ -738,7 +738,7 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         ttk.Separator(_plots_frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=2)
 
         # Lower: Cdl extraction plot
-        self.fig_cdl    = Figure(figsize=(_fw, _fh), dpi=100, constrained_layout=True)
+        self.fig_cdl    = Figure(figsize=(_fw, _fh), dpi=100)
         self.ax_cdl     = self.fig_cdl.add_subplot(1, 1, 1)
         self.canvas_cdl = FigureCanvasTkAgg(self.fig_cdl, master=_plots_frame)
         self.canvas_cdl.get_tk_widget().pack()
@@ -1358,6 +1358,10 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         for fig, cv in ((self.fig_cv, self.canvas_cv), (self.fig_cdl, self.canvas_cdl)):
             fig.set_size_inches(w, h)
             cv.get_tk_widget().config(width=int(w * dpi), height=int(h * dpi))
+            _legs = [a.get_legend() for a in fig.get_axes() if a.get_legend() is not None]
+            for _l in _legs: _l.set_visible(False)
+            fig.tight_layout(pad=0.5)
+            for _l in _legs: _l.set_visible(True)
             cv.draw_idle()
         self._plot_sc.after(
             50, lambda: self._plot_sc.configure(

@@ -697,13 +697,15 @@ class PlottingMixin:
         # Determine highlight state (active file brought to front with glow)
         _visible_shorts = [s for s, e in self.files.items()
                            if not e.get("hidden", False)]
+        # Rank 1 (index 0, top of file list) drawn last → appears in front
+        _visible_shorts = list(reversed(_visible_shorts))
         _active_short   = self.active_file
         _highlight      = (self._plot_highlight
                            and len(_visible_shorts) > 1 and bool(_active_short)
                            and _active_short in _visible_shorts)
 
-        # ── Draw all files in INSERTION ORDER at full alpha ─────────────
-        # Drawing in insertion order keeps legend entries in a stable order.
+        # ── Draw all files in rank order at full alpha ─────────────────
+        # Rank 1 (top of list) is drawn last so it appears in front.
         # Z-order and glow are applied in a post-draw pass so they never
         # affect legend symbol alpha or entry ordering.
         for short in _visible_shorts:

@@ -537,7 +537,7 @@ class EISPanel(FileManagerMixin, ttk.Frame):
 
         _fw = float(self.plot_w_var.get())
         _fh = float(self.plot_h_var.get())
-        self.fig = Figure(figsize=(_fw, _fh), dpi=100, constrained_layout=True)
+        self.fig = Figure(figsize=(_fw, _fh), dpi=100)
         self.ax  = self.fig.add_subplot(111)
         self.canvas = FigureCanvasTkAgg(self.fig, master=_plots_frame)
         self.canvas.get_tk_widget().pack()
@@ -889,6 +889,10 @@ class EISPanel(FileManagerMixin, ttk.Frame):
         dpi = 100
         self.fig.set_size_inches(w, h)
         self.canvas.get_tk_widget().config(width=int(w * dpi), height=int(h * dpi))
+        _leg = self.ax.get_legend()
+        if _leg is not None: _leg.set_visible(False)
+        self.fig.tight_layout(pad=0.5)
+        if _leg is not None: _leg.set_visible(True)
         self.canvas.draw_idle()
         self._plot_sc.after(
             50, lambda: self._plot_sc.configure(
@@ -964,9 +968,10 @@ class EISPanel(FileManagerMixin, ttk.Frame):
 
         has_data = False
         self._legend_stable_keys = []   # reset for this replot
-        for short, fentry in self.files.items():
-            if fentry.get("hidden", False):
-                continue
+        # Rank 1 (index 0, top of file list) drawn last → appears in front
+        _visible_items = [(s, e) for s, e in self.files.items()
+                          if not e.get("hidden", False)]
+        for short, fentry in reversed(_visible_items):
             df = fentry["df"]
             if xcol not in df.columns or ycol not in df.columns:
                 continue

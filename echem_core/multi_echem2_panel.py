@@ -994,7 +994,7 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             _fh = float(self.plot_h_var.get())
         except (ValueError, AttributeError):
             _fw, _fh = 9.5, 5.5
-        fig = Figure(figsize=(_fw, _fh), dpi=100, constrained_layout=True)
+        fig = Figure(figsize=(_fw, _fh), dpi=100)
         ax  = fig.add_subplot(111)
         canvas = FigureCanvasTkAgg(fig, master=inner)
         canvas.get_tk_widget().pack()
@@ -1299,6 +1299,10 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             if fig and cv:
                 fig.set_size_inches(w, h)
                 cv.get_tk_widget().config(width=int(w * dpi), height=int(h * dpi))
+                _legs = [a.get_legend() for a in fig.get_axes() if a.get_legend() is not None]
+                for _l in _legs: _l.set_visible(False)
+                fig.tight_layout(pad=0.5)
+                for _l in _legs: _l.set_visible(True)
                 cv.draw_idle()
         self._right_canvas.after(
             50, lambda: self._right_canvas.configure(
@@ -1624,6 +1628,8 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
                            if self.files.get(f)
                            and not self.files[f].get("hidden", False)
                            and not _fhidden.get(f, False)]
+        # Rank 1 (index 0, top of list) is drawn last → appears in front
+        _visible_fnames = list(reversed(_visible_fnames))
         _af_in_group    = self.active_file in _visible_fnames
         _highlight      = self._plot_highlight and _af_in_group
 
@@ -1702,23 +1708,23 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
                 y_scale, _ = self._get_unit_scale(_real_ycol, y_unit)
 
             # Plot (all at alpha=1.0; glow/zorder applied in post-draw pass)
-            if "cycle number" in df.columns:
-                if selected:
-                    cyc_cols = (_cycle_colors(base_color, len(selected), _step, _rev)
-                                if _grad else [base_color] * len(selected))
-                    for i, c in enumerate(selected):
-                        sub = df[df["cycle number"] == c]
-                        if sub.empty:
-                            continue
-                        lbl = f"{fname} C{c}" if multi_file else f"C{c}"
-                        ln, = ax.plot(sub[_real_xcol] * x_scale, sub[_real_ycol] * y_scale,
-                                      color=cyc_cols[i], label=lbl, linewidth=_lw,
-                                      linestyle=_ls, marker=_mk or None,
-                                      markersize=_ms if _mk else 0)
-                        gentry["line_to_file"][ln]  = fname
-                        gentry["line_to_cycle"][ln] = c
-                    has_data = True
+            if "cycle number" in df.columns and selected:
+                cyc_cols = (_cycle_colors(base_color, len(selected), _step, _rev)
+                            if _grad else [base_color] * len(selected))
+                for i, c in enumerate(selected):
+                    sub = df[df["cycle number"] == c]
+                    if sub.empty:
+                        continue
+                    lbl = f"{fname} C{c}" if multi_file else f"C{c}"
+                    ln, = ax.plot(sub[_real_xcol] * x_scale, sub[_real_ycol] * y_scale,
+                                  color=cyc_cols[i], label=lbl, linewidth=_lw,
+                                  linestyle=_ls, marker=_mk or None,
+                                  markersize=_ms if _mk else 0)
+                    gentry["line_to_file"][ln]  = fname
+                    gentry["line_to_cycle"][ln] = c
+                has_data = True
             else:
+                # No cycle filter (no "cycle number" column, or no cycles selected yet)
                 ln, = ax.plot(df[_real_xcol] * x_scale, df[_real_ycol] * y_scale,
                               color=base_color, label=fname, linewidth=_lw,
                               linestyle=_ls, marker=_mk or None,

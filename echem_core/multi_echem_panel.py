@@ -792,7 +792,7 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             _fh = float(self.plot_h_var.get())
         except (ValueError, AttributeError):
             _fw, _fh = 9.5, 5.5
-        fig = Figure(figsize=(_fw, _fh), dpi=100, constrained_layout=True)
+        fig = Figure(figsize=(_fw, _fh), dpi=100)
         ax  = fig.add_subplot(111)
         canvas = FigureCanvasTkAgg(fig, master=inner)
         canvas.get_tk_widget().pack()
@@ -1288,19 +1288,19 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         _ls, _mk, _ms = _PLOT_STYLES.get(_sname, ("-", "", 0))
 
         has_data = False
-        if "cycle number" in df.columns:
-            if selected:
-                cycle_cols = (_cycle_colors(base_color, len(selected), _step, _rev)
-                              if _grad else [base_color] * len(selected))
-                for i, c in enumerate(selected):
-                    sub = df[df["cycle number"] == c]
-                    ax.plot(sub[_real_xcol] * x_scale,
-                            sub[_real_ycol] * y_scale,
-                            color=cycle_cols[i], label=f"C{c}", linewidth=_lw,
-                            linestyle=_ls, marker=_mk or None,
-                            markersize=_ms if _mk else 0)
-                has_data = True
+        if "cycle number" in df.columns and selected:
+            cycle_cols = (_cycle_colors(base_color, len(selected), _step, _rev)
+                          if _grad else [base_color] * len(selected))
+            for i, c in enumerate(selected):
+                sub = df[df["cycle number"] == c]
+                ax.plot(sub[_real_xcol] * x_scale,
+                        sub[_real_ycol] * y_scale,
+                        color=cycle_cols[i], label=f"C{c}", linewidth=_lw,
+                        linestyle=_ls, marker=_mk or None,
+                        markersize=_ms if _mk else 0)
+            has_data = True
         else:
+            # No cycle filter (no "cycle number" column, or no cycles selected yet)
             ax.plot(df[_real_xcol] * x_scale, df[_real_ycol] * y_scale,
                     color=base_color, label=short, linewidth=_lw,
                     linestyle=_ls, marker=_mk or None,
@@ -1450,6 +1450,10 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             if fig and cv:
                 fig.set_size_inches(w, h)
                 cv.get_tk_widget().config(width=int(w * dpi), height=int(h * dpi))
+                _legs = [a.get_legend() for a in fig.get_axes() if a.get_legend() is not None]
+                for _l in _legs: _l.set_visible(False)
+                fig.tight_layout(pad=0.5)
+                for _l in _legs: _l.set_visible(True)
                 cv.draw_idle()
         self._right_canvas.after(
             50, lambda: self._right_canvas.configure(

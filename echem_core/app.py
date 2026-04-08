@@ -911,6 +911,10 @@ class EchemPanel(
         dpi = 100
         self.fig.set_size_inches(w, h)
         self.canvas.get_tk_widget().config(width=int(w * dpi), height=int(h * dpi))
+        _leg = self.ax.get_legend()
+        if _leg is not None: _leg.set_visible(False)
+        self.fig.tight_layout(pad=0.5)
+        if _leg is not None: _leg.set_visible(True)
         self.canvas.draw_idle()
         self._plot_sc.after(
             50, lambda: self._plot_sc.configure(

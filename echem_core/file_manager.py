@@ -396,6 +396,13 @@ class FileManagerMixin:
         self._suppress_replot = True
         self._switch_active_file(list(self.files.keys())[last_idx])
         self._suppress_replot = False
+        # Never auto-highlight on load — clear any highlight state left over
+        # from a previous user interaction before the post-load replot runs.
+        if hasattr(self, '_plot_highlight'):
+            self._plot_highlight = False
+        if hasattr(self, '_active_cycle'):
+            self._active_cycle = None
+
         entry = self.files.get(self.active_file)
         if entry is not None:
             _df = entry["df"]
