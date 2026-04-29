@@ -156,8 +156,11 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
                 dim = _UNIT_DIMS.get(raw_unit)
             opts = list(_DIM_OPTS.get(dim, ["(auto)"]))
             unit_cb["values"] = opts
-            if unit_var.get() not in opts:
-                unit_var.set("(auto)")
+            cur = unit_var.get()
+            if cur not in opts:
+                unit_var.set("mA/cm²" if col == "J" else "(auto)")
+            elif col == "J" and cur == "(auto)":
+                unit_var.set("mA/cm²")
             self._auto_replot()
 
         def _refresh_unit_after(unit_var, unit_cb):
@@ -477,6 +480,9 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         def _on_leg_loc_select_multi(e=None):
             if self.active_file and self.active_file in self.files:
                 self.files[self.active_file].pop("legend_manual_pos", None)
+                _leg = self.files[self.active_file].get("legend")
+                if _leg is not None:
+                    _leg._loc = 0  # clear dragged tuple so it doesn't get re-saved
             self._auto_replot()
         _leg_loc_cb.bind("<<ComboboxSelected>>", _on_leg_loc_select_multi)
         ttk.Label(left, text="(left-drag to move, right-drag to resize; dbl-click to edit)",
@@ -622,9 +628,13 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         _rl_lw.bind("<Return>",   lambda e: self._on_refline_style_color_change())
         _rl_lw.bind("<FocusOut>", lambda e: self._on_refline_style_color_change())
 
-        # ── Plot button ───────────────────────────────────────────
-        ttk.Button(left, text="Plot Active File",
-                   command=self._auto_replot).pack(padx=4, pady=6, anchor=tk.W)
+        # ── Plot + Export buttons ─────────────────────────────────
+        _btn_row = ttk.Frame(left)
+        _btn_row.pack(fill=tk.X, padx=4, pady=6)
+        ttk.Button(_btn_row, text="Plot Active File",
+                   command=self._auto_replot).pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Button(_btn_row, text="Export Cycles",
+                   command=self._export_cycles_excel).pack(side=tk.LEFT)
 
         # ── Log ───────────────────────────────────────────────────
         ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
@@ -651,6 +661,7 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         # ── Plot size controls (always visible) ──────────────────────
         self.plot_w_var = tk.StringVar(value="10.5")
         self.plot_h_var = tk.StringVar(value="5.5")
+        self._grid_cols_var = tk.StringVar(value="2")
         _size_bar = ttk.Frame(right_outer)
         _size_bar.grid(row=0, column=0, sticky="ew", padx=4, pady=2)
         ttk.Label(_size_bar, text="Plot size (in):").pack(side=tk.LEFT, padx=(4, 2))
@@ -660,9 +671,14 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         ttk.Label(_size_bar, text="H").pack(side=tk.LEFT)
         _ph_e = ttk.Entry(_size_bar, textvariable=self.plot_h_var, width=5)
         _ph_e.pack(side=tk.LEFT, padx=(1, 0))
+        ttk.Label(_size_bar, text="Cols:").pack(side=tk.LEFT, padx=(10, 2))
+        _gc_e = ttk.Entry(_size_bar, textvariable=self._grid_cols_var, width=3)
+        _gc_e.pack(side=tk.LEFT, padx=(1, 0))
         for _e in (_pw_e, _ph_e):
             _e.bind("<Return>",   lambda ev: self._apply_plot_size())
             _e.bind("<FocusOut>", lambda ev: self._apply_plot_size())
+        _gc_e.bind("<Return>",   lambda ev: self._on_grid_cols_change())
+        _gc_e.bind("<FocusOut>", lambda ev: self._on_grid_cols_change())
 
         # Zoom bar (hidden initially; shown via grid() in _zoom_file_view)
         self._zoom_bar = ttk.Frame(right_outer)
@@ -948,11 +964,22 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             self._right_canvas.itemconfig(self._plots_win,
                                           width=event.width, height=event.height)
 
+    def _on_grid_cols_change(self):
+        try:
+            c = max(1, int(self._grid_cols_var.get()))
+            self._grid_cols_var.set(str(c))
+        except (ValueError, AttributeError):
+            self._grid_cols_var.set("2")
+        self._relayout_figures()
+
     def _relayout_figures(self):
-        """Place every file's plot frame in a max-2-column grid, in load order.
+        """Place every file's plot frame in a configurable-column grid, in load order.
         When self._zoom_file is set, expand that subplot to fill the full canvas area.
         """
-        MAX_COLS = 2
+        try:
+            MAX_COLS = max(1, int(self._grid_cols_var.get()))
+        except (ValueError, AttributeError):
+            MAX_COLS = 2
         valid = [(s, self.files[s]) for s in self.files
                  if "plot_frame" in self.files[s]
                  and not self.files[s].get("hidden", False)]
@@ -961,7 +988,7 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         if self._zoom_file and any(s == self._zoom_file for s, _ in valid):
             for s, entry in valid:
                 if s == self._zoom_file:
-                    entry["plot_frame"].grid(row=0, column=0, columnspan=2,
+                    entry["plot_frame"].grid(row=0, column=0, columnspan=MAX_COLS,
                                              sticky="nsew", padx=4, pady=4)
                 else:
                     entry["plot_frame"].grid_remove()
@@ -977,7 +1004,7 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         for i, (short, entry) in enumerate(valid):
             row = i // MAX_COLS
             col = i % MAX_COLS
-            # columnspan=1 must be explicit to reset any prior columnspan=2 from zoom mode
+            # columnspan=1 must be explicit to reset any prior columnspan from zoom mode
             entry["plot_frame"].grid(row=row, column=col, columnspan=1,
                                      sticky="nsew", padx=4, pady=4)
         # Rows have no extra weight — height is driven by figure content
@@ -1449,6 +1476,8 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         w = max(2.0, min(50.0, w))
         h = max(1.5, min(50.0, h))
         dpi = 100
+        # Reset any width constraint from zoom mode before resizing
+        self._right_canvas.itemconfig(self._plots_win, width=0, height=0)
         for entry in self.files.values():
             fig = entry.get("fig")
             cv  = entry.get("canvas")
@@ -1461,9 +1490,12 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
                 fig.set_layout_engine('none')
                 for _l in _legs: _l.set_visible(True)
                 cv.draw_idle()
-        self._right_canvas.after(
-            50, lambda: self._right_canvas.configure(
-                scrollregion=self._right_canvas.bbox("all")))
+
+        def _update_scrollregion():
+            self._plots_frame.update_idletasks()
+            self._right_canvas.configure(
+                scrollregion=self._right_canvas.bbox("all"))
+        self._right_canvas.after(100, _update_scrollregion)
 
     def _zoom_file_view(self, short):
         """Expand the subplot for *short* to fill the full right panel."""
@@ -1490,12 +1522,13 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         self._right_canvas.yview_moveto(0)
 
     def _unzoom_file_view(self):
-        """Restore the 2-column grid layout."""
+        """Restore the multi-column grid layout."""
         self._zoom_file = None
         self._zoom_bar.grid_remove()
-        self._right_canvas.itemconfig(self._plots_win, height=0)
+        self._right_canvas.itemconfig(self._plots_win, width=0, height=0)
         self._apply_plot_size()
         self._relayout_figures()
+        self._plots_frame.update_idletasks()
         self._right_canvas.configure(scrollregion=self._right_canvas.bbox("all"))
 
     def _toggle_zoom(self, short):
@@ -1513,13 +1546,50 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             self.after(100, self._auto_set_initial_size)
             return
         dpi = 100
-        # 2-column grid: each plot gets half the panel width
-        plot_w = max(3.0, (w / 2 - 30) / dpi)
-        # Height ~60% of width for a reasonable aspect ratio
+        try:
+            _ncols = max(1, int(self._grid_cols_var.get()))
+        except (ValueError, AttributeError):
+            _ncols = 2
+        plot_w = max(3.0, (w / _ncols - 30) / dpi)
         plot_h = max(2.0, round(plot_w * 0.6, 1))
         self.plot_w_var.set(f"{plot_w:.1f}")
         self.plot_h_var.set(f"{plot_h:.1f}")
         self._apply_plot_size()
+
+    # ════════════════════════════════════════════════════════════════
+    # Export cycles to Excel (one file, one sheet per cycle)
+    # ════════════════════════════════════════════════════════════════
+    def _export_cycles_excel(self):
+        import os
+        import pandas as pd
+        from tkinter import filedialog, messagebox
+        if not self.active_file or self.active_file not in self.files:
+            messagebox.showinfo("Info", "Select a file first.")
+            return
+        self._save_active_state()
+        entry = self.files[self.active_file]
+        df_corr = entry["df"]
+        cycles  = entry.get("selected_cycles", [])
+        if not cycles or "cycle number" not in df_corr.columns:
+            messagebox.showinfo("Info", "Select at least one cycle to export.")
+            return
+        base = os.path.splitext(self.active_file)[0]
+        out_path = filedialog.asksaveasfilename(
+            initialfile=f"{base}_cycles.xlsx",
+            defaultextension=".xlsx",
+            filetypes=[("Excel files", "*.xlsx")],
+            title="Save Excel file",
+        )
+        if not out_path:
+            return
+        try:
+            with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
+                for c in cycles:
+                    sub = df_corr[df_corr["cycle number"] == c].reset_index(drop=True)
+                    sub.to_excel(writer, sheet_name=f"C{c}", index=False)
+            messagebox.showinfo("Export complete", f"Saved to:\n{out_path}")
+        except Exception as exc:
+            messagebox.showerror("Export error", str(exc))
 
     # ════════════════════════════════════════════════════════════════
     # File color helper

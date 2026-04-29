@@ -74,8 +74,9 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         self._cycle_vars      = {}
         self._zoom_group      = None
         self._drag            = None   # drag-to-reorder group subplot frames
-        self._plot_highlight  = False
-        self._active_cycle    = None   # specific cycle number highlighted (None = whole file)
+        self._plot_highlight      = False
+        self._active_cycle        = None   # specific cycle number highlighted (None = whole file)
+        self._copied_group_params = None   # clipboard for Copy/Paste group settings
         self._build_panel()
         self.after(500, self._auto_set_initial_size)
 
@@ -155,6 +156,16 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
 
         ttk.Button(left, text="↑ Remove Selected from Group",
                    command=self._remove_files_from_group).pack(fill=tk.X, padx=4, pady=(0, 2))
+
+        # Copy / Paste group display settings
+        _cp_row = ttk.Frame(left)
+        _cp_row.pack(fill=tk.X, padx=4, pady=(2, 0))
+        ttk.Button(_cp_row, text="Copy Settings",
+                   command=self._copy_group_settings).pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Button(_cp_row, text="Paste Settings",
+                   command=self._paste_group_settings).pack(side=tk.LEFT)
+        ttk.Label(_cp_row, text="(font/grid/legend)",
+                  foreground="gray", font=("", 7)).pack(side=tk.LEFT, padx=(6, 0))
 
         # ══ FILE STYLE ═════════════════════════════════════════════
         ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=4)
@@ -290,8 +301,11 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
                 col.rsplit("/", 1)[-1].strip() if "/" in col else "")
             opts = list(_DIM_OPTS.get(dim, ["(auto)"]))
             unit_cb["values"] = opts
-            if unit_var.get() not in opts:
-                unit_var.set("(auto)")
+            cur = unit_var.get()
+            if cur not in opts:
+                unit_var.set("mA/cm²" if col == "J" else "(auto)")
+            elif col == "J" and cur == "(auto)":
+                unit_var.set("mA/cm²")
             self._auto_replot()
 
         def _refresh_unit_after(unit_var, unit_cb):
@@ -471,6 +485,9 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         def _on_leg_loc_select(e=None):
             if self.active_group and self.active_group in self.groups:
                 self.groups[self.active_group].pop("legend_manual_pos", None)
+                _leg = self.groups[self.active_group].get("legend")
+                if _leg is not None:
+                    _leg._loc = 0  # clear dragged tuple so it doesn't get re-saved
             self._auto_replot()
         _leg_loc_cb.bind("<<ComboboxSelected>>", _on_leg_loc_select)
         ttk.Label(left, text="(left-drag to move, dbl-click to edit labels)",
@@ -605,9 +622,13 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         _rl_lw.bind("<Return>",   lambda e: self._on_refline_style_color_change())
         _rl_lw.bind("<FocusOut>", lambda e: self._on_refline_style_color_change())
 
-        # ══ PLOT BUTTON + LOG ═══════════════════════════════════════
-        ttk.Button(left, text="Plot Active Group",
-                   command=self._auto_replot).pack(padx=4, pady=6, anchor=tk.W)
+        # ══ PLOT BUTTON + EXPORT + LOG ══════════════════════════════
+        _btn2_row = ttk.Frame(left)
+        _btn2_row.pack(fill=tk.X, padx=4, pady=6)
+        ttk.Button(_btn2_row, text="Plot Active Group",
+                   command=self._auto_replot).pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Button(_btn2_row, text="Export Group Cycles",
+                   command=self._export_group_cycles_excel).pack(side=tk.LEFT)
         ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
         ttk.Label(left, text="Log", font=("", 9, "bold")).pack(anchor=tk.W, padx=4)
         log_f = ttk.Frame(left)
@@ -631,6 +652,7 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         # ── Plot size controls (always visible) ──────────────────────
         self.plot_w_var = tk.StringVar(value="10.5")
         self.plot_h_var = tk.StringVar(value="5.5")
+        self._grid_cols_var = tk.StringVar(value="2")
         _size_bar = ttk.Frame(right_outer)
         _size_bar.grid(row=0, column=0, sticky="ew", padx=4, pady=2)
         ttk.Label(_size_bar, text="Plot size (in):").pack(side=tk.LEFT, padx=(4, 2))
@@ -640,9 +662,14 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         ttk.Label(_size_bar, text="H").pack(side=tk.LEFT)
         _ph_e = ttk.Entry(_size_bar, textvariable=self.plot_h_var, width=5)
         _ph_e.pack(side=tk.LEFT, padx=(1, 0))
+        ttk.Label(_size_bar, text="Cols:").pack(side=tk.LEFT, padx=(10, 2))
+        _gc_e = ttk.Entry(_size_bar, textvariable=self._grid_cols_var, width=3)
+        _gc_e.pack(side=tk.LEFT, padx=(1, 0))
         for _e in (_pw_e, _ph_e):
             _e.bind("<Return>",   lambda ev: self._apply_plot_size())
             _e.bind("<FocusOut>", lambda ev: self._apply_plot_size())
+        _gc_e.bind("<Return>",   lambda ev: self._on_grid_cols_change())
+        _gc_e.bind("<FocusOut>", lambda ev: self._on_grid_cols_change())
 
         self._zoom_bar = ttk.Frame(right_outer)
         ttk.Button(self._zoom_bar, text="← Back to Grid",
@@ -1079,8 +1106,19 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             self._right_canvas.itemconfig(self._plots_win,
                                           width=event.width, height=event.height)
 
+    def _on_grid_cols_change(self):
+        try:
+            c = max(1, int(self._grid_cols_var.get()))
+            self._grid_cols_var.set(str(c))
+        except (ValueError, AttributeError):
+            self._grid_cols_var.set("2")
+        self._relayout_figures()
+
     def _relayout_figures(self):
-        MAX_COLS = 2
+        try:
+            MAX_COLS = max(1, int(self._grid_cols_var.get()))
+        except (ValueError, AttributeError):
+            MAX_COLS = 2
         valid = [(gn, self.groups[gn]) for gn in self.groups
                  if "plot_frame" in self.groups[gn]
                  and not self.groups[gn].get("hidden", False)]
@@ -1088,7 +1126,7 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         if self._zoom_group and any(gn == self._zoom_group for gn, _ in valid):
             for gn, gentry in valid:
                 if gn == self._zoom_group:
-                    gentry["plot_frame"].grid(row=0, column=0, columnspan=2,
+                    gentry["plot_frame"].grid(row=0, column=0, columnspan=MAX_COLS,
                                              sticky="nsew", padx=4, pady=4)
                 else:
                     gentry["plot_frame"].grid_remove()
@@ -1241,8 +1279,11 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             self.after(100, self._auto_set_initial_size)
             return
         dpi = 100
-        # 2-column grid: each plot gets half the panel width
-        plot_w = max(3.0, (w / 2 - 30) / dpi)
+        try:
+            _ncols = max(1, int(self._grid_cols_var.get()))
+        except (ValueError, AttributeError):
+            _ncols = 2
+        plot_w = max(3.0, (w / _ncols - 30) / dpi)
         plot_h = max(2.0, round(plot_w * 0.6, 1))
         self.plot_w_var.set(f"{plot_w:.1f}")
         self.plot_h_var.set(f"{plot_h:.1f}")
@@ -1293,6 +1334,8 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         w = max(2.0, min(50.0, w))
         h = max(1.5, min(50.0, h))
         dpi = 100
+        # Reset any width constraint from zoom mode before resizing
+        self._right_canvas.itemconfig(self._plots_win, width=0, height=0)
         for gentry in self.groups.values():
             fig = gentry.get("fig")
             cv  = gentry.get("canvas")
@@ -1305,9 +1348,12 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
                 fig.set_layout_engine('none')
                 for _l in _legs: _l.set_visible(True)
                 cv.draw_idle()
-        self._right_canvas.after(
-            50, lambda: self._right_canvas.configure(
-                scrollregion=self._right_canvas.bbox("all")))
+
+        def _update_scrollregion():
+            self._plots_frame.update_idletasks()
+            self._right_canvas.configure(
+                scrollregion=self._right_canvas.bbox("all"))
+        self._right_canvas.after(100, _update_scrollregion)
 
     def _zoom_group_view(self, group_name):
         self._zoom_group = group_name
@@ -1335,9 +1381,10 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
     def _unzoom_group_view(self):
         self._zoom_group = None
         self._zoom_bar.grid_remove()
-        self._right_canvas.itemconfig(self._plots_win, height=0)
+        self._right_canvas.itemconfig(self._plots_win, width=0, height=0)
         self._apply_plot_size()
         self._relayout_figures()
+        self._plots_frame.update_idletasks()
         self._right_canvas.configure(scrollregion=self._right_canvas.bbox("all"))
 
     def _activate_group(self, group_name):
@@ -1349,6 +1396,118 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         if group_name != self.active_group:
             self._save_active_group_state()
             self._switch_active_group(group_name)
+
+    # ════════════════════════════════════════════════════════════════
+    # Copy / Paste group display settings
+    # ════════════════════════════════════════════════════════════════
+    _COPYABLE_KEYS = (
+        "font_title_size", "font_title_bold",
+        "font_label_size", "font_label_bold",
+        "font_tick_size",  "font_tick_bold",
+        "title_pad", "label_pad",
+        "ref_electrode",
+        "x_grid", "y_grid", "grid_style", "grid_color", "grid_linewidth",
+        "legend_frame", "leg_size", "legend_loc", "legend_show",
+    )
+
+    def _copy_group_settings(self):
+        if not self.active_group or self.active_group not in self.groups:
+            return
+        self._save_active_group_state()
+        g = self.groups[self.active_group]
+        self._copied_group_params = {k: g.get(k) for k in self._COPYABLE_KEYS}
+        self._copied_group_params["reflines"] = list(g.get("reflines", []))
+
+    def _paste_group_settings(self):
+        if not self._copied_group_params:
+            return
+        if not self.active_group or self.active_group not in self.groups:
+            return
+        g = self.groups[self.active_group]
+        p = self._copied_group_params
+        for k in self._COPYABLE_KEYS:
+            if k in p and p[k] is not None:
+                g[k] = p[k]
+        g["reflines"] = list(p.get("reflines", []))
+        # Refresh UI vars for the active group
+        self.font_title_size_var.set(g.get("font_title_size", "10"))
+        self.font_title_bold_var.set(g.get("font_title_bold", False))
+        self.font_label_size_var.set(g.get("font_label_size", "10"))
+        self.font_label_bold_var.set(g.get("font_label_bold", False))
+        self.font_tick_size_var.set(g.get("font_tick_size",  "8"))
+        self.font_tick_bold_var.set(g.get("font_tick_bold",  False))
+        self.title_pad_var.set(g.get("title_pad", "6"))
+        self.label_pad_var.set(g.get("label_pad", "4"))
+        self.ref_electrode_var.set(g.get("ref_electrode", "Ag/AgCl"))
+        self.x_grid_var.set(g.get("x_grid", False))
+        self.y_grid_var.set(g.get("y_grid", False))
+        self.grid_style_var.set(g.get("grid_style", "dashed"))
+        self.grid_color_var.set(g.get("grid_color", "gray"))
+        self.grid_linewidth_var.set(g.get("grid_linewidth", "0.8"))
+        self.legend_frame_var.set(g.get("legend_frame", True))
+        _ls = g.get("leg_size", 8.0)
+        self.legend_size_var.set(str(int(_ls) if float(_ls) == int(_ls) else _ls))
+        self.legend_loc_var.set(g.get("legend_loc", "best"))
+        self.legend_show_var.set(g.get("legend_show", True))
+        self._refresh_reflines_lb()
+        self._auto_replot()
+
+    # ════════════════════════════════════════════════════════════════
+    # Export group cycles to Excel (one file per source file)
+    # ════════════════════════════════════════════════════════════════
+    def _export_group_cycles_excel(self):
+        import os
+        import pandas as pd
+        from tkinter import filedialog, messagebox
+        if not self.active_group or self.active_group not in self.groups:
+            messagebox.showinfo("Info", "Select a group first.")
+            return
+        self._save_active_group_state()
+        gentry = self.groups[self.active_group]
+        files = gentry.get("files", [])
+        if not files:
+            messagebox.showinfo("Info", "No files in the active group.")
+            return
+        dir_path = filedialog.askdirectory(title="Select folder to save Excel files")
+        if not dir_path:
+            return
+        exported, errors = [], []
+        for fname in files:
+            fentry = self.files.get(fname)
+            if fentry is None:
+                continue
+            fp     = gentry.get("file_params", {}).get(fname, {})
+            cycles = fp.get("selected_cycles", fentry.get("selected_cycles", []))
+            if not cycles:
+                continue
+            _rsol = fp.get("r_sol", 0.0)
+            _eref = fp.get("e_ref", 0.0)
+            df = fentry["df_raw"].copy()
+            if _rsol != 0.0 and "Ewe/V" in df.columns and "I/mA" in df.columns:
+                df["Ewe/V"] = df["Ewe/V"] - (df["I/mA"] / 1000.0) * _rsol
+            if _eref != 0.0 and "Ewe/V" in df.columns:
+                df["Ewe/V"] = df["Ewe/V"] + _eref
+            if "cycle number" not in df.columns:
+                continue
+            base = os.path.splitext(fname)[0]
+            out_path = os.path.join(dir_path, f"{base}.xlsx")
+            try:
+                with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
+                    for c in cycles:
+                        sub = df[df["cycle number"] == c].reset_index(drop=True)
+                        sub.to_excel(writer, sheet_name=f"C{c}", index=False)
+                exported.append(fname)
+            except Exception as exc:
+                errors.append(f"{fname}: {exc}")
+        if exported:
+            msg = f"Exported {len(exported)} file(s) to:\n{dir_path}"
+            if errors:
+                msg += f"\n\nErrors:\n" + "\n".join(errors)
+            messagebox.showinfo("Export complete", msg)
+        elif errors:
+            messagebox.showerror("Export failed", "\n".join(errors))
+        else:
+            messagebox.showinfo("Info", "No cycles selected for any file in the group.")
 
     # ════════════════════════════════════════════════════════════════
     # State save / restore

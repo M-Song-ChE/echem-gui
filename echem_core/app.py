@@ -155,8 +155,11 @@ class EchemPanel(
                 dim = _UNIT_DIMS.get(raw_unit)
             opts = list(_DIM_OPTS.get(dim, ["(auto)"]))
             unit_cb["values"] = opts
-            if unit_var.get() not in opts:
-                unit_var.set("(auto)")
+            cur = unit_var.get()
+            if cur not in opts:
+                unit_var.set("mA/cm²" if col == "J" else "(auto)")
+            elif col == "J" and cur == "(auto)":
+                unit_var.set("mA/cm²")
             self._auto_replot()
 
         def _refresh_unit_after_select(unit_var, unit_cb):

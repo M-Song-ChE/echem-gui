@@ -178,13 +178,34 @@ def _read_mpr(path: str) -> "pd.DataFrame":
     return df[keep].reset_index(drop=True)
 
 
-_COLOR_NAMES = ["Blue", "Orange", "Green", "Red", "Purple",
-                "Brown", "Pink", "Gray", "Olive", "Cyan"]
+_COLOR_NAMES = [
+    "Blue", "Orange", "Green", "Red", "Purple",
+    "Brown", "Pink", "Gray", "Olive", "Cyan",
+    "Navy", "Crimson", "Teal", "Magenta", "Gold",
+    "SteelBlue", "Salmon", "SeaGreen", "Coral", "Indigo",
+    "DarkOrange", "MediumBlue", "ForestGreen", "Maroon", "Violet",
+    "RoyalBlue", "HotPink", "SlateGray", "Goldenrod", "DarkCyan",
+    "DeepPink", "LimeGreen", "SaddleBrown", "MediumVioletRed", "DarkSlateBlue",
+]
 _COLOR_HEX = {
-    "Blue":   "#1f77b4", "Orange": "#ff7f0e", "Green":  "#2ca02c",
-    "Red":    "#d62728", "Purple": "#9467bd", "Brown":  "#8c564b",
-    "Pink":   "#e377c2", "Gray":   "#7f7f7f", "Olive":  "#bcbd22",
-    "Cyan":   "#17becf",
+    "Blue":            "#1f77b4", "Orange":         "#ff7f0e",
+    "Green":           "#2ca02c", "Red":            "#d62728",
+    "Purple":          "#9467bd", "Brown":          "#8c564b",
+    "Pink":            "#e377c2", "Gray":           "#7f7f7f",
+    "Olive":           "#bcbd22", "Cyan":           "#17becf",
+    "Navy":            "#003f8a", "Crimson":        "#dc143c",
+    "Teal":            "#008080", "Magenta":        "#c800b8",
+    "Gold":            "#ffd700", "SteelBlue":      "#4682b4",
+    "Salmon":          "#fa8072", "SeaGreen":       "#2e8b57",
+    "Coral":           "#ff6347", "Indigo":         "#4b0082",
+    "DarkOrange":      "#ff8c00", "MediumBlue":     "#0000cd",
+    "ForestGreen":     "#228b22", "Maroon":         "#800000",
+    "Violet":          "#8a2be2", "RoyalBlue":      "#4169e1",
+    "HotPink":         "#ff69b4", "SlateGray":      "#708090",
+    "Goldenrod":       "#daa520", "DarkCyan":       "#008b8b",
+    "DeepPink":        "#ff1493", "LimeGreen":      "#32cd32",
+    "SaddleBrown":     "#8b4513", "MediumVioletRed":"#c71585",
+    "DarkSlateBlue":   "#483d8b",
 }
 _PALETTE = [_COLOR_HEX[n] for n in _COLOR_NAMES]
 _MARKERS = ["o", "s", "^", "D", "v", "P", "*", "X", "h", "p"]
