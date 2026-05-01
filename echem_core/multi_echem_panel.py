@@ -29,6 +29,7 @@ from .correction import CorrectionMixin
 from .plotting import apply_grid, draw_reflines, _cycle_colors, copy_figure_to_clipboard, _scale_legend_spacing, _reorder_legend_handles
 from .legend_editor import open_legend_editor
 from .checklist import CheckableListbox
+from . import session_manager as _sm
 
 _CYCLE_BG        = "#e8f0fe"
 
@@ -1058,6 +1059,122 @@ class MultiEchemPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         entry["x_flip"]         = self.x_flip_var.get()
         entry["y_flip"]         = self.y_flip_var.get()
         entry["custom_title"]   = self.plot_title_var.get()
+
+    # ── Session save / restore ────────────────────────────────────────
+    def get_session_state(self, data_store: dict) -> dict:
+        self._save_active_state()
+        files_list = [_sm.serialise_file_entry(n, e, data_store)
+                      for n, e in self.files.items()]
+        return {
+            "active_file":   self.active_file,
+            "plot_w_var":    self.plot_w_var.get(),
+            "plot_h_var":    self.plot_h_var.get(),
+            "grid_cols_var": self._grid_cols_var.get(),
+            "files": files_list,
+        }
+
+    def restore_session_state(self, state: dict, data_store: dict) -> None:
+        old = self._suppress_replot
+        self._suppress_replot = True
+
+        # Clear existing state
+        for name in list(self.files.keys()):
+            entry = self.files[name]
+            pf = entry.get("plot_frame")
+            if pf is not None:
+                try:
+                    pf.destroy()
+                except Exception:
+                    pass
+        self.files.clear()
+        self.active_file = None
+        self.file_listbox.clear()
+        self._populate_cycle_checkboxes([], [])
+
+        # Restore panel-level vars
+        try:
+            self.plot_w_var.set(state.get("plot_w_var", "10.5"))
+            self.plot_h_var.set(state.get("plot_h_var", "5.5"))
+            self._grid_cols_var.set(state.get("grid_cols_var", "2"))
+        except Exception:
+            pass
+
+        # Restore files (entries + figures)
+        for rec in state.get("files", []):
+            name = rec.get("name", "")
+            df_raw = data_store.get(rec.get("data_hash", ""))
+            if df_raw is None or not name:
+                continue
+            entry = {
+                "path":           rec.get("path", ""),
+                "df_raw":         df_raw.copy(),
+                "df":             df_raw.copy(),
+                "selected_cycles": rec.get("selected_cycles", []),
+                "r_sol":          rec.get("r_sol", 0.0),
+                "e_ref":          rec.get("e_ref", 0.0),
+                "area":           rec.get("area", ""),
+                "color":          rec.get("color", "#1f77b4"),
+                "marker":         rec.get("marker", "o"),
+                "cycle_gradient": rec.get("cycle_gradient", True),
+                "cycle_reverse":  rec.get("cycle_reverse", False),
+                "lightness_step": rec.get("lightness_step", "0.15"),
+                "hidden":         rec.get("hidden", False),
+                "linewidth":      rec.get("linewidth", "1.5"),
+                "plot_style":     rec.get("plot_style", "Line"),
+                "custom_title":   rec.get("custom_title", ""),
+                "x_col":          rec.get("x_col"),
+                "y_col":          rec.get("y_col"),
+                "x_unit":         rec.get("x_unit", "V"),
+                "y_unit":         rec.get("y_unit", "mA"),
+                "x_min":          rec.get("x_min", ""),
+                "x_max":          rec.get("x_max", ""),
+                "y_min":          rec.get("y_min", ""),
+                "y_max":          rec.get("y_max", ""),
+                "x_flip":         rec.get("x_flip", False),
+                "y_flip":         rec.get("y_flip", False),
+                "x_grid_int":     rec.get("x_grid_int", "0"),
+                "y_grid_int":     rec.get("y_grid_int", "0"),
+                "ref_electrode":  rec.get("ref_electrode", "Ag/AgCl"),
+                "legend_show":    rec.get("legend_show", True),
+                "legend_frame":   rec.get("legend_frame", True),
+                "leg_size":       rec.get("leg_size", 8.0),
+                "legend_loc":     rec.get("legend_loc", "best"),
+                "x_grid":         rec.get("x_grid", False),
+                "y_grid":         rec.get("y_grid", False),
+                "grid_style":     rec.get("grid_style", "dashed"),
+                "grid_color":     rec.get("grid_color", "gray"),
+                "grid_linewidth": rec.get("grid_linewidth", "0.8"),
+                "reflines":       [tuple(r) for r in rec.get("reflines", [])],
+            }
+            for k in ("view_xlim", "view_ylim"):
+                if k in rec and rec[k] is not None:
+                    entry[k] = rec[k]
+            self.files[name] = entry
+            self.file_listbox.insert(tk.END, name,
+                                     checked=not rec.get("hidden", False))
+            self._create_file_figure(name)
+
+        # Switch to active file
+        self._suppress_replot = old
+        active = state.get("active_file")
+        if active and active in self.files:
+            keys = list(self.files.keys())
+            self._loading_files = True
+            try:
+                self.file_listbox.selection_set(keys.index(active))
+            finally:
+                self._loading_files = False
+            self._switch_active_file(active)
+        elif self.files:
+            first = next(iter(self.files))
+            self._loading_files = True
+            try:
+                self.file_listbox.selection_set(0)
+            finally:
+                self._loading_files = False
+            self._switch_active_file(first)
+        self._apply_plot_size()
+        self._relayout_figures()
 
     def _switch_active_file(self, short):
         self.active_file = short

@@ -37,6 +37,7 @@ from .checklist import CheckableListbox
 from .correction import CorrectionMixin
 from .plotting import apply_grid, draw_reflines, _cycle_colors, copy_figure_to_clipboard
 from .legend_editor import open_legend_editor
+from . import session_manager as _sm
 
 _CYCLE_BG        = "#e8f0fe"
 _CYCLE_ACTIVE_BG = "#cce0ff"
@@ -1152,6 +1153,118 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             entry["view_ylim_cv"]  = self.ax_cv.get_ylim()
             entry["view_xlim_cdl"] = self.ax_cdl.get_xlim()
             entry["view_ylim_cdl"] = self.ax_cdl.get_ylim()
+
+    # ── Session save / restore ────────────────────────────────────────
+    def get_session_state(self, data_store: dict) -> dict:
+        self._save_active_state()
+        files_list = [_sm.serialise_file_entry(n, e, data_store)
+                      for n, e in self.files.items()]
+        return {
+            "active_file": self.active_file,
+            "plot_w_var":  self.plot_w_var.get(),
+            "plot_h_var":  self.plot_h_var.get(),
+            "files": files_list,
+        }
+
+    def restore_session_state(self, state: dict, data_store: dict) -> None:
+        old = self._suppress_replot
+        self._suppress_replot = True
+
+        # Clear existing state
+        self.files.clear()
+        self.active_file = None
+        self.file_listbox.clear()
+        self._populate_cycle_checkboxes([], [])
+
+        # Restore panel vars
+        try:
+            self.plot_w_var.set(state.get("plot_w_var", "21.0"))
+            self.plot_h_var.set(state.get("plot_h_var", "6.0"))
+        except Exception:
+            pass
+
+        # Restore files
+        for rec in state.get("files", []):
+            name = rec.get("name", "")
+            df_raw = data_store.get(rec.get("data_hash", ""))
+            if df_raw is None or not name:
+                continue
+            entry = {
+                "path":             rec.get("path", ""),
+                "df_raw":           df_raw.copy(),
+                "df":               df_raw.copy(),
+                "selected_cycles":  rec.get("selected_cycles", []),
+                "r_sol":            rec.get("r_sol", 0.0),
+                "e_ref":            rec.get("e_ref", 0.0),
+                "area":             rec.get("area", ""),
+                "color":            rec.get("color", "#1f77b4"),
+                "marker":           rec.get("marker", "o"),
+                "cycle_gradient":   rec.get("cycle_gradient", True),
+                "cycle_reverse":    rec.get("cycle_reverse", False),
+                "lightness_step":   rec.get("lightness_step", "0.15"),
+                "hidden":           rec.get("hidden", False),
+                "linewidth":        rec.get("linewidth", "1.5"),
+                "plot_style":       rec.get("plot_style", "Line"),
+                "sr_data":          rec.get("sr_data", {}),
+                "e_std":            rec.get("e_std", ""),
+                "cs":               rec.get("cs", "0.040"),
+                "x_col":            rec.get("x_col"),
+                "y_col":            rec.get("y_col"),
+                "x_unit":           rec.get("x_unit", "V"),
+                "y_unit":           rec.get("y_unit", "mA"),
+                "x_min":            rec.get("x_min", ""),
+                "x_max":            rec.get("x_max", ""),
+                "y_min":            rec.get("y_min", ""),
+                "y_max":            rec.get("y_max", ""),
+                "ref_electrode":    rec.get("ref_electrode", "Ag/AgCl"),
+                "legend_frame_cv":  rec.get("legend_frame_cv", True),
+                "legend_frame_cdl": rec.get("legend_frame_cdl", True),
+                "result_text":      rec.get("result_text", ""),
+                "cv_x_grid":        rec.get("cv_x_grid", False),
+                "cv_y_grid":        rec.get("cv_y_grid", False),
+                "cv_x_grid_int":    rec.get("cv_x_grid_int", "0"),
+                "cv_y_grid_int":    rec.get("cv_y_grid_int", "0"),
+                "cv_grid_style":    rec.get("cv_grid_style", "dashed"),
+                "cdl_x_grid":       rec.get("cdl_x_grid", False),
+                "cdl_y_grid":       rec.get("cdl_y_grid", False),
+                "cdl_x_grid_int":   rec.get("cdl_x_grid_int", "0"),
+                "cdl_y_grid_int":   rec.get("cdl_y_grid_int", "0"),
+                "cdl_grid_style":   rec.get("cdl_grid_style", "dashed"),
+                "cv_grid_color":    rec.get("cv_grid_color", "gray"),
+                "cv_grid_linewidth":  rec.get("cv_grid_linewidth", "0.8"),
+                "cdl_grid_color":   rec.get("cdl_grid_color", "gray"),
+                "cdl_grid_linewidth": rec.get("cdl_grid_linewidth", "0.8"),
+                "cv_reflines":      [tuple(r) for r in rec.get("cv_reflines", [])],
+                "cdl_reflines":     [tuple(r) for r in rec.get("cdl_reflines", [])],
+                "cdl_data":         None,
+            }
+            for k in ("view_xlim_cv", "view_ylim_cv", "view_xlim_cdl", "view_ylim_cdl"):
+                if k in rec and rec[k] is not None:
+                    entry[k] = rec[k]
+            self.files[name] = entry
+            self.file_listbox.insert(tk.END, name,
+                                     checked=not rec.get("hidden", False))
+
+        # Switch to active file
+        self._suppress_replot = old
+        active = state.get("active_file")
+        if active and active in self.files:
+            keys = list(self.files.keys())
+            self._loading_files = True
+            try:
+                self.file_listbox.selection_set(keys.index(active))
+            finally:
+                self._loading_files = False
+            self._switch_active_file(active)
+        elif self.files:
+            first = next(iter(self.files))
+            self._loading_files = True
+            try:
+                self.file_listbox.selection_set(0)
+            finally:
+                self._loading_files = False
+            self._switch_active_file(first)
+        self._apply_plot_size()
 
     def _switch_active_file(self, short):
         self.active_file = short

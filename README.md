@@ -10,6 +10,7 @@
 7. [Nyquist Plot Tab](#7-nyquist-plot-tab)
 8. [Common Controls (All Tabs)](#8-common-controls-all-tabs)
 9. [Tips and Shortcuts](#9-tips-and-shortcuts)
+10. [Session Save & Restore](#10-session-save--restore)
 
 ---
 
@@ -371,3 +372,37 @@ The legend size is preserved when any other plot change is made (cycle selection
 - **Sharing results** — use the toolbar's Save button to export any plot as PNG/PDF, or use Export to Excel (General tab) for the raw and corrected data.
 - **Copy to clipboard** — click the **Copy** button next to any toolbar to put the current plot on the clipboard and paste it directly into Word or PowerPoint at full resolution.
 - **Rebuilding the exe** — if you update the code and want a fresh exe, run `pyinstaller EchemGUI.spec` from the project folder (with PyInstaller installed).
+
+---
+
+## 10. Session Save & Restore
+
+The app can save the complete state of all five tabs — loaded files, groups, axis settings, corrections, cycle selections, colors, legend positions, and plot sizes — into a single `.echemsession` file. Raw data is embedded inside the file, so sessions can be shared or moved to another computer without bringing the original data files along.
+
+### 10.1 Saving a Session
+- **File → Save Session** (or **Ctrl+S**) — save the current session. On first save, a file browser opens; subsequent saves overwrite the same file.
+- **File → Save Session As** — always opens a file browser so you can choose a new name or location.
+- The `.echemsession` file is a ZIP archive containing:
+  - `preview.png` — a thumbnail of the General E.Chem tab's current plot.
+  - `data/{hash}.csv` — all loaded DataFrames, deduplicated by content: if the same source file is loaded in multiple tabs, it is stored only once.
+  - `{tab}_state.json` — the full state of each of the five tabs.
+
+### 10.2 Loading a Session
+- **File → Load Session** (or **Ctrl+O**) — open a file browser, select a `.echemsession` file, and restore the full session.
+- All five tabs are restored to exactly the state they were in when the session was saved.
+
+### 10.3 Auto-Save on Close
+- When you close the app, the current session is **automatically saved** to a hidden autosave file (`~/.echem_sessions/autosave.echemsession`).
+- The next time you open the app, a dialog appears asking if you want to restore the last session. The dialog shows when the autosave was created.
+  - Click **Yes** to restore it.
+  - Click **No** to start a fresh session.
+- This works even if you closed without manually saving.
+
+### 10.4 What Is Saved Per Tab
+| Tab | What is saved |
+|-----|--------------|
+| **General E.Chem** | All loaded files, per-file axis/unit/correction/cycle/color/gradient/legend/refline settings, zoom state, plot size, custom labels, legend order and positions |
+| **Multi E.Chem** | All loaded files with the same per-file settings as above; grid column count; active file |
+| **Multi E.Chem 2** | All loaded files and group definitions; per-group axis/legend/refline settings; per-(group, file) cycle and correction state; grid column count; active group and file |
+| **ECSA Calc** | All loaded files with per-file scan rate tables, E_std, Cs, extracted Cdl/ECSA results, CV/Cdl reference lines, and zoom state for both plots |
+| **Nyquist Plot** | All loaded files with per-file display options (connect lines, markers, colors), axis settings, reflines, and zoom state |

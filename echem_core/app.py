@@ -3,7 +3,7 @@
 from collections import OrderedDict
 
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, filedialog, messagebox
 import matplotlib
 matplotlib.use("TkAgg")
 from matplotlib.figure import Figure
@@ -20,6 +20,7 @@ from .ecsa_panel import ECSAPanel
 from .multi_echem_panel import MultiEchemPanel
 from .multi_echem2_panel import MultiEchem2Panel
 from .eis_panel import EISPanel
+from . import session_manager as _sm
 
 _CYCLE_BG = "#e8f0fe"   # light blue for the cycle checkbox area
 _CYCLE_ACTIVE_BG = "#cce0ff"
@@ -1101,6 +1102,172 @@ class EchemPanel(
         if fn:
             fn()
 
+    # ── Session save / restore ───────────────────────────────────────
+    def get_session_state(self, data_store: dict) -> dict:
+        self._save_active_state()
+        files_list = [_sm.serialise_file_entry(n, e, data_store)
+                      for n, e in self.files.items()]
+        return {
+            "active_file": self.active_file,
+            "ui": {
+                "file_color_var":      self.file_color_var.get(),
+                "linewidth_var":       self.linewidth_var.get(),
+                "plot_style_var":      self.plot_style_var.get(),
+                "x_var":               self.x_var.get(),
+                "x_unit_var":          self.x_unit_var.get(),
+                "y_var":               self.y_var.get(),
+                "y_unit_var":          self.y_unit_var.get(),
+                "x_min_var":           self.x_min_var.get(),
+                "x_max_var":           self.x_max_var.get(),
+                "x_grid_int_var":      self.x_grid_int_var.get(),
+                "y_min_var":           self.y_min_var.get(),
+                "y_max_var":           self.y_max_var.get(),
+                "y_grid_int_var":      self.y_grid_int_var.get(),
+                "x_flip_var":          self.x_flip_var.get(),
+                "y_flip_var":          self.y_flip_var.get(),
+                "area_var":            self.area_var.get(),
+                "ref_electrode_var":   self.ref_electrode_var.get(),
+                "r_sol_var":           self.r_sol_var.get(),
+                "e_ref_var":           self.e_ref_var.get(),
+                "cycle_gradient_var":  self.cycle_gradient_var.get(),
+                "cycle_reverse_var":   self.cycle_reverse_var.get(),
+                "lightness_step_var":  self.lightness_step_var.get(),
+                "plot_title_var":      self.plot_title_var.get(),
+                "legend_show_var":     self.legend_show_var.get(),
+                "legend_frame_var":    self.legend_frame_var.get(),
+                "legend_size_var":     self.legend_size_var.get(),
+                "legend_loc_var":      self.legend_loc_var.get(),
+                "x_grid_var":          self.x_grid_var.get(),
+                "y_grid_var":          self.y_grid_var.get(),
+                "grid_style_var":      self.grid_style_var.get(),
+                "grid_color_var":      self.grid_color_var.get(),
+                "grid_linewidth_var":  self.grid_linewidth_var.get(),
+                "font_title_size_var": self.font_title_size_var.get(),
+                "font_title_bold_var": self.font_title_bold_var.get(),
+                "font_label_size_var": self.font_label_size_var.get(),
+                "font_label_bold_var": self.font_label_bold_var.get(),
+                "font_tick_size_var":  self.font_tick_size_var.get(),
+                "font_tick_bold_var":  self.font_tick_bold_var.get(),
+                "title_pad_var":       self.title_pad_var.get(),
+                "label_pad_var":       self.label_pad_var.get(),
+                "plot_w_var":          self.plot_w_var.get(),
+                "plot_h_var":          self.plot_h_var.get(),
+            },
+            "reflines":          list(self._reflines),
+            "legend_stable_map": dict(getattr(self, "_legend_stable_map", {}) or {}),
+            "legend_order":      list(getattr(self, "_legend_order", []) or []),
+            "legend_manual_pos": (list(self._legend_manual_pos)
+                                  if getattr(self, "_legend_manual_pos", None) else None),
+            "files": files_list,
+        }
+
+    def restore_session_state(self, state: dict, data_store: dict) -> None:
+        old = self._suppress_replot
+        self._suppress_replot = True
+
+        # 1. Clear existing state
+        self.files.clear()
+        self.active_file = None
+        self.file_listbox.clear()
+        self._legend_obj = None
+        self._populate_cycle_checkboxes([], [])
+
+        # 2. Restore plot-independent UI vars first
+        ui = state.get("ui", {})
+        _simple_vars = [
+            "file_color_var", "linewidth_var", "plot_style_var",
+            "x_unit_var", "y_unit_var",
+            "x_min_var", "x_max_var", "x_grid_int_var",
+            "y_min_var", "y_max_var", "y_grid_int_var",
+            "x_flip_var", "y_flip_var", "area_var", "ref_electrode_var",
+            "r_sol_var", "e_ref_var",
+            "cycle_gradient_var", "cycle_reverse_var", "lightness_step_var",
+            "plot_title_var",
+            "legend_show_var", "legend_frame_var", "legend_size_var", "legend_loc_var",
+            "x_grid_var", "y_grid_var", "grid_style_var", "grid_color_var", "grid_linewidth_var",
+            "font_title_size_var", "font_title_bold_var",
+            "font_label_size_var", "font_label_bold_var",
+            "font_tick_size_var",  "font_tick_bold_var",
+            "title_pad_var", "label_pad_var",
+            "plot_w_var", "plot_h_var",
+        ]
+        for vname in _simple_vars:
+            if vname in ui:
+                v = getattr(self, vname, None)
+                if v is not None:
+                    try:
+                        v.set(ui[vname])
+                    except Exception:
+                        pass
+
+        # 3. Restore files
+        for rec in state.get("files", []):
+            name = rec.get("name", "")
+            df_raw = data_store.get(rec.get("data_hash", ""))
+            if df_raw is None or not name:
+                continue
+            entry = {
+                "path":           rec.get("path", ""),
+                "df_raw":         df_raw.copy(),
+                "df":             df_raw.copy(),
+                "selected_cycles": rec.get("selected_cycles", []),
+                "r_sol":          rec.get("r_sol", 0.0),
+                "e_ref":          rec.get("e_ref", 0.0),
+                "area":           rec.get("area", ""),
+                "color":          rec.get("color", "#1f77b4"),
+                "marker":         rec.get("marker", "o"),
+                "cycle_gradient": rec.get("cycle_gradient", True),
+                "cycle_reverse":  rec.get("cycle_reverse", False),
+                "lightness_step": rec.get("lightness_step", "0.15"),
+                "hidden":         rec.get("hidden", False),
+                "linewidth":      rec.get("linewidth", "3"),
+                "plot_style":     rec.get("plot_style", "Line"),
+                "custom_title":   rec.get("custom_title", ""),
+            }
+            for k in ("view_xlim", "view_ylim"):
+                if k in rec and rec[k] is not None:
+                    entry[k] = rec[k]
+            self.files[name] = entry
+            self.file_listbox.insert(tk.END, name,
+                                     checked=not rec.get("hidden", False))
+
+        # 4. Restore reference lines
+        self._reflines = [tuple(r) for r in state.get("reflines", [])]
+        self._reflines_lb.delete(0, tk.END)
+        for rl in self._reflines:
+            axis, val = rl[0], rl[1]
+            self._reflines_lb.insert(tk.END,
+                                     f"{'X' if axis == 'x' else 'Y'} = {val:.4g}")
+
+        # 5. Restore legend state
+        self._legend_stable_map = dict(state.get("legend_stable_map", {}))
+        self._legend_order      = list(state.get("legend_order", []))
+        lmp = state.get("legend_manual_pos")
+        self._legend_manual_pos = tuple(lmp) if lmp else None
+
+        # 6. Apply plot size
+        self._apply_plot_size()
+
+        # 7. Switch to active file (triggers replot + cycle checkbox rebuild)
+        self._suppress_replot = old
+        active = state.get("active_file")
+        if active and active in self.files:
+            keys = list(self.files.keys())
+            self._loading_files = True
+            try:
+                self.file_listbox.selection_set(keys.index(active))
+            finally:
+                self._loading_files = False
+            self._switch_active_file(active)
+        elif self.files:
+            first = next(iter(self.files))
+            self._loading_files = True
+            try:
+                self.file_listbox.selection_set(0)
+            finally:
+                self._loading_files = False
+            self._switch_active_file(first)
+
     def _on_file_select(self, event):
         """Enable highlight whenever the user selects a file from the listbox."""
         if self._loading_files:
@@ -1153,28 +1320,130 @@ class EchemGUI(tk.Tk):
         super().__init__()
         self.title("Electrochemistry Analysis")
         self.state("zoomed")   # start maximized / full-screen
+        self._panels: dict = {}
         self._build_ui()
+        self._check_autosave_on_launch()
 
+    # ── Build UI ─────────────────────────────────────────────────────
     def _build_ui(self):
+        self._build_menubar()
+
         notebook = ttk.Notebook(self)
         notebook.pack(fill=tk.BOTH, expand=True, padx=6, pady=4)
 
         gen_tab = ttk.Frame(notebook)
         notebook.add(gen_tab, text="General E.Chem")
-        EchemPanel(gen_tab, show_ecsa=False, show_log=True).pack(fill=tk.BOTH, expand=True)
+        gen_panel = EchemPanel(gen_tab, show_ecsa=False, show_log=True)
+        gen_panel.pack(fill=tk.BOTH, expand=True)
+        self._panels["general"] = gen_panel
 
         multi_tab = ttk.Frame(notebook)
         notebook.add(multi_tab, text="Multi E.Chem")
-        MultiEchemPanel(multi_tab).pack(fill=tk.BOTH, expand=True)
+        multi_panel = MultiEchemPanel(multi_tab)
+        multi_panel.pack(fill=tk.BOTH, expand=True)
+        self._panels["multi_echem"] = multi_panel
 
         multi2_tab = ttk.Frame(notebook)
         notebook.add(multi2_tab, text="Multi E.Chem 2")
-        MultiEchem2Panel(multi2_tab).pack(fill=tk.BOTH, expand=True)
+        multi2_panel = MultiEchem2Panel(multi2_tab)
+        multi2_panel.pack(fill=tk.BOTH, expand=True)
+        self._panels["multi_echem2"] = multi2_panel
 
         ecsa_tab = ttk.Frame(notebook)
         notebook.add(ecsa_tab, text="ECSA Calc")
-        ECSAPanel(ecsa_tab).pack(fill=tk.BOTH, expand=True)
+        ecsa_panel = ECSAPanel(ecsa_tab)
+        ecsa_panel.pack(fill=tk.BOTH, expand=True)
+        self._panels["ecsa"] = ecsa_panel
 
         eis_tab = ttk.Frame(notebook)
         notebook.add(eis_tab, text="Nyquist Plot")
-        EISPanel(eis_tab).pack(fill=tk.BOTH, expand=True)
+        eis_panel = EISPanel(eis_tab)
+        eis_panel.pack(fill=tk.BOTH, expand=True)
+        self._panels["nyquist"] = eis_panel
+
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _build_menubar(self):
+        menubar = tk.Menu(self)
+        self.config(menu=menubar)
+
+        file_menu = tk.Menu(menubar, tearoff=False)
+        menubar.add_cascade(label="File", menu=file_menu)
+        file_menu.add_command(label="Load Session…",
+                              accelerator="Ctrl+O",
+                              command=self._load_session_dialog)
+        file_menu.add_command(label="Save Session",
+                              accelerator="Ctrl+S",
+                              command=self._save_session_default)
+        file_menu.add_command(label="Save Session As…",
+                              command=self._save_session_as_dialog)
+        file_menu.add_separator()
+        file_menu.add_command(label="Exit", command=self._on_close)
+
+        self.bind_all("<Control-o>", lambda e: self._load_session_dialog())
+        self.bind_all("<Control-s>", lambda e: self._save_session_default())
+
+        self._last_session_path: str = ""
+
+    # ── Session operations ───────────────────────────────────────────
+    def _save_session_default(self):
+        """Save to last used path, or prompt for path if none yet."""
+        if self._last_session_path:
+            try:
+                _sm.save_session(self._panels, self._last_session_path)
+                self.title(f"Electrochemistry Analysis – {self._last_session_path}")
+                return
+            except Exception:
+                pass
+        self._save_session_as_dialog()
+
+    def _save_session_as_dialog(self):
+        path = filedialog.asksaveasfilename(
+            title="Save Session",
+            defaultextension=_sm.SESSION_EXT,
+            filetypes=[("EchemGUI Session", f"*{_sm.SESSION_EXT}"), ("All files", "*.*")],
+            initialfile="session",
+        )
+        if not path:
+            return
+        try:
+            _sm.save_session(self._panels, path)
+            self._last_session_path = path
+            self.title(f"Electrochemistry Analysis – {path}")
+        except Exception as exc:
+            messagebox.showerror("Save Session", f"Failed to save session:\n{exc}")
+
+    def _load_session_dialog(self):
+        path = filedialog.askopenfilename(
+            title="Load Session",
+            filetypes=[("EchemGUI Session", f"*{_sm.SESSION_EXT}"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        self._load_session_from_path(path)
+
+    def _load_session_from_path(self, path: str):
+        try:
+            _sm.load_session(self._panels, path)
+            self._last_session_path = path
+            self.title(f"Electrochemistry Analysis – {path}")
+        except Exception as exc:
+            messagebox.showerror("Load Session", f"Failed to load session:\n{exc}")
+
+    # ── Auto-save / restore ──────────────────────────────────────────
+    def _check_autosave_on_launch(self):
+        if not _sm.autosave_exists():
+            return
+        info = _sm.autosave_info()
+        msg = (f"A previous session was auto-saved.\n\n{info}\n\n"
+               "Restore it now?")
+        if messagebox.askyesno("Restore Last Session", msg):
+            try:
+                _sm.load_session(self._panels, str(_sm.AUTOSAVE_PATH))
+            except Exception as exc:
+                messagebox.showerror("Restore Session",
+                                     f"Failed to restore last session:\n{exc}")
+
+    def _on_close(self):
+        _sm.autosave(self._panels)
+        self.destroy()

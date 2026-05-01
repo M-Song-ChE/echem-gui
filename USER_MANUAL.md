@@ -10,6 +10,7 @@
 7. [Nyquist Plot Tab](#7-nyquist-plot-tab)
 8. [Common Controls (All Tabs)](#8-common-controls-all-tabs)
 9. [Tips and Shortcuts](#9-tips-and-shortcuts)
+10. [Session Save & Restore](#10-session-save--restore)
 
 ---
 
@@ -263,3 +264,21 @@ Each file remembers its last zoom/pan state. Switching files and back restores t
 - **Copy to clipboard** — the **Copy** button on every toolbar copies the figure for direct pasting into Word or PowerPoint.
 - **Export to Excel** — available in the General E.Chem tab; exports Raw and Corrected data for the active file.
 - **Rebuilding the exe** — run `pyinstaller EchemGUI.spec` from the project folder.
+
+---
+
+## 10. Session Save & Restore
+
+Save and restore the complete state of all five tabs — loaded files, settings, corrections, and plot layout — in a single `.echemsession` file. Raw data is embedded so sessions work without the original data files.
+
+### Saving
+- **File → Save Session** (Ctrl+S) — save the current session. Opens a file browser on first save; subsequent saves overwrite the same file.
+- **File → Save Session As** — save to a new file location or name.
+
+### Loading
+- **File → Load Session** (Ctrl+O) — open a `.echemsession` file and restore all five tabs to their saved state.
+
+### Auto-Save on Close
+- The app **auto-saves** the current session whenever you close it.
+- On the next launch a dialog appears: click **Yes** to restore the last session, or **No** to start fresh.
+- The dialog shows when the autosave was created so you can decide whether it's worth restoring.

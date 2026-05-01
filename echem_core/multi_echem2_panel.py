@@ -24,6 +24,7 @@ from .correction import CorrectionMixin
 from .plotting import apply_grid, draw_reflines, _cycle_colors, copy_figure_to_clipboard, _scale_legend_spacing, _reorder_legend_handles, _build_legend_order
 from .legend_editor import open_legend_editor
 from .checklist import CheckableListbox
+from . import session_manager as _sm
 
 _CYCLE_BG        = "#e8f0fe"
 _CYCLE_ACTIVE_BG = "#cce0ff"
@@ -1571,6 +1572,132 @@ class MultiEchem2Panel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         g["title_pad"]      = self.title_pad_var.get()
         g["label_pad"]      = self.label_pad_var.get()
         g["custom_title"]   = self.plot_title_var.get()
+
+    # ── Session save / restore ────────────────────────────────────────
+    def get_session_state(self, data_store: dict) -> dict:
+        self._save_active_state()
+        self._save_active_group_state()
+        files_list  = [_sm.serialise_file_entry(n, e, data_store)
+                       for n, e in self.files.items()]
+        groups_list = [_sm.serialise_group_entry(n, g)
+                       for n, g in self.groups.items()]
+        return {
+            "active_file":   self.active_file,
+            "active_group":  self.active_group,
+            "plot_w_var":    self.plot_w_var.get(),
+            "plot_h_var":    self.plot_h_var.get(),
+            "grid_cols_var": self._grid_cols_var.get(),
+            "files":  files_list,
+            "groups": groups_list,
+        }
+
+    def restore_session_state(self, state: dict, data_store: dict) -> None:
+        old = self._suppress_replot
+        self._suppress_replot = True
+
+        # Clear existing groups (destroy their frames)
+        for gentry in self.groups.values():
+            pf = gentry.get("plot_frame")
+            if pf is not None:
+                try:
+                    pf.destroy()
+                except Exception:
+                    pass
+        self.groups.clear()
+        self.active_group = None
+        self.group_listbox.clear()
+        self._zoom_group = None
+
+        # Clear existing files
+        self.files.clear()
+        self.active_file = None
+        self.file_listbox.clear()
+        self._populate_cycle_checkboxes([], [])
+
+        # Restore panel-level vars
+        try:
+            self.plot_w_var.set(state.get("plot_w_var", "10.5"))
+            self.plot_h_var.set(state.get("plot_h_var", "5.5"))
+            self._grid_cols_var.set(state.get("grid_cols_var", "2"))
+        except Exception:
+            pass
+
+        # Restore files (entries only; no per-file figures in ME2)
+        for rec in state.get("files", []):
+            name = rec.get("name", "")
+            df_raw = data_store.get(rec.get("data_hash", ""))
+            if df_raw is None or not name:
+                continue
+            entry = {
+                "path":           rec.get("path", ""),
+                "df_raw":         df_raw.copy(),
+                "df":             df_raw.copy(),
+                "selected_cycles": rec.get("selected_cycles", []),
+                "r_sol":          rec.get("r_sol", 0.0),
+                "e_ref":          rec.get("e_ref", 0.0),
+                "area":           rec.get("area", ""),
+                "color":          rec.get("color", "#1f77b4"),
+                "marker":         rec.get("marker", "o"),
+                "cycle_gradient": rec.get("cycle_gradient", True),
+                "cycle_reverse":  rec.get("cycle_reverse", False),
+                "lightness_step": rec.get("lightness_step", "0.15"),
+                "hidden":         rec.get("hidden", False),
+                "linewidth":      rec.get("linewidth", "1.5"),
+                "plot_style":     rec.get("plot_style", "Line"),
+            }
+            self.files[name] = entry
+            self.file_listbox.insert(tk.END, name,
+                                     checked=not rec.get("hidden", False))
+
+        # Restore groups (create group dicts + figures)
+        for grec in state.get("groups", []):
+            gname = grec.get("name", "")
+            if not gname:
+                continue
+            gentry: dict = {"files": [], "reflines": []}
+            # Restore all non-runtime saved keys
+            for k, v in grec.items():
+                if k == "name":
+                    continue
+                gentry[k] = v
+            # Ensure reflines are tuples
+            gentry["reflines"] = [tuple(r) for r in gentry.get("reflines", [])]
+            self.groups[gname] = gentry
+            self.group_listbox.insert(tk.END, gname,
+                                      checked=not grec.get("hidden", False))
+            self._create_group_figure(gname)
+
+        # Switch to saved active group and file
+        self._suppress_replot = old
+        active_group = state.get("active_group")
+        active_file  = state.get("active_file")
+        if active_group and active_group in self.groups:
+            keys = list(self.groups.keys())
+            self.group_listbox.selection_set(keys.index(active_group))
+            self._switch_active_group(active_group)
+        elif self.groups:
+            first_g = next(iter(self.groups))
+            self.group_listbox.selection_set(0)
+            self._switch_active_group(first_g)
+
+        if active_file and active_file in self.files:
+            keys_f = list(self.files.keys())
+            self._loading_files = True
+            try:
+                self.file_listbox.selection_set(keys_f.index(active_file))
+            finally:
+                self._loading_files = False
+            self._switch_active_file(active_file)
+        elif self.files:
+            self._loading_files = True
+            try:
+                self.file_listbox.selection_set(0)
+            finally:
+                self._loading_files = False
+            self._switch_active_file(next(iter(self.files)))
+
+        self._apply_plot_size()
+        self._relayout_figures()
 
     def _switch_active_file(self, short):
         """Override: update only per-file UI, not group axes."""

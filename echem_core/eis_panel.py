@@ -18,6 +18,7 @@ from .file_manager import FileManagerMixin, _COLOR_NAMES, _COLOR_HEX, _PLOT_STYL
 from .plotting import apply_grid, draw_reflines, copy_figure_to_clipboard, _reorder_legend_handles
 from .legend_editor import open_legend_editor
 from .checklist import CheckableListbox
+from . import session_manager as _sm
 
 
 # ── Unit option lists by physical dimension ──────────────────────────────────
@@ -724,6 +725,104 @@ class EISPanel(FileManagerMixin, ttk.Frame):
         # Persist current view so it can be restored after a file switch
         entry["view_xlim"] = self.ax.get_xlim()
         entry["view_ylim"] = self.ax.get_ylim()
+
+    # ── Session save / restore ────────────────────────────────────────
+    def get_session_state(self, data_store: dict) -> dict:
+        self._save_active_state()
+        files_list = [_sm.serialise_file_entry(n, e, data_store)
+                      for n, e in self.files.items()]
+        return {
+            "active_file": self.active_file,
+            "plot_w_var":  self.plot_w_var.get(),
+            "plot_h_var":  self.plot_h_var.get(),
+            "files": files_list,
+        }
+
+    def restore_session_state(self, state: dict, data_store: dict) -> None:
+        old = self._suppress_replot
+        self._suppress_replot = True
+
+        # Clear existing state
+        self.files.clear()
+        self.active_file = None
+        self.file_listbox.clear()
+
+        # Restore panel vars
+        try:
+            self.plot_w_var.set(state.get("plot_w_var", "21.0"))
+            self.plot_h_var.set(state.get("plot_h_var", "12.5"))
+        except Exception:
+            pass
+
+        # Restore files
+        for rec in state.get("files", []):
+            name = rec.get("name", "")
+            df_raw = data_store.get(rec.get("data_hash", ""))
+            if df_raw is None or not name:
+                continue
+            entry = {
+                "path":           rec.get("path", ""),
+                "df_raw":         df_raw.copy(),
+                "df":             df_raw.copy(),
+                "selected_cycles": rec.get("selected_cycles", []),
+                "r_sol":          rec.get("r_sol", 0.0),
+                "e_ref":          rec.get("e_ref", 0.0),
+                "area":           rec.get("area", ""),
+                "color":          rec.get("color", "#1f77b4"),
+                "marker":         rec.get("marker", "o"),
+                "hidden":         rec.get("hidden", False),
+                "linewidth":      rec.get("linewidth", "1.5"),
+                "plot_style":     rec.get("plot_style", "Line+Circle"),
+                "x_col":          rec.get("x_col"),
+                "y_col":          rec.get("y_col"),
+                "x_unit":         rec.get("x_unit", "(auto)"),
+                "y_unit":         rec.get("y_unit", "(auto)"),
+                "x_min":          rec.get("x_min", ""),
+                "x_max":          rec.get("x_max", ""),
+                "y_min":          rec.get("y_min", ""),
+                "y_max":          rec.get("y_max", ""),
+                "show_markers":   rec.get("show_markers", True),
+                "connect_lines":  rec.get("connect_lines", True),
+                "show_legend":    rec.get("show_legend", True),
+                "legend_frame":   rec.get("legend_frame", True),
+                "legend_size":    rec.get("legend_size", 8.0),
+                "legend_loc":     rec.get("legend_loc", "best"),
+                "x_grid":         rec.get("x_grid", False),
+                "y_grid":         rec.get("y_grid", False),
+                "x_grid_int":     rec.get("x_grid_int", "0"),
+                "y_grid_int":     rec.get("y_grid_int", "0"),
+                "grid_style":     rec.get("grid_style", "dashed"),
+                "grid_color":     rec.get("grid_color", "gray"),
+                "grid_linewidth": rec.get("grid_linewidth", "0.8"),
+                "reflines":       [tuple(r) for r in rec.get("reflines", [])],
+            }
+            for k in ("view_xlim", "view_ylim"):
+                if k in rec and rec[k] is not None:
+                    entry[k] = rec[k]
+            self.files[name] = entry
+            self.file_listbox.insert(tk.END, name,
+                                     checked=not rec.get("hidden", False))
+
+        # Switch to active file
+        self._suppress_replot = old
+        active = state.get("active_file")
+        if active and active in self.files:
+            keys = list(self.files.keys())
+            self._loading_files = True
+            try:
+                self.file_listbox.selection_set(keys.index(active))
+            finally:
+                self._loading_files = False
+            self._switch_active_file(active)
+        elif self.files:
+            first = next(iter(self.files))
+            self._loading_files = True
+            try:
+                self.file_listbox.selection_set(0)
+            finally:
+                self._loading_files = False
+            self._switch_active_file(first)
+        self._apply_plot_size()
 
     def _switch_active_file(self, short):
         """Switch the UI to *short*, restoring all per-file EIS settings."""
