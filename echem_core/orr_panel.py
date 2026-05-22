@@ -245,13 +245,6 @@ class ORRPanel(ttk.Frame):
         _lf_hdr = ttk.Frame(left)
         _lf_hdr.pack(fill=tk.X, padx=4, pady=(6, 0))
         ttk.Label(_lf_hdr, text="Loaded Files:", font=("", 9, "bold")).pack(side=tk.LEFT)
-        self._loaded_h_var = tk.IntVar(value=5)
-        ttk.Label(_lf_hdr, text="h:", foreground="gray",
-                  font=("", 8)).pack(side=tk.RIGHT)
-        ttk.Spinbox(_lf_hdr, from_=2, to=20, width=3,
-                    textvariable=self._loaded_h_var,
-                    command=lambda: self.loaded_lb.config(
-                        height=self._loaded_h_var.get())).pack(side=tk.RIGHT)
 
         ttk.Label(left, text="(N2/O2 and catalyst auto-detected from filename)",
                   foreground="gray", font=("", 8)).pack(anchor=tk.W, padx=4)
@@ -269,18 +262,17 @@ class ORRPanel(ttk.Frame):
         _lf_sb.pack(side=tk.RIGHT, fill=tk.Y)
         self.loaded_lb.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
+        # Drag handle to resize the loaded-files listbox
+        _lf_handle = tk.Frame(left, height=5, bg="#c8c8c8", cursor="sb_v_double_arrow")
+        _lf_handle.pack(fill=tk.X, padx=4)
+        _lf_handle.bind("<ButtonPress-1>", self._on_loaded_resize_start)
+        _lf_handle.bind("<B1-Motion>",     self._on_loaded_resize_drag)
+
         # ══ SAMPLES ═════════════════════════════════════════════════
         ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=4)
         _sh_hdr = ttk.Frame(left)
         _sh_hdr.pack(fill=tk.X, padx=4)
         ttk.Label(_sh_hdr, text="ORR Samples:", font=("", 9, "bold")).pack(side=tk.LEFT)
-        self._sample_h_var = tk.IntVar(value=3)
-        ttk.Label(_sh_hdr, text="h:", foreground="gray",
-                  font=("", 8)).pack(side=tk.RIGHT)
-        ttk.Spinbox(_sh_hdr, from_=2, to=15, width=3,
-                    textvariable=self._sample_h_var,
-                    command=lambda: self.sample_lb._canvas.config(
-                        height=self._sample_h_var.get() * 20)).pack(side=tk.RIGHT)
 
         _sb = ttk.Frame(left)
         _sb.pack(fill=tk.X, padx=4, pady=(2, 0))
@@ -296,6 +288,12 @@ class ORRPanel(ttk.Frame):
             on_reorder=self._on_sample_reorder)
         self.sample_lb.pack(fill=tk.X, expand=True)
         self.sample_lb.bind("<<ListboxSelect>>", self._on_sample_select)
+
+        # Drag handle to resize the samples listbox
+        _slf_handle = tk.Frame(left, height=5, bg="#c8c8c8", cursor="sb_v_double_arrow")
+        _slf_handle.pack(fill=tk.X, padx=4)
+        _slf_handle.bind("<ButtonPress-1>", self._on_sample_resize_start)
+        _slf_handle.bind("<B1-Motion>",     self._on_sample_resize_drag)
 
         ttk.Button(left, text="↓ Add Selected Files to Sample",
                    command=self._add_files_to_sample).pack(fill=tk.X, padx=4, pady=(2, 0))
@@ -1831,6 +1829,37 @@ class ORRPanel(ttk.Frame):
     # ════════════════════════════════════════════════════════════════
     # Mouse interactions (scroll / pan / annotate)
     # ════════════════════════════════════════════════════════════════
+    # Listbox drag-to-resize handlers
+    # ════════════════════════════════════════════════════════════════
+    def _on_loaded_resize_start(self, event):
+        self._loaded_drag = {
+            "y0": event.y_root,
+            "h0": int(self.loaded_lb.cget("height")),
+        }
+
+    def _on_loaded_resize_drag(self, event):
+        d = getattr(self, "_loaded_drag", None)
+        if d is None:
+            return
+        dy = event.y_root - d["y0"]
+        new_rows = max(2, int(d["h0"] + dy / 20))
+        self.loaded_lb.config(height=new_rows)
+
+    def _on_sample_resize_start(self, event):
+        h = self.sample_lb._canvas.winfo_height()
+        if h <= 1:
+            h = self.sample_lb._canvas.cget("height")
+        self._sample_drag = {"y0": event.y_root, "h0": int(h)}
+
+    def _on_sample_resize_drag(self, event):
+        d = getattr(self, "_sample_drag", None)
+        if d is None:
+            return
+        dy = event.y_root - d["y0"]
+        new_h = max(40, d["h0"] + dy)
+        self.sample_lb._canvas.config(height=int(new_h))
+
+    # ════════════════════════════════════════════════════════════════
     def _on_scroll(self, event, sample_name):
         sentry = self.samples.get(sample_name)
         if sentry is None or "ax" not in sentry:
@@ -1856,6 +1885,15 @@ class ORRPanel(ttk.Frame):
             return
         if event.button != 1 or event.xdata is None:
             return
+        # Don't start panning if the click landed on the legend — let DraggableLegend handle it.
+        leg = sentry.get("legend")
+        if leg is not None:
+            try:
+                hit, _ = leg.contains(event)
+                if hit:
+                    return
+            except Exception:
+                pass
         sentry["panning"]   = True
         sentry["pan_start"] = (event.xdata, event.ydata,
                                *sentry["ax"].get_xlim(), *sentry["ax"].get_ylim())
