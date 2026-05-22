@@ -309,25 +309,32 @@ class ORRPanel(ttk.Frame):
 
         _ptf = ttk.Frame(left)
         _ptf.pack(fill=tk.X, padx=4, pady=2)
-        _pt_canvas = tk.Canvas(_ptf, background="#f5f5f5",
-                               highlightthickness=1, highlightbackground="#cccccc",
-                               height=100)
-        _pt_vs = ttk.Scrollbar(_ptf, orient=tk.VERTICAL, command=_pt_canvas.yview)
-        _pt_canvas.configure(yscrollcommand=_pt_vs.set)
+        self._pair_tbl_canvas = tk.Canvas(_ptf, background="#f5f5f5",
+                                          highlightthickness=1, highlightbackground="#cccccc",
+                                          height=100)
+        _pt_vs = ttk.Scrollbar(_ptf, orient=tk.VERTICAL, command=self._pair_tbl_canvas.yview)
+        self._pair_tbl_canvas.configure(yscrollcommand=_pt_vs.set)
         _pt_vs.pack(side=tk.RIGHT, fill=tk.Y)
-        _pt_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self._pair_tbl_inner = tk.Frame(_pt_canvas, background="#f5f5f5")
-        _pt_win = _pt_canvas.create_window((0, 0), window=self._pair_tbl_inner, anchor=tk.NW)
+        self._pair_tbl_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self._pair_tbl_inner = tk.Frame(self._pair_tbl_canvas, background="#f5f5f5")
+        _pt_win = self._pair_tbl_canvas.create_window((0, 0), window=self._pair_tbl_inner, anchor=tk.NW)
         self._pair_tbl_inner.bind(
             "<Configure>",
-            lambda e: _pt_canvas.configure(scrollregion=_pt_canvas.bbox("all")))
-        _pt_canvas.bind("<Configure>", lambda e: _pt_canvas.itemconfig(_pt_win, width=e.width))
+            lambda e: self._pair_tbl_canvas.configure(scrollregion=self._pair_tbl_canvas.bbox("all")))
+        self._pair_tbl_canvas.bind(
+            "<Configure>", lambda e: self._pair_tbl_canvas.itemconfig(_pt_win, width=e.width))
 
         def _pt_wheel(e):
-            _pt_canvas.yview_scroll(-1 * (e.delta // 120), "units")
+            self._pair_tbl_canvas.yview_scroll(-1 * (e.delta // 120), "units")
             return "break"
-        _pt_canvas.bind("<MouseWheel>", _pt_wheel)
+        self._pair_tbl_canvas.bind("<MouseWheel>", _pt_wheel)
         self._pair_tbl_inner.bind("<MouseWheel>", _pt_wheel)
+
+        # Drag handle to resize the RPM pairs table
+        _pt_handle = tk.Frame(left, height=5, bg="#c8c8c8", cursor="sb_v_double_arrow")
+        _pt_handle.pack(fill=tk.X, padx=4)
+        _pt_handle.bind("<ButtonPress-1>", self._on_pair_resize_start)
+        _pt_handle.bind("<B1-Motion>",     self._on_pair_resize_drag)
 
         # ══ CORRECTION ══════════════════════════════════════════════
         ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=4)
@@ -1074,6 +1081,7 @@ class ORRPanel(ttk.Frame):
         g["show_half_wave"]  = self.show_half_wave_var.get()
 
     def _switch_active_sample(self, sample_name):
+        self._switching_sample = True
         self.active_sample = sample_name
         g = self.samples.get(sample_name, {})
 
@@ -1118,6 +1126,7 @@ class ORRPanel(ttk.Frame):
                 v = g.get(key, default)
                 var.set("" if v == 0.0 and default == "" else str(v))
 
+
             self.r_sol_n2_var.set(str(g["r_sol_n2"]))
             self.r_sol_o2_var.set(str(g["r_sol_o2"]))
             self.e_ref_var.set(str(g["e_ref"]))
@@ -1155,6 +1164,7 @@ class ORRPanel(ttk.Frame):
             self._refresh_reflines_lb()
         finally:
             self._suppress_replot = old
+            self._switching_sample = False
 
         self._highlight_active_headers()
         self._auto_replot()
@@ -1163,6 +1173,11 @@ class ORRPanel(ttk.Frame):
     # Correction trigger
     # ════════════════════════════════════════════════════════════════
     def _on_correction_change(self):
+        # Guard: FocusOut can fire after active_sample has already switched to the new
+        # sample but before _switch_active_sample has updated the UI vars — skip save
+        # in that window so stale values from the previous sample aren't written here.
+        if getattr(self, "_switching_sample", False):
+            return
         self._save_active_sample_state()
         self._auto_replot()
 
@@ -1858,6 +1873,20 @@ class ORRPanel(ttk.Frame):
         dy = event.y_root - d["y0"]
         new_h = max(40, d["h0"] + dy)
         self.sample_lb._canvas.config(height=int(new_h))
+
+    def _on_pair_resize_start(self, event):
+        h = self._pair_tbl_canvas.winfo_height()
+        if h <= 1:
+            h = int(self._pair_tbl_canvas.cget("height"))
+        self._pair_drag = {"y0": event.y_root, "h0": h}
+
+    def _on_pair_resize_drag(self, event):
+        d = getattr(self, "_pair_drag", None)
+        if d is None:
+            return
+        dy = event.y_root - d["y0"]
+        new_h = max(40, d["h0"] + dy)
+        self._pair_tbl_canvas.config(height=int(new_h))
 
     # ════════════════════════════════════════════════════════════════
     def _on_scroll(self, event, sample_name):
