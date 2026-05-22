@@ -32,6 +32,7 @@ from .file_manager import _read_mpr, _PALETTE, _COLOR_NAMES, _COLOR_HEX
 from .plotting import apply_grid, draw_reflines, copy_figure_to_clipboard, _cycle_colors
 from .checklist import CheckableListbox
 from . import session_manager as _sm
+from .legend_editor import open_legend_editor
 
 # ── UI constants ────────────────────────────────────────────────────────
 _SAMPLE_HDR_BG     = "#d1c4e9"   # light purple — distinct from ME1 blue / ME2 green
@@ -350,6 +351,35 @@ class ORRPanel(ttk.Frame):
             values=[], state="readonly", width=14)
         self._corr_cat_cb.pack(side=tk.LEFT, padx=(4, 0))
         self._corr_cat_cb.bind("<<ComboboxSelected>>", self._on_corr_catalyst_select)
+
+        _cst = ttk.Frame(left)
+        _cst.pack(fill=tk.X, padx=4, pady=(0, 2))
+        ttk.Label(_cst, text="Color:").pack(side=tk.LEFT)
+        self._cat_color_var = tk.StringVar(value="")
+        _cat_color_e = ttk.Entry(_cst, textvariable=self._cat_color_var, width=9)
+        _cat_color_e.pack(side=tk.LEFT, padx=(2, 6))
+        ttk.Label(_cst, text="Style:").pack(side=tk.LEFT)
+        self._cat_ls_var = tk.StringVar(value="solid")
+        _cat_ls_cb = ttk.Combobox(_cst, textvariable=self._cat_ls_var,
+                                   values=["solid", "dashed", "dotted", "dash-dot"],
+                                   state="readonly", width=8)
+        _cat_ls_cb.pack(side=tk.LEFT, padx=(2, 6))
+        ttk.Label(_cst, text="W:").pack(side=tk.LEFT)
+        self._cat_lw_var = tk.StringVar(value="1.5")
+        _cat_lw_e = ttk.Entry(_cst, textvariable=self._cat_lw_var, width=4)
+        _cat_lw_e.pack(side=tk.LEFT, padx=(2, 6))
+        ttk.Label(_cst, text="Marker:").pack(side=tk.LEFT)
+        self._cat_mk_var = tk.StringVar(value="none")
+        _cat_mk_cb = ttk.Combobox(_cst, textvariable=self._cat_mk_var,
+                                   values=["none", "o", "s", "^", "D", "v", "x", "+"],
+                                   state="readonly", width=6)
+        _cat_mk_cb.pack(side=tk.LEFT, padx=(2, 0))
+
+        for _w in (_cat_color_e, _cat_lw_e):
+            _w.bind("<Return>",   lambda e: self._on_cat_style_change())
+            _w.bind("<FocusOut>", lambda e: self._on_cat_style_change())
+        _cat_ls_cb.bind("<<ComboboxSelected>>", lambda e: self._on_cat_style_change())
+        _cat_mk_cb.bind("<<ComboboxSelected>>", lambda e: self._on_cat_style_change())
 
         _cr1 = ttk.Frame(left)
         _cr1.pack(fill=tk.X, padx=4, pady=2)
@@ -964,6 +994,9 @@ class ORRPanel(ttk.Frame):
             cc = sentry.setdefault("catalyst_corrections", {})
             cc.setdefault(catalyst, {"r_sol_n2": 0.0, "r_sol_o2": 0.0,
                                      "e_ref": 0.0, "area": ""})
+            cs = sentry.setdefault("catalyst_styles", {})
+            cs.setdefault(catalyst, {"color": "", "linestyle": "solid",
+                                      "linewidth": "1.5", "marker": "none"})
             added += 1
 
         sentry["pairs"].sort(key=lambda p: (p.get("catalyst_id", ""), p.get("rpm_id", "")))
@@ -1013,9 +1046,28 @@ class ORRPanel(ttk.Frame):
             cat_var = tk.StringVar(value=pair.get("catalyst_id", ""))
             rpm_var = tk.StringVar(value=pair.get("rpm_val", pair.get("rpm_id", "")))
 
-            def _save_pair(cv=cat_var, rv=rpm_var, p=pair):
-                p["catalyst_id"] = cv.get()
-                p["rpm_val"]     = rv.get()
+            def _save_pair(cv=cat_var, rv=rpm_var, p=pair, sn=sample_name):
+                new_cat = cv.get().strip()
+                old_cat = p.get("catalyst_id", "")
+                if new_cat and new_cat != old_cat:
+                    # Rename all pairs in this sample that share the old catalyst_id
+                    sentry_ref = self.samples.get(sn, {})
+                    for _p in sentry_ref.get("pairs", []):
+                        if _p.get("catalyst_id") == old_cat:
+                            _p["catalyst_id"] = new_cat
+                    # Rename keys in catalyst_corrections and catalyst_styles
+                    for _store_key in ("catalyst_corrections", "catalyst_styles"):
+                        _store = sentry_ref.get(_store_key, {})
+                        if old_cat in _store:
+                            _store[new_cat] = _store.pop(old_cat)
+                    # Update active catalyst reference
+                    if getattr(self, "_active_catalyst", None) == old_cat:
+                        self._active_catalyst = new_cat
+                    self._rebuild_pair_table(sn)
+                    self._update_catalyst_selector(sn)
+                else:
+                    p["catalyst_id"] = new_cat or old_cat
+                p["rpm_val"] = rv.get()
                 self._auto_replot()
 
             cat_e = tk.Entry(row, textvariable=cat_var, width=7, bg=row_bg,
@@ -1209,6 +1261,10 @@ class ORRPanel(ttk.Frame):
                 self.r_sol_o2_var.set("0")
                 self.e_ref_var.set("0")
                 self.area_var.set("")
+                self._cat_color_var.set("")
+                self._cat_ls_var.set("solid")
+                self._cat_lw_var.set("1.5")
+                self._cat_mk_var.set("none")
             finally:
                 self._switching_sample = False
 
@@ -1225,12 +1281,40 @@ class ORRPanel(ttk.Frame):
         finally:
             self._switching_sample = False
         self._active_catalyst = catalyst_id
+        sentry = self.samples.get(sample_name, {})
+        cs = sentry.get("catalyst_styles", {}).get(catalyst_id, {})
+        self._switching_sample = True
+        try:
+            self._cat_color_var.set(cs.get("color", ""))
+            self._cat_ls_var.set(cs.get("linestyle", "solid"))
+            self._cat_lw_var.set(cs.get("linewidth", "1.5"))
+            self._cat_mk_var.set(cs.get("marker", "none"))
+        finally:
+            self._switching_sample = False
 
     def _on_corr_catalyst_select(self, event=None):
         """User picked a different catalyst in the combobox — load its corrections."""
         cat = self._corr_catalyst_var.get()
         if cat and self.active_sample and self.active_sample in self.samples:
             self._load_catalyst_corrections(self.active_sample, cat)
+
+    def _on_cat_style_change(self):
+        if getattr(self, "_switching_sample", False):
+            return
+        if not self.active_sample or self.active_sample not in self.samples:
+            return
+        cat = getattr(self, "_active_catalyst", None)
+        if not cat:
+            return
+        sentry = self.samples[self.active_sample]
+        cs = sentry.setdefault("catalyst_styles", {})
+        cat_cs = cs.setdefault(cat, {"color": "", "linestyle": "solid",
+                                      "linewidth": "1.5", "marker": "none"})
+        cat_cs["color"]     = self._cat_color_var.get().strip()
+        cat_cs["linestyle"] = self._cat_ls_var.get()
+        cat_cs["linewidth"] = self._cat_lw_var.get()
+        cat_cs["marker"]    = self._cat_mk_var.get()
+        self._auto_replot()
 
     # ════════════════════════════════════════════════════════════════
     # Correction trigger + per-sample immediate write
@@ -1344,13 +1428,22 @@ class ORRPanel(ttk.Frame):
                 if result is None:
                     continue
                 E_plot, Y_plot = result
-                color   = cat_colors[j]
                 rpm_val = pair.get("rpm_val") or pair.get("rpm_id") or f"#{j+1}"
                 prefix  = f"[{cat}] " if cat else ""
                 label   = f"{prefix}{rpm_val} rpm"
-                ax.plot(E_plot, Y_plot, color=color, linewidth=1.5,
-                        label=label, zorder=2)
-                plot_data.append((E_plot, Y_plot, label, color))
+                _cat_st = sentry.get("catalyst_styles", {}).get(cat, {})
+                _col = _cat_st.get("color", "").strip() or cat_colors[j]
+                try:
+                    _lw = float(_cat_st.get("linewidth", "1.5") or 1.5)
+                except (ValueError, TypeError):
+                    _lw = 1.5
+                _ls = {"solid": "-", "dashed": "--", "dotted": ":",
+                       "dash-dot": "-."}.get(_cat_st.get("linestyle", "solid"), "-")
+                _mk = _cat_st.get("marker", "none")
+                _mk = None if _mk == "none" else _mk
+                ax.plot(E_plot, Y_plot, color=_col, linewidth=_lw, linestyle=_ls,
+                        marker=_mk, markersize=4, label=label, zorder=2)
+                plot_data.append((E_plot, Y_plot, label, _col))
 
         sentry["_plot_data"] = plot_data
 
@@ -1408,7 +1501,7 @@ class ORRPanel(ttk.Frame):
             lbl.set_fontweight(tick_wt)
 
         title = (sentry.get("custom_title", "") if not is_active
-                 else self.plot_title_var.get()) or sample_name
+                 else self.plot_title_var.get())
         ax.set_title(title, fontsize=tit_sz, fontweight=tit_wt, pad=t_pad)
 
         # Legend
@@ -1422,6 +1515,7 @@ class ORRPanel(ttk.Frame):
                     _set(tuple(_mp))
                 else:
                     _leg._loc = tuple(_mp)
+            sentry["legend_label_order"] = [t.get_text() for t in _leg.get_texts()]
             _leg.set_draggable(True)
         sentry["legend"] = _leg
 
@@ -1681,6 +1775,8 @@ class ORRPanel(ttk.Frame):
         canvas.mpl_connect("button_press_event",   lambda ev: self._on_press(ev, sample_name))
         canvas.mpl_connect("button_release_event", lambda ev: self._on_release(ev, sample_name))
         canvas.mpl_connect("motion_notify_event",  lambda ev: self._on_motion(ev, sample_name))
+        canvas.mpl_connect("button_press_event",
+                           lambda ev, sn=sample_name: self._on_legend_dblclick(ev, sn))
 
         sentry.update({
             "fig": fig, "ax": ax, "canvas": canvas, "toolbar": _tb,
@@ -1692,7 +1788,7 @@ class ORRPanel(ttk.Frame):
             "ann": None, "ann_dot": None, "ann_last": None, "ann_idx": 0,
             "_plot_data": [],
         })
-        ax.set_title(sample_name, fontsize=9)
+        ax.set_title("", fontsize=9)
         ax.set_xlabel("E (V vs RHE)")
         ax.set_ylabel("I (mA)")
         canvas.draw()
@@ -2113,6 +2209,32 @@ class ORRPanel(ttk.Frame):
             if cv:
                 cv.draw_idle()
 
+    def _on_legend_dblclick(self, event, sample_name):
+        if event.dblclick and event.button == 1:
+            sentry = self.samples.get(sample_name)
+            if sentry is None:
+                return
+            leg = sentry.get("legend")
+            if leg is None:
+                return
+            try:
+                hit, _ = leg.contains(event)
+            except Exception:
+                hit = False
+            if not hit:
+                return
+            leg.set_draggable(False)
+            sentry["legend"], perm = open_legend_editor(
+                self, leg, sentry["canvas"], sentry.get("leg_size", 8.0))
+            if sentry.get("legend") is not None:
+                sentry["legend"].set_draggable(True)
+            # Store permutation so next replot respects the new order
+            orig_labels = sentry.get("legend_label_order", [])
+            if perm and orig_labels:
+                sentry["legend_label_order"] = [orig_labels[j] for j in perm
+                                                if j < len(orig_labels)]
+            sentry["canvas"].draw()
+
     # ════════════════════════════════════════════════════════════════
     # Analysis windows
     # ════════════════════════════════════════════════════════════════
@@ -2121,17 +2243,20 @@ class ORRPanel(ttk.Frame):
         if not self.active_sample or self.active_sample not in self.samples:
             return []
         sentry = self.samples[self.active_sample]
-        try:
-            r_n2  = float(self.r_sol_n2_var.get() or 0)
-            r_o2  = float(self.r_sol_o2_var.get() or 0)
-            e_ref = float(self.e_ref_var.get() or 0)
-            area  = float(self.area_var.get() or 0)
-        except ValueError:
-            r_n2 = r_o2 = e_ref = area = 0.0
+        cat_corrections = sentry.get("catalyst_corrections", {})
         curves = []
         for i, pair in enumerate(sentry.get("pairs", [])):
             if not pair.get("n2_short") or not pair.get("o2_short"):
                 continue
+            cat = pair.get("catalyst_id", "")
+            _cc = cat_corrections.get(cat, {})
+            try:
+                r_n2  = float(_cc.get("r_sol_n2", 0) or 0)
+                r_o2  = float(_cc.get("r_sol_o2", 0) or 0)
+                e_ref = float(_cc.get("e_ref", 0) or 0)
+                area  = float(_cc.get("area", "") or 0)
+            except (ValueError, TypeError):
+                r_n2 = r_o2 = e_ref = area = 0.0
             result = _process_pair(pair, r_n2, r_o2, e_ref, area)
             if result is None:
                 continue
@@ -2140,8 +2265,13 @@ class ORRPanel(ttk.Frame):
                 rpm = float(pair.get("rpm_val") or pair.get("rpm_id") or 0)
             except (ValueError, TypeError):
                 rpm = 0.0
-            label = f"{pair.get('rpm_val') or pair.get('rpm_id') or f'#{i+1}'} rpm"
-            color = _PALETTE[i % len(_PALETTE)]
+            cat = pair.get("catalyst_id", "")
+            prefix = f"[{cat}] " if cat else ""
+            rpm_v = pair.get('rpm_val') or pair.get('rpm_id') or f'#{i+1}'
+            label = f"{prefix}{rpm_v} rpm"
+            _cat_st = sentry.get("catalyst_styles", {}).get(cat, {})
+            _auto_col = _PALETTE[i % len(_PALETTE)]
+            color = _cat_st.get("color", "").strip() or _auto_col
             curves.append((E_arr, J_arr, rpm, label, color))
         return curves
 
@@ -2168,6 +2298,18 @@ class ORRPanel(ttk.Frame):
         )
         ttk.Label(_th, text=_th_txt, justify=tk.LEFT,
                   font=("Courier", 8)).pack(anchor=tk.W, padx=6, pady=3)
+
+        # Curve selector
+        _csel_fr = ttk.LabelFrame(win, text="Select curves to analyse")
+        _csel_fr.pack(fill=tk.X, padx=8, pady=(4, 0))
+        _csel_vars = []
+        _csel_inner = ttk.Frame(_csel_fr)
+        _csel_inner.pack(fill=tk.X, padx=4, pady=2)
+        for _cv_idx, (_cv_E, _cv_J, _cv_rpm, _cv_lbl, _cv_col) in enumerate(curves):
+            _bv = tk.BooleanVar(value=True)
+            _csel_vars.append(_bv)
+            ttk.Checkbutton(_csel_inner, text=_cv_lbl, variable=_bv).pack(
+                side=tk.LEFT, padx=4)
 
         # Controls
         ctrl = ttk.Frame(win)
@@ -2209,7 +2351,9 @@ class ORRPanel(ttk.Frame):
                 return
             ax.clear()
             lines = []
-            for E_arr, J_arr, rpm, label, color in curves:
+            selected = [(E, J, r, l, c) for (E, J, r, l, c), bv
+                        in zip(curves, _csel_vars) if bv.get()]
+            for E_arr, J_arr, rpm, label, color in selected:
                 j_lim = float(np.min(J_arr))
                 mask = (E_arr >= e_lo) & (E_arr <= e_hi)
                 if mask.sum() < 3:
@@ -2269,6 +2413,18 @@ class ORRPanel(ttk.Frame):
         win = tk.Toplevel(self)
         win.title(f"Koutecky-Levich Analysis — {sname}")
         win.geometry("800x720")
+
+        # Curve selector
+        _ksel_fr = ttk.LabelFrame(win, text="Select curves to analyse")
+        _ksel_fr.pack(fill=tk.X, padx=8, pady=(6, 0))
+        _ksel_vars = {}
+        _ksel_inner = ttk.Frame(_ksel_fr)
+        _ksel_inner.pack(fill=tk.X, padx=4, pady=2)
+        for (_kE, _kJ, _krpm, _klbl, _kcol) in valid:
+            _bv = tk.BooleanVar(value=True)
+            _ksel_vars[_krpm] = _bv
+            ttk.Checkbutton(_ksel_inner, text=_klbl, variable=_bv).pack(
+                side=tk.LEFT, padx=4)
 
         # ── Theory ──────────────────────────────────────────────────────
         _th = ttk.LabelFrame(win, text="Koutecky-Levich Theory")
@@ -2346,7 +2502,9 @@ class ORRPanel(ttk.Frame):
             kl_colors = [_PALETTE[k % len(_PALETTE)] for k in range(len(e_vals))]
             for ei, (e_val, c_kl) in enumerate(zip(e_vals, kl_colors)):
                 inv_J = []; inv_sqw = []; rpm_labels = []
-                for E_arr, J_arr, rpm, label, _ in valid:
+                sel_valid = [(E, J, r, l, c) for (E, J, r, l, c) in valid
+                             if _ksel_vars.get(r, tk.BooleanVar(value=True)).get()]
+                for E_arr, J_arr, rpm, label, _ in sel_valid:
                     if e_val < E_arr[0] or e_val > E_arr[-1]:
                         continue
                     j_at_e = float(np.interp(e_val, E_arr, J_arr))
