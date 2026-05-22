@@ -1186,6 +1186,8 @@ class ORRPanel(ttk.Frame):
         g.setdefault("custom_title",    "")
         g.setdefault("show_half_wave",  True)
         g.setdefault("reflines",        [])
+        g.setdefault("custom_xlabel",   None)
+        g.setdefault("custom_ylabel",   None)
 
         old = self._suppress_replot
         self._suppress_replot = True
@@ -1494,8 +1496,10 @@ class ORRPanel(ttk.Frame):
             lbl_sz = 10; lbl_wt = "normal"; tick_sz = 8; tick_wt = "normal"
             tit_sz = 10; tit_wt = "normal"; t_pad = 6; l_pad = 4
 
-        ax.set_xlabel(x_label, fontsize=lbl_sz, fontweight=lbl_wt, labelpad=l_pad)
-        ax.set_ylabel(y_label, fontsize=lbl_sz, fontweight=lbl_wt, labelpad=l_pad)
+        ax.set_xlabel(sentry.get("custom_xlabel") or x_label,
+                      fontsize=lbl_sz, fontweight=lbl_wt, labelpad=l_pad)
+        ax.set_ylabel(sentry.get("custom_ylabel") or y_label,
+                      fontsize=lbl_sz, fontweight=lbl_wt, labelpad=l_pad)
         ax.tick_params(labelsize=tick_sz)
         for lbl in ax.get_xticklabels() + ax.get_yticklabels():
             lbl.set_fontweight(tick_wt)
@@ -2080,6 +2084,24 @@ class ORRPanel(ttk.Frame):
         if sentry is None:
             return
         sentry["pan_moved"] = False
+
+        # Double-click on axis labels → inline edit
+        if event.button == 1 and getattr(event, "dblclick", False):
+            ax = sentry.get("ax")
+            if ax is not None:
+                try:
+                    renderer = event.canvas.get_renderer()
+                    xl = ax.xaxis.label
+                    if xl.get_window_extent(renderer).contains(event.x, event.y):
+                        self._edit_axis_label(sample_name, "x")
+                        return
+                    yl = ax.yaxis.label
+                    if yl.get_window_extent(renderer).contains(event.x, event.y):
+                        self._edit_axis_label(sample_name, "y")
+                        return
+                except Exception:
+                    pass
+
         if event.button == 3:
             self._clear_ann(sample_name, redraw=True)
             return
@@ -2097,6 +2119,32 @@ class ORRPanel(ttk.Frame):
         sentry["panning"]   = True
         sentry["pan_start"] = (event.xdata, event.ydata,
                                *sentry["ax"].get_xlim(), *sentry["ax"].get_ylim())
+
+    def _edit_axis_label(self, sample_name, which):
+        """Double-click X or Y label → askstring dialog; blank reverts to auto."""
+        from tkinter.simpledialog import askstring
+        sentry = self.samples.get(sample_name)
+        if sentry is None:
+            return
+        ax = sentry.get("ax")
+        if ax is None:
+            return
+        if which == "x":
+            current = ax.get_xlabel()
+            new = askstring("Edit X Label", "X axis label\n(blank = auto):",
+                            initialvalue=current, parent=self)
+            if new is not None:
+                sentry["custom_xlabel"] = new.strip() or None
+                ax.set_xlabel(new.strip() if new.strip() else current)
+                sentry["canvas"].draw_idle()
+        else:
+            current = ax.get_ylabel()
+            new = askstring("Edit Y Label", "Y axis label\n(blank = auto):",
+                            initialvalue=current, parent=self)
+            if new is not None:
+                sentry["custom_ylabel"] = new.strip() or None
+                ax.set_ylabel(new.strip() if new.strip() else current)
+                sentry["canvas"].draw_idle()
 
     def _on_motion(self, event, sample_name):
         sentry = self.samples.get(sample_name)
