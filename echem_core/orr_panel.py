@@ -341,6 +341,16 @@ class ORRPanel(ttk.Frame):
         ttk.Label(left, text="IR / RHE Correction  (active sample)",
                   font=("", 9, "bold")).pack(anchor=tk.W, padx=4)
 
+        _cr0 = ttk.Frame(left)
+        _cr0.pack(fill=tk.X, padx=4, pady=(2, 0))
+        ttk.Label(_cr0, text="Catalyst:").pack(side=tk.LEFT)
+        self._corr_catalyst_var = tk.StringVar(value="")
+        self._corr_cat_cb = ttk.Combobox(
+            _cr0, textvariable=self._corr_catalyst_var,
+            values=[], state="readonly", width=14)
+        self._corr_cat_cb.pack(side=tk.LEFT, padx=(4, 0))
+        self._corr_cat_cb.bind("<<ComboboxSelected>>", self._on_corr_catalyst_select)
+
         _cr1 = ttk.Frame(left)
         _cr1.pack(fill=tk.X, padx=4, pady=2)
         ttk.Label(_cr1, text="R_sol N2 (Ω):").pack(side=tk.LEFT)
@@ -951,6 +961,9 @@ class ORRPanel(ttk.Frame):
                 "df_o2":    o2_item[1]["df"]   if o2_item else None,
             }
             sentry["pairs"].append(pair)
+            cc = sentry.setdefault("catalyst_corrections", {})
+            cc.setdefault(catalyst, {"r_sol_n2": 0.0, "r_sol_o2": 0.0,
+                                     "e_ref": 0.0, "area": ""})
             added += 1
 
         sentry["pairs"].sort(key=lambda p: (p.get("catalyst_id", ""), p.get("rpm_id", "")))
@@ -958,6 +971,7 @@ class ORRPanel(ttk.Frame):
             self._rebuild_pair_table(self.active_sample)
             self._auto_replot()
             self._log(f"Added {added} pair(s) to sample '{self.active_sample}'.")
+            self._update_catalyst_selector(self.active_sample)
         else:
             self._log("No new pairs added (already exist or no matching IDs).")
 
@@ -1054,10 +1068,6 @@ class ORRPanel(ttk.Frame):
             except (ValueError, tk.TclError):
                 return default
 
-        g["r_sol_n2"]        = _fv(self.r_sol_n2_var)
-        g["r_sol_o2"]        = _fv(self.r_sol_o2_var)
-        g["e_ref"]           = _fv(self.e_ref_var)
-        g["area"]            = self.area_var.get()
         g["ref_electrode"]   = self.ref_electrode_var.get()
         g["x_min"]           = self.x_min_var.get()
         g["x_max"]           = self.x_max_var.get()
@@ -1095,10 +1105,6 @@ class ORRPanel(ttk.Frame):
         self.active_sample = sample_name
         g = self.samples.get(sample_name, {})
 
-        g.setdefault("r_sol_n2",        0.0)
-        g.setdefault("r_sol_o2",        0.0)
-        g.setdefault("e_ref",           0.0)
-        g.setdefault("area",            "")
         g.setdefault("ref_electrode",   "RHE")
         g.setdefault("x_min",           "")
         g.setdefault("x_max",           "")
@@ -1136,11 +1142,7 @@ class ORRPanel(ttk.Frame):
                 v = g.get(key, default)
                 var.set("" if v == 0.0 and default == "" else str(v))
 
-
-            self.r_sol_n2_var.set(str(g["r_sol_n2"]))
-            self.r_sol_o2_var.set(str(g["r_sol_o2"]))
-            self.e_ref_var.set(str(g["e_ref"]))
-            self.area_var.set(g["area"])
+            self._update_catalyst_selector(sample_name)
             self.ref_electrode_var.set(g["ref_electrode"])
             self.x_min_var.set(g["x_min"])
             self.x_max_var.set(g["x_max"])
@@ -1180,28 +1182,82 @@ class ORRPanel(ttk.Frame):
         self._auto_replot()
 
     # ════════════════════════════════════════════════════════════════
+    # Per-catalyst correction UI helpers
+    # ════════════════════════════════════════════════════════════════
+    def _update_catalyst_selector(self, sample_name):
+        """Rebuild the catalyst combobox and load the first (or previously selected) catalyst."""
+        sentry = self.samples.get(sample_name, {})
+        cats = list(sentry.get("catalyst_corrections", {}).keys())
+        # Ensure any catalyst that has pairs but no entry yet is included
+        for p in sentry.get("pairs", []):
+            c = p.get("catalyst_id", "")
+            if c and c not in cats:
+                cats.append(c)
+        self._corr_cat_cb["values"] = cats
+        if cats:
+            # Try to keep the previously selected catalyst if it still exists
+            prev = getattr(self, "_active_catalyst", None)
+            sel = prev if prev in cats else cats[0]
+            self._corr_catalyst_var.set(sel)
+            self._load_catalyst_corrections(sample_name, sel)
+        else:
+            self._corr_catalyst_var.set("")
+            self._active_catalyst = None
+            self._switching_sample = True
+            try:
+                self.r_sol_n2_var.set("0")
+                self.r_sol_o2_var.set("0")
+                self.e_ref_var.set("0")
+                self.area_var.set("")
+            finally:
+                self._switching_sample = False
+
+    def _load_catalyst_corrections(self, sample_name, catalyst_id):
+        """Load a catalyst's stored correction values into the shared UI vars."""
+        sentry = self.samples.get(sample_name, {})
+        cc = sentry.get("catalyst_corrections", {}).get(catalyst_id, {})
+        self._switching_sample = True
+        try:
+            self.r_sol_n2_var.set(str(cc.get("r_sol_n2", 0.0)))
+            self.r_sol_o2_var.set(str(cc.get("r_sol_o2", 0.0)))
+            self.e_ref_var.set(str(cc.get("e_ref", 0.0)))
+            self.area_var.set(cc.get("area", ""))
+        finally:
+            self._switching_sample = False
+        self._active_catalyst = catalyst_id
+
+    def _on_corr_catalyst_select(self, event=None):
+        """User picked a different catalyst in the combobox — load its corrections."""
+        cat = self._corr_catalyst_var.get()
+        if cat and self.active_sample and self.active_sample in self.samples:
+            self._load_catalyst_corrections(self.active_sample, cat)
+
+    # ════════════════════════════════════════════════════════════════
     # Correction trigger + per-sample immediate write
     # ════════════════════════════════════════════════════════════════
     def _on_corr_var_trace(self, key: str, var):
-        """StringVar trace: write the correction value to the active sample's dict
-        immediately on every keystroke.  The _switching_sample guard prevents writes
-        while _switch_active_sample is loading a different sample's values into the
-        shared UI vars, which is exactly the window that caused cross-sample leakage."""
         if getattr(self, "_switching_sample", False):
             return
         if not self.active_sample or self.active_sample not in self.samples:
             return
+        cat = getattr(self, "_active_catalyst", None)
+        if not cat:
+            return
+        sentry = self.samples[self.active_sample]
+        cc = sentry.setdefault("catalyst_corrections", {})
+        cat_cc = cc.setdefault(cat, {"r_sol_n2": 0.0, "r_sol_o2": 0.0,
+                                      "e_ref": 0.0, "area": ""})
         try:
             raw = var.get()
         except tk.TclError:
             return
         if key == "area":
-            self.samples[self.active_sample]["area"] = raw
+            cat_cc["area"] = raw
         else:
             try:
-                self.samples[self.active_sample][key] = float(raw or 0)
+                cat_cc[key] = float(raw or 0)
             except ValueError:
-                pass   # mid-edit like "-" or "3." — skip until complete
+                pass
 
     def _on_correction_change(self):
         if getattr(self, "_switching_sample", False):
@@ -1228,26 +1284,6 @@ class ORRPanel(ttk.Frame):
             var = getattr(self, key + "_var", None)
             return (var.get() if (is_active and var is not None)
                     else sentry.get(key, default))
-
-        # Correction values are always read from the per-sample dict.
-        # The StringVar traces keep the dict in sync on every keystroke, so reading
-        # from the dict here is authoritative for both active and non-active samples.
-        try:
-            r_sol_n2 = float(sentry.get("r_sol_n2", 0) or 0)
-        except (ValueError, TypeError):
-            r_sol_n2 = 0.0
-        try:
-            r_sol_o2 = float(sentry.get("r_sol_o2", 0) or 0)
-        except (ValueError, TypeError):
-            r_sol_o2 = 0.0
-        try:
-            e_ref = float(sentry.get("e_ref", 0) or 0)
-        except (ValueError, TypeError):
-            e_ref = 0.0
-        try:
-            area  = float(sentry.get("area", "") or 0)
-        except (ValueError, TypeError):
-            area  = 0.0
 
         ref      = _gv("ref_electrode", "RHE")
         leg_show = sentry.get("legend_show", True)  if not is_active else self.legend_show_var.get()
@@ -1299,7 +1335,12 @@ class ORRPanel(ttk.Frame):
             for j, pair in enumerate(cat_pairs):
                 if not pair.get("n2_short") or not pair.get("o2_short"):
                     continue
-                result = _process_pair(pair, r_sol_n2, r_sol_o2, e_ref, area)
+                _cat_cc = sentry.get("catalyst_corrections", {}).get(cat, {})
+                _r_n2 = float(_cat_cc.get("r_sol_n2", 0) or 0)
+                _r_o2 = float(_cat_cc.get("r_sol_o2", 0) or 0)
+                _eref  = float(_cat_cc.get("e_ref", 0) or 0)
+                _area  = float(_cat_cc.get("area", "") or 0)
+                result = _process_pair(pair, _r_n2, _r_o2, _eref, _area)
                 if result is None:
                     continue
                 E_plot, Y_plot = result
@@ -1335,7 +1376,10 @@ class ORRPanel(ttk.Frame):
 
         # Axis labels
         x_label = f"E (V vs {ref})"
-        y_label  = "J (mA cm⁻²)" if area > 0 else "I (mA)"
+        _any_area = any(
+            float(sentry.get("catalyst_corrections", {}).get(c, {}).get("area", "") or 0) > 0
+            for c in catalyst_order)
+        y_label  = "J (mA cm⁻²)" if _any_area else "I (mA)"
         try:
             lbl_sz  = int(sentry.get("font_label_size", "10") if not is_active
                           else self.font_label_size_var.get())
@@ -2022,6 +2066,14 @@ class ORRPanel(ttk.Frame):
                 best_label = label
         if best_x is None or best_dist > 0.04:
             return
+        # Switch catalyst correction display to match the clicked curve
+        _cat_m = re.match(r'^\[(\w+)\]', best_label)
+        if _cat_m:
+            _clicked_cat = _cat_m.group(1)
+            _avail = list(self._corr_cat_cb["values"])
+            if _clicked_cat in _avail and _clicked_cat != getattr(self, "_active_catalyst", None):
+                self._corr_catalyst_var.set(_clicked_cat)
+                self._load_catalyst_corrections(sample_name, _clicked_cat)
         # Increment annotation index for overlap cycling
         ann_key = (round(best_x, 6), round(best_y, 6))
         if sentry.get("ann_last") == ann_key:
@@ -2515,6 +2567,19 @@ class ORRPanel(ttk.Frame):
                 sentry["pairs"].append(pair)
 
             self.samples[sname] = sentry
+            # Migrate old flat correction values to per-catalyst format
+            if "catalyst_corrections" not in sentry:
+                sentry["catalyst_corrections"] = {}
+            old_r_n2 = sentry.get("r_sol_n2", 0.0)
+            old_r_o2 = sentry.get("r_sol_o2", 0.0)
+            old_eref = sentry.get("e_ref", 0.0)
+            old_area = sentry.get("area", "")
+            for p in sentry.get("pairs", []):
+                c = p.get("catalyst_id", "")
+                if c:
+                    sentry["catalyst_corrections"].setdefault(
+                        c, {"r_sol_n2": old_r_n2, "r_sol_o2": old_r_o2,
+                            "e_ref": old_eref, "area": old_area})
             self.sample_lb.insert(tk.END, sname,
                                   checked=not srec.get("hidden", False))
             self._create_sample_figure(sname)
