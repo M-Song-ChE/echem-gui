@@ -383,6 +383,16 @@ class ORRPanel(ttk.Frame):
         _area_e.bind("<Return>",   lambda ev: self._on_correction_change())
         _area_e.bind("<FocusOut>", lambda ev: self._on_correction_change())
 
+        # Traces: immediately write any change to the active sample's dict so that
+        # FocusOut events firing after a sample switch never overwrite the wrong sample.
+        for _ck, _cv in [("r_sol_n2", self.r_sol_n2_var),
+                         ("r_sol_o2", self.r_sol_o2_var),
+                         ("e_ref",    self.e_ref_var)]:
+            _cv.trace_add("write",
+                          lambda *_a, k=_ck, v=_cv: self._on_corr_var_trace(k, v))
+        self.area_var.trace_add("write",
+                                lambda *_a: self._on_corr_var_trace("area", self.area_var))
+
         ttk.Label(left, text="(auto-applied on Enter / focus change)",
                   foreground="gray", font=("", 8)).pack(anchor=tk.W, padx=4)
 
@@ -1170,12 +1180,30 @@ class ORRPanel(ttk.Frame):
         self._auto_replot()
 
     # ════════════════════════════════════════════════════════════════
-    # Correction trigger
+    # Correction trigger + per-sample immediate write
     # ════════════════════════════════════════════════════════════════
+    def _on_corr_var_trace(self, key: str, var):
+        """StringVar trace: write the correction value to the active sample's dict
+        immediately on every keystroke.  The _switching_sample guard prevents writes
+        while _switch_active_sample is loading a different sample's values into the
+        shared UI vars, which is exactly the window that caused cross-sample leakage."""
+        if getattr(self, "_switching_sample", False):
+            return
+        if not self.active_sample or self.active_sample not in self.samples:
+            return
+        try:
+            raw = var.get()
+        except tk.TclError:
+            return
+        if key == "area":
+            self.samples[self.active_sample]["area"] = raw
+        else:
+            try:
+                self.samples[self.active_sample][key] = float(raw or 0)
+            except ValueError:
+                pass   # mid-edit like "-" or "3." — skip until complete
+
     def _on_correction_change(self):
-        # Guard: FocusOut can fire after active_sample has already switched to the new
-        # sample but before _switch_active_sample has updated the UI vars — skip save
-        # in that window so stale values from the previous sample aren't written here.
         if getattr(self, "_switching_sample", False):
             return
         self._save_active_sample_state()
@@ -1201,20 +1229,23 @@ class ORRPanel(ttk.Frame):
             return (var.get() if (is_active and var is not None)
                     else sentry.get(key, default))
 
+        # Correction values are always read from the per-sample dict.
+        # The StringVar traces keep the dict in sync on every keystroke, so reading
+        # from the dict here is authoritative for both active and non-active samples.
         try:
-            r_sol_n2 = float(_gv("r_sol_n2", "0") or 0)
+            r_sol_n2 = float(sentry.get("r_sol_n2", 0) or 0)
         except (ValueError, TypeError):
             r_sol_n2 = 0.0
         try:
-            r_sol_o2 = float(_gv("r_sol_o2", "0") or 0)
+            r_sol_o2 = float(sentry.get("r_sol_o2", 0) or 0)
         except (ValueError, TypeError):
             r_sol_o2 = 0.0
         try:
-            e_ref = float(_gv("e_ref", "0") or 0)
+            e_ref = float(sentry.get("e_ref", 0) or 0)
         except (ValueError, TypeError):
             e_ref = 0.0
         try:
-            area  = float(_gv("area", "") or 0)
+            area  = float(sentry.get("area", "") or 0)
         except (ValueError, TypeError):
             area  = 0.0
 
