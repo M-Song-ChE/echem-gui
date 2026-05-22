@@ -8,9 +8,10 @@
 5. [Multi E.Chem 2 Tab](#5-multi-echem-2-tab)
 6. [ECSA Calc Tab](#6-ecsa-calc-tab)
 7. [Nyquist Plot Tab](#7-nyquist-plot-tab)
-8. [Common Controls (All Tabs)](#8-common-controls-all-tabs)
-9. [Tips and Shortcuts](#9-tips-and-shortcuts)
-10. [Session Save & Restore](#10-session-save--restore)
+8. [ORR Analysis Tab](#8-orr-analysis-tab)
+9. [Common Controls (All Tabs)](#9-common-controls-all-tabs)
+10. [Tips and Shortcuts](#10-tips-and-shortcuts)
+11. [Session Save & Restore](#11-session-save--restore)
 
 ---
 
@@ -40,6 +41,7 @@ The app has five tabs at the top:
 | **Multi E.Chem 2** | Group files into named groups; overlay all files in each group on one plot |
 | **ECSA Calc** | Extract electrochemical surface area (ECSA) from CV data |
 | **Nyquist Plot** | Plot EIS impedance data as a Nyquist diagram |
+| **ORR Analysis** | Background-subtracted RDE polarization curves (N2/O2, per RPM, per sample) |
 
 Each tab is fully **independent** — files loaded in one tab are not shared with others.
 
@@ -218,7 +220,63 @@ Load `.mpr` or `.txt` files with impedance columns. All files are overlaid on on
 
 ---
 
-## 8. Common Controls (All Tabs)
+## 8. ORR Analysis Tab
+
+Use this tab to compare rotating disk electrode (RDE) oxygen reduction reaction (ORR) performance across multiple samples. Each sample groups N2 (background) and O2 (signal) CV file pairs by RPM. Background subtraction, IR correction, and RHE conversion are applied automatically.
+
+### 8.1 Loading Files
+1. Click **Load Files** to select `.mpr` or `.txt` CV files (N2 and O2, any number of RPM values).
+2. The app auto-detects **N2 vs O2** from the filename (looks for `n2`/`o2` as word fragments).
+3. The **RPM index** is auto-extracted from the filename pattern `_NN_CV_` (e.g. `_04_CV_`, `_1600_CV_`).
+4. Files appear in the **Loaded Files** list tagged `(N2)`, `(O2)`, or `(??)` if undetected.
+   - **No auto-merge** — N2 and O2 files for the same RPM share a similar name but differ in sequence; they are kept separate and matched by RPM index.
+
+### 8.2 Creating Samples
+1. Click **New Sample** and enter a name (e.g. `Pt/C 20%`).
+2. In the Loaded Files list, select all N2 and O2 files for this sample.
+3. Click **↓ Add Selected Files to Sample** — the app pairs them by RPM index automatically.
+
+### 8.3 RPM Pair Table
+The **RPM Pairs** section shows the matched N2/O2 pairs for the active sample:
+- **RPM** column — editable; type the actual RPM from your lab notes (e.g. `400`, `900`, `1600`). Press Enter or click away to save.
+- **N2 file** / **O2 file** — green = file found, red = missing.
+- **✕** button — remove a pair.
+
+### 8.4 Correction (active sample)
+- **R_sol N2 (Ω)** — uncompensated resistance for the N2 measurement session.
+- **R_sol O2 (Ω)** — uncompensated resistance for the O2 measurement session.
+  Both are applied independently: `E_corr = Ewe/V − (I_mA / 1000) × R_sol`.
+- **E_ref (V vs RHE)** — shared reference electrode offset: `E_RHE = E_corr + E_ref`.
+- **Ref** — reference electrode label shown in the axis label.
+- **Area (cm²)** — electrode area; leave blank for I (mA), enter a value for J (mA cm⁻²).
+
+All corrections are applied automatically on Enter / focus change.
+
+### 8.5 Processing Pipeline (per pair)
+1. Extract the **last cycle** of each N2 and O2 file.
+2. Apply **IR correction** (separate R_sol for N2 and O2).
+3. Apply **RHE conversion** (shared E_ref).
+4. Extract the **anodic scan** (from cathodic vertex upward, sorted by E ascending).
+5. Restrict to the **overlapping E range** between N2 and O2 anodic scans.
+6. **Interpolate N2** onto the O2 E grid and subtract: `I_net = I_O2 − I_N2_interp`.
+7. Divide by area if provided: `J = I_net / area`.
+
+### 8.6 Plot Range, Flip, Grid, Font, Legend, Reflines
+All controls in the left panel apply to the **active sample** only. Each sample stores its own settings independently. Controls work identically to the Multi E.Chem 2 tab.
+
+### 8.7 Multiple Samples
+- Each sample gets its own subplot in the grid.
+- Use **Cols** to set the number of columns.
+- **Double-click** a subplot header to zoom it full-panel; click **← Back to Grid** to restore.
+- **Drag the ⠿ header** to reorder samples.
+- **Uncheck** a sample in the list to hide its subplot without deleting it.
+
+### 8.8 Plot Size
+**W [__] H [__] inches** — figure size for all sample subplots. Scrollbars appear automatically for oversized grids.
+
+---
+
+## 9. Common Controls (All Tabs)
 
 ### Mouse Interactions on the Plot
 | Action | Effect |
@@ -252,7 +310,7 @@ Each file remembers its last zoom/pan state. Switching files and back restores t
 
 ---
 
-## 9. Tips and Shortcuts
+## 10. Tips and Shortcuts
 
 - **Hide without losing settings** — uncheck a file to remove it from the plot. All settings, corrections, and zoom state are preserved. Re-check to restore instantly.
 - **Drag to reorder** — use ⠿ handles in file lists, subplot headers, and the legend editor.
@@ -267,7 +325,7 @@ Each file remembers its last zoom/pan state. Switching files and back restores t
 
 ---
 
-## 10. Session Save & Restore
+## 11. Session Save & Restore
 
 Save and restore the complete state of all five tabs — loaded files, settings, corrections, and plot layout — in a single `.echemsession` file. Raw data is embedded so sessions work without the original data files.
 

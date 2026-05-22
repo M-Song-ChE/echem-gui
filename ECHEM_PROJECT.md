@@ -18,6 +18,7 @@ echem_gui/
     multi_echem2_panel.py   ← MultiEchem2Panel class (Multi E.Chem 2 tab — group-based overlay)
     ecsa_panel.py           ← ECSAPanel class (dedicated ECSA Calc tab)
     eis_panel.py            ← EISPanel class (Nyquist Plot tab)
+    orr_panel.py            ← ORRPanel class (ORR Analysis tab — N2/O2 background subtraction, per-RPM, per-sample)
     file_manager.py         ← FileManagerMixin: load/remove/switch files; data-type-aware _default_xcol/_default_ycol; column-type predicates (_is_voltage_col, _is_current_col, _is_time_col, _is_impedance_col); _on_file_visibility_change; _on_file_reorder; _MPR_DESIRED frozenset; _read_mpr(path) with retry loop for unknown galvani column IDs (tries <f4>/<f8>/<u4>/<u2> until buffer size matches)
     correction.py           ← CorrectionMixin: IR compensation + RHE conversion
     plotting.py             ← PlottingMixin: plot, zoom, pan, legend drag/resize, reset view, click-annotate; draw_reflines() helper; _build_legend_order() module-level helper (rank-1 file first, cycles ascending within each file); _reorder_legend_handles() module-level helper (apply saved custom order)
@@ -29,12 +30,13 @@ echem_gui/
 ```
 
 ## Architecture
-The app uses a **five-tab Notebook** at the top level (in this order):
+The app uses a **six-tab Notebook** at the top level (in this order):
 - **General E.Chem tab** → `EchemPanel(ttk.Frame + all mixins)`, `show_log=True`
 - **Multi E.Chem tab** → `MultiEchemPanel(ttk.Frame + FileManagerMixin + CorrectionMixin)`
 - **Multi E.Chem 2 tab** → `MultiEchem2Panel(ttk.Frame + FileManagerMixin + CorrectionMixin)` — group-based overlay; each group has its own figure; files assigned to groups; active group drives left-panel controls
 - **ECSA Calc tab** → `ECSAPanel(ttk.Frame + FileManagerMixin + CorrectionMixin)`
 - **Nyquist Plot tab** → `EISPanel(ttk.Frame + FileManagerMixin)`
+- **ORR Analysis tab** → `ORRPanel(ttk.Frame)` — sample-based; N2/O2 CV files paired by RPM; background subtraction + IR/RHE correction per sample; anodic-scan extraction; no auto-merge
 
 Each panel is fully **independent**: its own `files` dict, `active_file`, figures, and canvases. Switching tabs never affects the other tab's data or plots.
 
@@ -84,11 +86,26 @@ Each panel is fully **independent**: its own `files` dict, `active_file`, figure
   - `_plot` — also delegates to `_plot_cv()`
   - `_edit_legend_labels(leg, is_cv)` — disables legend draggable, opens editor for the specified legend (CV or Cdl), updates `_legend_cv` / `_legend_cdl` with the returned legend object, re-enables draggable; also triggered by double-click on either legend via `_ei_press`
 
+### ORRPanel (ORR Analysis)
+- Inherits only `ttk.Frame` — does not use FileManagerMixin or CorrectionMixin
+- **Data model** (two levels):
+  - `self.loaded_files = OrderedDict[str, {path, gas, rpm_id, df}]` — pool of files, keyed by short filename; gas auto-detected (`n2`/`o2` regex); rpm_id extracted from `_(\d{2,4})_CV_` pattern
+  - `self.samples = OrderedDict[str, sample_entry]` — keyed by sample name
+- **Sample entry**: `{pairs, r_sol_n2, r_sol_o2, e_ref, area, ref_electrode, x_min/max, y_min/max, x_grid_int/y_grid_int, x_flip/y_flip, legend_show/frame/loc/leg_size, x_grid/y_grid/grid_style/color/linewidth, font_*_size/bold, title_pad, label_pad, custom_title, reflines, hidden}` + runtime keys stripped by `_SAMPLE_RUNTIME`
+- **Pair entry**: `{rpm_id, rpm_val, n2_short, o2_short, n2_path, o2_path, df_n2, df_o2}` — df_n2/df_o2 are runtime-only (`_PAIR_RUNTIME`); stored by hash in session ZIP
+- **Processing pipeline** (`_process_pair`): last cycle extraction → separate IR correction per gas → shared RHE conversion → anodic scan extraction (`_extract_anodic`: find min-E vertex, take data from there, sort ascending) → restrict to overlapping E range → interpolate N2 onto O2 grid → subtract (`I_net = I_O2 − I_N2_interp`) → optional area division
+- **No auto-merge**: files loaded individually; N2/O2 pairing done by RPM index match when user clicks "↓ Add Selected Files to Sample"
+- **Pair table**: dynamic scrollable frame rebuilt by `_rebuild_pair_table`; editable RPM entry fields save to `pair["rpm_val"]` on FocusOut/Return
+- **Per-sample state save/restore**: `_save_active_sample_state()` / `_switch_active_sample(name)` — same pattern as ME2 groups
+- **Session**: `get_session_state(data_store)` / `restore_session_state(state, data_store)` — pairs stored with `df_n2_hash`/`df_o2_hash` referencing `data_store`; reflines serialised as lists, restored as tuples
+- **Layout**: identical to ME2 — scrollable right panel, drag-to-reorder headers, CheckableListbox, `_relayout_figures()`, configurable grid cols, single-sample zoom toggle, `_drop_line` blue indicator
+- **`_SAMPLE_RUNTIME`** / **`_PAIR_RUNTIME`** frozensets strip non-serialisable keys before JSON
+
 ### EchemGUI (main window)
 - Inherits only `tk.Tk`
-- Creates `ttk.Notebook`, adds `gen_tab`, `multi_tab`, `ecsa_tab`, `eis_tab` frames in that order
+- Creates `ttk.Notebook`, adds `gen_tab`, `multi_tab`, `multi2_tab`, `ecsa_tab`, `eis_tab`, `orr_tab` frames in that order
 - Each tab instantiates its panel directly; no shared state
-- `self._panels = {"general": EchemPanel, "multi_echem": MultiEchemPanel, "multi_echem2": MultiEchem2Panel, "ecsa": ECSAPanel, "nyquist": EISPanel}` assembled in `_build_ui()`; passed to `session_manager` for save/load
+- `self._panels = {"general": EchemPanel, "multi_echem": MultiEchemPanel, "multi_echem2": MultiEchem2Panel, "ecsa": ECSAPanel, "nyquist": EISPanel, "orr": ORRPanel}` assembled in `_build_ui()`; passed to `session_manager` for save/load
 - `_build_menubar()` — File menu with Load Session (Ctrl+O), Save Session (Ctrl+S), Save Session As, Exit; calls `_sm.save_session` / `_sm.load_session`
 - `_on_close()` — auto-saves via `_sm.autosave(self._panels)` then destroys the window; registered via `self.protocol("WM_DELETE_WINDOW", self._on_close)`
 - `_check_autosave_on_launch()` — called at end of `_build_ui()`; if autosave exists shows yes/no messagebox with file modification timestamp; calls `_sm.load_session` if confirmed

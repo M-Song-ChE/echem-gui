@@ -20,6 +20,7 @@ from .ecsa_panel import ECSAPanel
 from .multi_echem_panel import MultiEchemPanel
 from .multi_echem2_panel import MultiEchem2Panel
 from .eis_panel import EISPanel
+from .orr_panel import ORRPanel
 from . import session_manager as _sm
 
 _CYCLE_BG = "#e8f0fe"   # light blue for the cycle checkbox area
@@ -1360,6 +1361,12 @@ class EchemGUI(tk.Tk):
         eis_panel = EISPanel(eis_tab)
         eis_panel.pack(fill=tk.BOTH, expand=True)
         self._panels["nyquist"] = eis_panel
+
+        orr_tab = ttk.Frame(notebook)
+        notebook.add(orr_tab, text="ORR Analysis")
+        orr_panel = ORRPanel(orr_tab)
+        orr_panel.pack(fill=tk.BOTH, expand=True)
+        self._panels["orr"] = orr_panel
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 

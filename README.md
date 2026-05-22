@@ -8,9 +8,10 @@
 5. [Multi E.Chem 2 Tab](#5-multi-echem-2-tab)
 6. [ECSA Calc Tab](#6-ecsa-calc-tab)
 7. [Nyquist Plot Tab](#7-nyquist-plot-tab)
-8. [Common Controls (All Tabs)](#8-common-controls-all-tabs)
-9. [Tips and Shortcuts](#9-tips-and-shortcuts)
-10. [Session Save & Restore](#10-session-save--restore)
+8. [ORR Analysis Tab](#8-orr-analysis-tab)
+9. [Common Controls (All Tabs)](#9-common-controls-all-tabs)
+10. [Tips and Shortcuts](#10-tips-and-shortcuts)
+11. [Session Save & Restore](#11-session-save--restore)
 
 ---
 
@@ -31,7 +32,7 @@ Column names are recognized automatically (e.g. `Ewe/V`, `I/mA`, `time/s`, `cycl
 
 ## 2. Interface Overview
 
-The app has five tabs at the top:
+The app has six tabs at the top:
 
 | Tab | Purpose |
 |-----|---------|
@@ -40,6 +41,7 @@ The app has five tabs at the top:
 | **Multi E.Chem 2** | Group files into named groups; overlay all groups on one plot each |
 | **ECSA Calc** | Extract electrochemical surface area (ECSA) from CV data |
 | **Nyquist Plot** | Plot EIS impedance data as a Nyquist diagram |
+| **ORR Analysis** | Background-subtracted RDE polarization curves (N2/O2, per RPM, per sample) |
 
 Each tab is fully **independent** — files loaded in one tab are not shared with others.
 
@@ -315,7 +317,44 @@ Double-click the title strip to rename the plot.
 
 ---
 
-## 8. Common Controls (All Tabs)
+## 8. ORR Analysis Tab
+
+Use this tab to compare rotating disk electrode (RDE) oxygen reduction reaction (ORR) performance across multiple samples. Each sample groups N2 (background) and O2 (signal) CV file pairs by RPM. Background subtraction, IR correction, and RHE conversion are applied automatically.
+
+### 8.1 Loading Files
+1. Click **Load Files** to select `.mpr` or `.txt` CV files (N2 and O2, any number of RPM values).
+2. N2 vs O2 is auto-detected from the filename (looks for `n2`/`o2` as word fragments).
+3. The RPM index is auto-extracted from the filename pattern `_NN_CV_` (e.g. `_04_CV_`, `_1600_CV_`).
+4. Files appear tagged `(N2)`, `(O2)`, or `(??)` — **no auto-merge** is performed.
+
+### 8.2 Creating Samples and Pairing Files
+1. Click **New Sample** and enter a name.
+2. Select N2 and O2 files in the Loaded Files list and click **↓ Add Selected Files to Sample**.
+3. The app pairs files by RPM index automatically and shows them in the **RPM Pairs** table.
+4. Edit the **RPM** field in each row to enter the actual rotation speed from your lab notes. Press Enter to save.
+
+### 8.3 Correction (active sample)
+- **R_sol N2 (Ω)** — uncompensated resistance for the N2 session: `E = Ewe/V − (I/1000) × R_sol`.
+- **R_sol O2 (Ω)** — uncompensated resistance for the O2 session (applied independently).
+- **E_ref (V vs RHE)** — shared RHE offset: `E_RHE = E_corr + E_ref`.
+- **Area (cm²)** — leave blank for I (mA); enter a value for J (mA cm⁻²).
+
+### 8.4 Processing Pipeline (per pair)
+1. Extract the **last cycle** from both N2 and O2.
+2. Apply separate IR correction, then shared RHE conversion.
+3. Extract the **anodic scan** (cathodic-vertex upward, sorted ascending).
+4. Restrict to the overlapping E range and interpolate N2 → O2 grid.
+5. Subtract: `I_net = I_O2 − I_N2_interp`. Divide by area if provided.
+
+### 8.5 Multiple Samples
+Each sample has its own subplot. Use **Cols** to control the grid width. Double-click a header strip to zoom; drag to reorder; uncheck to hide.
+
+### 8.6 Plot Size
+**W [__] H [__] inches** — size for all sample subplots; scrollbars appear automatically.
+
+---
+
+## 9. Common Controls (All Tabs)
 
 ### Mouse Interactions on the Plot
 | Action | Effect |
@@ -350,7 +389,7 @@ The legend size is preserved when any other plot change is made (cycle selection
 
 ---
 
-## 9. Tips and Shortcuts
+## 10. Tips and Shortcuts
 
 - **Per-file independence** — every control in the left panel saves its value to the currently active file. Switch files freely; settings are never mixed up between files. In Multi E.Chem 2, cycle selection and corrections are also independent per file *per group* — the same file can have different cycles selected in different groups.
 - **Plot highlight** — clicking a file in the list or clicking a line on the plot activates highlight mode: the selected line glows and others are dimmed. Right-click anywhere on the plot to clear the highlight. Highlight is never activated automatically when loading files.
@@ -375,7 +414,7 @@ The legend size is preserved when any other plot change is made (cycle selection
 
 ---
 
-## 10. Session Save & Restore
+## 11. Session Save & Restore
 
 The app can save the complete state of all five tabs — loaded files, groups, axis settings, corrections, cycle selections, colors, legend positions, and plot sizes — into a single `.echemsession` file. Raw data is embedded inside the file, so sessions can be shared or moved to another computer without bringing the original data files along.
 
@@ -406,3 +445,4 @@ The app can save the complete state of all five tabs — loaded files, groups, a
 | **Multi E.Chem 2** | All loaded files and group definitions; per-group axis/legend/refline settings; per-(group, file) cycle and correction state; grid column count; active group and file |
 | **ECSA Calc** | All loaded files with per-file scan rate tables, E_std, Cs, extracted Cdl/ECSA results, CV/Cdl reference lines, and zoom state for both plots |
 | **Nyquist Plot** | All loaded files with per-file display options (connect lines, markers, colors), axis settings, reflines, and zoom state |
+| **ORR Analysis** | All loaded files, sample definitions, N2/O2 pair tables with RPM values, per-sample correction (R_sol N2/O2, E_ref, area) and all plot settings |

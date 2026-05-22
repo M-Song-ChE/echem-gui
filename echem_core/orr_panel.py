@@ -1,0 +1,1949 @@
+"""ORR Analysis panel — background-subtracted rotating disk electrode polarization curves.
+
+Each SAMPLE groups N2 (background) and O2 (signal) CV file pairs by RPM.
+
+Processing per pair:
+  1. Extract the last cycle from each file.
+  2. Apply IR correction:  E = Ewe/V − (I/mA / 1000) × R_sol
+     (separate R_sol_N2 and R_sol_O2 — measured in independent sessions).
+  3. Apply RHE conversion: E += E_ref  (shared per sample).
+  4. Extract the anodic scan direction (from minimum-E vertex upward).
+  5. Interpolate N2 onto O2's E grid and subtract: I_net = I_O2 − I_N2_interp.
+  6. Optionally normalise to electrode area → J (mA/cm²).
+
+Multiple samples are displayed in a scrollable grid of subplots (configurable columns),
+mirroring the layout of the Multi E.Chem 2 tab.
+"""
+
+from collections import OrderedDict
+import re
+import os
+import math
+
+import numpy as np
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox, simpledialog
+
+import pandas as pd
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+
+from .file_manager import _read_mpr, _PALETTE, _COLOR_NAMES, _COLOR_HEX
+from .plotting import apply_grid, draw_reflines, copy_figure_to_clipboard
+from .checklist import CheckableListbox
+from . import session_manager as _sm
+
+# ── UI constants ────────────────────────────────────────────────────────
+_SAMPLE_HDR_BG     = "#d1c4e9"   # light purple — distinct from ME1 blue / ME2 green
+_SAMPLE_HDR_ACTIVE = "#ffd54f"   # gold  (matches other tabs)
+
+# Runtime-only keys stripped before JSON serialisation
+_SAMPLE_RUNTIME = frozenset({
+    "fig", "ax", "canvas", "toolbar", "plot_frame",
+    "hdr_frame", "hdr_label", "legend",
+    # ephemeral interaction state
+    "panning", "pan_ax", "pan_start", "pan_moved",
+    "leg_resize", "leg_resize_start_y", "leg_resize_start_sz",
+    "ann", "ann_dot", "ann_last", "ann_idx", "_plot_data",
+    "auto_xlim", "auto_ylim", "leg_size_live",
+})
+_PAIR_RUNTIME = frozenset({"df_n2", "df_o2"})
+
+# Matches  _NN_CV_   or   _NNN_CV_   in a filename
+_RPM_PAT = re.compile(r'_(\d{2,4})_CV_', re.IGNORECASE)
+
+_GRID_STYLE_MAP = {
+    "dashed": "--", "dotted": ":", "solid": "-", "dash-dot": "-."}
+
+_ANN_DOT_LABEL = "_orr_dot"
+
+
+# ── Module-level helpers ─────────────────────────────────────────────────
+
+def _read_one_df(path: str) -> pd.DataFrame:
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".mpr":
+        return _read_mpr(path)
+    df = pd.read_csv(path, sep="\t", encoding="latin-1", on_bad_lines="skip")
+    df.columns = [c.strip().replace("<", "").replace(">", "") for c in df.columns]
+    return df.reset_index(drop=True)
+
+
+def _detect_gas(stem: str) -> str:
+    lo = stem.lower()
+    # Match n2 / o2 as word-like fragments (not inside longer numbers)
+    if re.search(r'(?<!\d)n2(?!\d)', lo):
+        return "n2"
+    if re.search(r'(?<!\d)o2(?!\d)', lo):
+        return "o2"
+    return ""
+
+
+def _extract_rpm_id(stem: str) -> str:
+    m = _RPM_PAT.search(stem)
+    return m.group(1) if m else ""
+
+
+def _extract_anodic(E: np.ndarray, I: np.ndarray):
+    """Return (E_sorted, I_sorted) for the anodic (E-increasing) half of the CV.
+
+    Finds the cathodic vertex (minimum E), takes everything from that point
+    onward, then sorts by E ascending so np.interp works correctly.
+    """
+    if len(E) < 4:
+        return E, I
+    min_idx = int(np.argmin(E))
+    E_an = E[min_idx:]
+    I_an = I[min_idx:]
+    order = np.argsort(E_an)
+    return E_an[order], I_an[order]
+
+
+def _process_pair(pair: dict, r_sol_n2: float, r_sol_o2: float,
+                  e_ref: float, area: float):
+    """Return (E_plot, Y_plot) for one ORR pair, or None on failure."""
+    df_n2 = pair.get("df_n2")
+    df_o2 = pair.get("df_o2")
+    if df_n2 is None or df_o2 is None:
+        return None
+
+    for df in (df_n2, df_o2):
+        if "Ewe/V" not in df.columns or "I/mA" not in df.columns:
+            return None
+
+    def _last_cycle(df):
+        if "cycle number" in df.columns and len(df["cycle number"].unique()) > 0:
+            last = df["cycle number"].max()
+            return df[df["cycle number"] == last].copy()
+        return df.copy()
+
+    lc_n2 = _last_cycle(df_n2)
+    lc_o2 = _last_cycle(df_o2)
+    if len(lc_n2) < 10 or len(lc_o2) < 10:
+        return None
+
+    E_n2 = lc_n2["Ewe/V"].values.astype(float)
+    I_n2 = lc_n2["I/mA"].values.astype(float)
+    E_o2 = lc_o2["Ewe/V"].values.astype(float)
+    I_o2 = lc_o2["I/mA"].values.astype(float)
+
+    # IR correction
+    if r_sol_n2 != 0.0:
+        E_n2 = E_n2 - (I_n2 / 1000.0) * r_sol_n2
+    if r_sol_o2 != 0.0:
+        E_o2 = E_o2 - (I_o2 / 1000.0) * r_sol_o2
+
+    # RHE conversion
+    if e_ref != 0.0:
+        E_n2 = E_n2 + e_ref
+        E_o2 = E_o2 + e_ref
+
+    # Anodic scan
+    E_n2_an, I_n2_an = _extract_anodic(E_n2, I_n2)
+    E_o2_an, I_o2_an = _extract_anodic(E_o2, I_o2)
+    if len(E_n2_an) < 5 or len(E_o2_an) < 5:
+        return None
+
+    # Restrict O2 to overlapping E range
+    E_lo = max(E_n2_an[0],  E_o2_an[0])
+    E_hi = min(E_n2_an[-1], E_o2_an[-1])
+    if E_lo >= E_hi:
+        return None
+
+    mask    = (E_o2_an >= E_lo) & (E_o2_an <= E_hi)
+    E_plot  = E_o2_an[mask]
+    I_o2_cl = I_o2_an[mask]
+    if len(E_plot) < 3:
+        return None
+
+    I_n2_interp = np.interp(E_plot, E_n2_an, I_n2_an)
+    I_net       = I_o2_cl - I_n2_interp
+
+    Y_plot = I_net / area if area > 0 else I_net
+    return E_plot, Y_plot
+
+
+# ════════════════════════════════════════════════════════════════════════
+# ORRPanel
+# ════════════════════════════════════════════════════════════════════════
+
+class ORRPanel(ttk.Frame):
+    """ORR analysis panel — group N2+O2 CV pairs into samples; plot background-subtracted
+    ORR polarization curves (anodic scan, last cycle, per RPM)."""
+
+    def __init__(self, master):
+        ttk.Frame.__init__(self, master)
+        self.loaded_files   = OrderedDict()  # short_name → {path, gas, rpm_id, df}
+        self._loaded_keys   = []             # ordered list of short names (mirrors listbox)
+        self.samples        = OrderedDict()  # sample_name → sample_entry
+        self.active_sample  = None
+        self._suppress_replot = False
+        self._loading        = False
+        self._drag           = None
+        self._zoom_sample    = None
+        self._build_panel()
+        self.after(500, self._auto_set_initial_size)
+
+    # ════════════════════════════════════════════════════════════════
+    # Panel construction
+    # ════════════════════════════════════════════════════════════════
+    def _build_panel(self):
+        body = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
+        body.pack(fill=tk.BOTH, expand=True)
+
+        # ── Scrollable left panel ─────────────────────────────────
+        left_outer = ttk.Frame(body, width=360)
+        body.add(left_outer, weight=0)
+
+        _lc = tk.Canvas(left_outer, highlightthickness=0)
+        _ls = ttk.Scrollbar(left_outer, orient=tk.VERTICAL, command=_lc.yview)
+        _lc.configure(yscrollcommand=_ls.set)
+        _ls.pack(side=tk.RIGHT, fill=tk.Y)
+        _lc.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        left = tk.Frame(_lc)
+        _lwin = _lc.create_window((0, 0), window=left, anchor=tk.NW)
+        left.bind("<Configure>", lambda e: _lc.configure(scrollregion=_lc.bbox("all")))
+        _lc.bind("<Configure>", lambda e: _lc.itemconfig(_lwin, width=e.width))
+        _lc.bind("<MouseWheel>", lambda e: _lc.yview_scroll(-1 * (e.delta // 120), "units"))
+
+        # ══ LOADED FILES ════════════════════════════════════════════
+        ttk.Label(left, text="Loaded Files:", font=("", 9, "bold")).pack(
+            anchor=tk.W, padx=4, pady=(6, 0))
+        ttk.Label(left, text="(N2/O2 auto-detected from filename — no auto-merge)",
+                  foreground="gray", font=("", 8)).pack(anchor=tk.W, padx=4)
+        _fb = ttk.Frame(left)
+        _fb.pack(fill=tk.X, padx=4)
+        ttk.Button(_fb, text="Load Files", command=self._load_files).pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Button(_fb, text="Remove",     command=self._remove_loaded_file).pack(side=tk.LEFT)
+
+        _lf = ttk.Frame(left)
+        _lf.pack(fill=tk.X, padx=4, pady=2)
+        self.loaded_lb = tk.Listbox(_lf, height=5, selectmode=tk.EXTENDED,
+                                    exportselection=False, font=("Courier", 8))
+        _lf_sb = ttk.Scrollbar(_lf, orient=tk.VERTICAL, command=self.loaded_lb.yview)
+        self.loaded_lb.configure(yscrollcommand=_lf_sb.set)
+        _lf_sb.pack(side=tk.RIGHT, fill=tk.Y)
+        self.loaded_lb.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        # ══ SAMPLES ═════════════════════════════════════════════════
+        ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=4)
+        ttk.Label(left, text="ORR Samples:", font=("", 9, "bold")).pack(
+            anchor=tk.W, padx=4)
+        _sb = ttk.Frame(left)
+        _sb.pack(fill=tk.X, padx=4, pady=(2, 0))
+        ttk.Button(_sb, text="New Sample", command=self._new_sample).pack(side=tk.LEFT, padx=(0, 2))
+        ttk.Button(_sb, text="Rename",     command=self._rename_sample).pack(side=tk.LEFT, padx=(0, 2))
+        ttk.Button(_sb, text="Delete",     command=self._delete_sample).pack(side=tk.LEFT)
+
+        _slf = ttk.Frame(left)
+        _slf.pack(fill=tk.X, padx=4, pady=2)
+        self.sample_lb = CheckableListbox(
+            _slf, height=3,
+            on_check=self._on_sample_visibility_change,
+            on_reorder=self._on_sample_reorder)
+        self.sample_lb.pack(fill=tk.X, expand=True)
+        self.sample_lb.bind("<<ListboxSelect>>", self._on_sample_select)
+
+        ttk.Button(left, text="↓ Add Selected Files to Sample",
+                   command=self._add_files_to_sample).pack(fill=tk.X, padx=4, pady=(2, 0))
+
+        # ══ PAIR TABLE ══════════════════════════════════════════════
+        ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=4)
+        ttk.Label(left, text="RPM Pairs  (active sample)",
+                  font=("", 9, "bold")).pack(anchor=tk.W, padx=4)
+        ttk.Label(left,
+                  text="Edit RPM values; N2/O2 paired by filename RPM index",
+                  foreground="gray", font=("", 8), wraplength=320).pack(
+            anchor=tk.W, padx=4)
+
+        _ptf = ttk.Frame(left)
+        _ptf.pack(fill=tk.X, padx=4, pady=2)
+        _pt_canvas = tk.Canvas(_ptf, background="#f5f5f5",
+                               highlightthickness=1, highlightbackground="#cccccc",
+                               height=100)
+        _pt_vs = ttk.Scrollbar(_ptf, orient=tk.VERTICAL, command=_pt_canvas.yview)
+        _pt_canvas.configure(yscrollcommand=_pt_vs.set)
+        _pt_vs.pack(side=tk.RIGHT, fill=tk.Y)
+        _pt_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self._pair_tbl_inner = tk.Frame(_pt_canvas, background="#f5f5f5")
+        _pt_win = _pt_canvas.create_window((0, 0), window=self._pair_tbl_inner, anchor=tk.NW)
+        self._pair_tbl_inner.bind(
+            "<Configure>",
+            lambda e: _pt_canvas.configure(scrollregion=_pt_canvas.bbox("all")))
+        _pt_canvas.bind("<Configure>", lambda e: _pt_canvas.itemconfig(_pt_win, width=e.width))
+
+        def _pt_wheel(e):
+            _pt_canvas.yview_scroll(-1 * (e.delta // 120), "units")
+            return "break"
+        _pt_canvas.bind("<MouseWheel>", _pt_wheel)
+        self._pair_tbl_inner.bind("<MouseWheel>", _pt_wheel)
+
+        # ══ CORRECTION ══════════════════════════════════════════════
+        ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=4)
+        ttk.Label(left, text="IR / RHE Correction  (active sample)",
+                  font=("", 9, "bold")).pack(anchor=tk.W, padx=4)
+
+        _cr1 = ttk.Frame(left)
+        _cr1.pack(fill=tk.X, padx=4, pady=2)
+        ttk.Label(_cr1, text="R_sol N2 (Ω):").pack(side=tk.LEFT)
+        self.r_sol_n2_var = tk.StringVar(value="0")
+        _n2_e = ttk.Entry(_cr1, textvariable=self.r_sol_n2_var, width=8)
+        _n2_e.pack(side=tk.LEFT, padx=(4, 12))
+        ttk.Label(_cr1, text="R_sol O2 (Ω):").pack(side=tk.LEFT)
+        self.r_sol_o2_var = tk.StringVar(value="0")
+        _o2_e = ttk.Entry(_cr1, textvariable=self.r_sol_o2_var, width=8)
+        _o2_e.pack(side=tk.LEFT, padx=(4, 0))
+        for _e in (_n2_e, _o2_e):
+            _e.bind("<Return>",   lambda ev: self._on_correction_change())
+            _e.bind("<FocusOut>", lambda ev: self._on_correction_change())
+
+        _cr2 = ttk.Frame(left)
+        _cr2.pack(fill=tk.X, padx=4, pady=(0, 2))
+        ttk.Label(_cr2, text="E_ref (V vs RHE):").pack(side=tk.LEFT)
+        self.e_ref_var = tk.StringVar(value="0")
+        _eref_e = ttk.Entry(_cr2, textvariable=self.e_ref_var, width=8)
+        _eref_e.pack(side=tk.LEFT, padx=(4, 12))
+        _eref_e.bind("<Return>",   lambda ev: self._on_correction_change())
+        _eref_e.bind("<FocusOut>", lambda ev: self._on_correction_change())
+        ttk.Label(_cr2, text="Ref:").pack(side=tk.LEFT)
+        self.ref_electrode_var = tk.StringVar(value="RHE")
+        _ref_cb = ttk.Combobox(
+            _cr2, textvariable=self.ref_electrode_var,
+            values=["RHE", "Ag/AgCl", "SCE", "NHE", "SHE", "Hg/HgO", "Fc/Fc+"],
+            state="readonly", width=10)
+        _ref_cb.pack(side=tk.LEFT, padx=(2, 0))
+        _ref_cb.bind("<<ComboboxSelected>>", lambda e: self._auto_replot())
+
+        _cr3 = ttk.Frame(left)
+        _cr3.pack(fill=tk.X, padx=4, pady=(0, 2))
+        ttk.Label(_cr3, text="Area (cm²):").pack(side=tk.LEFT)
+        self.area_var = tk.StringVar(value="")
+        _area_e = ttk.Entry(_cr3, textvariable=self.area_var, width=8)
+        _area_e.pack(side=tk.LEFT, padx=(4, 6))
+        ttk.Label(_cr3, text="(leave blank for I/mA; enter for J/mA/cm²)",
+                  foreground="gray", font=("", 8)).pack(side=tk.LEFT)
+        _area_e.bind("<Return>",   lambda ev: self._on_correction_change())
+        _area_e.bind("<FocusOut>", lambda ev: self._on_correction_change())
+
+        ttk.Label(left, text="(auto-applied on Enter / focus change)",
+                  foreground="gray", font=("", 8)).pack(anchor=tk.W, padx=4)
+
+        # ══ AXIS / RANGE ════════════════════════════════════════════
+        ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
+        ttk.Label(left, text="Plot Range  (active sample)",
+                  font=("", 9, "bold")).pack(anchor=tk.W, padx=4)
+        _xr = ttk.Frame(left)
+        _xr.pack(fill=tk.X, padx=4, pady=(1, 0))
+        ttk.Label(_xr, text="X min:").pack(side=tk.LEFT)
+        self.x_min_var = tk.StringVar()
+        _xmin = ttk.Entry(_xr, textvariable=self.x_min_var, width=7)
+        _xmin.pack(side=tk.LEFT, padx=(2, 4))
+        ttk.Label(_xr, text="X max:").pack(side=tk.LEFT)
+        self.x_max_var = tk.StringVar()
+        _xmax = ttk.Entry(_xr, textvariable=self.x_max_var, width=7)
+        _xmax.pack(side=tk.LEFT, padx=(2, 4))
+        ttk.Label(_xr, text="Int:").pack(side=tk.LEFT)
+        self.x_grid_int_var = tk.StringVar(value="0")
+        _xgi = ttk.Entry(_xr, textvariable=self.x_grid_int_var, width=5)
+        _xgi.pack(side=tk.LEFT, padx=(2, 0))
+
+        _yr = ttk.Frame(left)
+        _yr.pack(fill=tk.X, padx=4, pady=(1, 0))
+        ttk.Label(_yr, text="Y min:").pack(side=tk.LEFT)
+        self.y_min_var = tk.StringVar()
+        _ymin = ttk.Entry(_yr, textvariable=self.y_min_var, width=7)
+        _ymin.pack(side=tk.LEFT, padx=(2, 4))
+        ttk.Label(_yr, text="Y max:").pack(side=tk.LEFT)
+        self.y_max_var = tk.StringVar()
+        _ymax = ttk.Entry(_yr, textvariable=self.y_max_var, width=7)
+        _ymax.pack(side=tk.LEFT, padx=(2, 4))
+        ttk.Label(_yr, text="Int:").pack(side=tk.LEFT)
+        self.y_grid_int_var = tk.StringVar(value="0")
+        _ygi = ttk.Entry(_yr, textvariable=self.y_grid_int_var, width=5)
+        _ygi.pack(side=tk.LEFT, padx=(2, 0))
+
+        ttk.Label(left, text="(blank = auto)", foreground="gray",
+                  font=("", 8)).pack(anchor=tk.W, padx=4)
+        for _re in (_xmin, _xmax, _ymin, _ymax, _xgi, _ygi):
+            _re.bind("<Return>",   lambda e: self._auto_replot())
+            _re.bind("<FocusOut>", lambda e: self._auto_replot())
+
+        _flip_row = ttk.Frame(left)
+        _flip_row.pack(fill=tk.X, padx=4, pady=(2, 2))
+        self.x_flip_var = tk.BooleanVar(value=False)
+        self.y_flip_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(_flip_row, text="Flip X", variable=self.x_flip_var,
+                        command=self._auto_replot).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Checkbutton(_flip_row, text="Flip Y", variable=self.y_flip_var,
+                        command=self._auto_replot).pack(side=tk.LEFT)
+
+        # ══ TITLE ═══════════════════════════════════════════════════
+        ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
+        _title_row = ttk.Frame(left)
+        _title_row.pack(fill=tk.X, padx=4, pady=(0, 2))
+        ttk.Label(_title_row, text="Title:").pack(side=tk.LEFT)
+        self.plot_title_var = tk.StringVar(value="")
+        _title_e = ttk.Entry(_title_row, textvariable=self.plot_title_var)
+        _title_e.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
+        _title_e.bind("<Return>",   lambda e: self._auto_replot())
+        _title_e.bind("<FocusOut>", lambda e: self._auto_replot())
+
+        # ══ LEGEND ══════════════════════════════════════════════════
+        ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
+        ttk.Label(left, text="Legend  (active sample)",
+                  font=("", 9, "bold")).pack(anchor=tk.W, padx=4)
+        _lr1 = ttk.Frame(left)
+        _lr1.pack(fill=tk.X, padx=4, pady=2)
+        self.legend_show_var  = tk.BooleanVar(value=True)
+        self.legend_frame_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(_lr1, text="Show Legend", variable=self.legend_show_var,
+                        command=self._auto_replot).pack(side=tk.LEFT)
+        ttk.Checkbutton(_lr1, text="Frame", variable=self.legend_frame_var,
+                        command=self._auto_replot).pack(side=tk.LEFT, padx=(8, 0))
+        _lr2 = ttk.Frame(left)
+        _lr2.pack(fill=tk.X, padx=4, pady=2)
+        ttk.Label(_lr2, text="Size:").pack(side=tk.LEFT)
+        self.legend_size_var = tk.StringVar(value="8")
+        _lsz_e = ttk.Entry(_lr2, textvariable=self.legend_size_var, width=4)
+        _lsz_e.pack(side=tk.LEFT, padx=(2, 8))
+        _lsz_e.bind("<Return>",   lambda e: self._auto_replot())
+        _lsz_e.bind("<FocusOut>", lambda e: self._auto_replot())
+        ttk.Label(_lr2, text="Loc:").pack(side=tk.LEFT)
+        self.legend_loc_var = tk.StringVar(value="best")
+        _leg_loc_cb = ttk.Combobox(
+            _lr2, textvariable=self.legend_loc_var,
+            values=["best", "upper right", "upper left", "lower left", "lower right",
+                    "right", "center left", "center right", "lower center",
+                    "upper center", "center"],
+            state="readonly", width=11)
+        _leg_loc_cb.pack(side=tk.LEFT, padx=2)
+
+        def _on_leg_loc_select(e=None):
+            if self.active_sample and self.active_sample in self.samples:
+                self.samples[self.active_sample].pop("legend_manual_pos", None)
+                _leg = self.samples[self.active_sample].get("legend")
+                if _leg is not None:
+                    _leg._loc = 0
+            self._auto_replot()
+        _leg_loc_cb.bind("<<ComboboxSelected>>", _on_leg_loc_select)
+        ttk.Label(left, text="(left-drag to move)",
+                  foreground="gray", font=("", 8)).pack(anchor=tk.W, padx=4)
+
+        # ══ GRID ════════════════════════════════════════════════════
+        ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
+        ttk.Label(left, text="Grid  (active sample)",
+                  font=("", 9, "bold")).pack(anchor=tk.W, padx=4)
+        _gxy = ttk.Frame(left)
+        _gxy.pack(fill=tk.X, padx=4, pady=2)
+        self.x_grid_var = tk.BooleanVar(value=False)
+        self.y_grid_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(_gxy, text="X", variable=self.x_grid_var,
+                        command=self._auto_replot).pack(side=tk.LEFT)
+        ttk.Checkbutton(_gxy, text="Y", variable=self.y_grid_var,
+                        command=self._auto_replot).pack(side=tk.LEFT, padx=(10, 0))
+        _gst = ttk.Frame(left)
+        _gst.pack(fill=tk.X, padx=4, pady=(0, 2))
+        ttk.Label(_gst, text="Style:").pack(side=tk.LEFT)
+        self.grid_style_var = tk.StringVar(value="dashed")
+        _gscb = ttk.Combobox(_gst, textvariable=self.grid_style_var,
+                              values=["dashed", "dotted", "solid", "dash-dot"],
+                              state="readonly", width=9)
+        _gscb.pack(side=tk.LEFT, padx=(2, 6))
+        _gscb.bind("<<ComboboxSelected>>", lambda e: self._auto_replot())
+        ttk.Label(_gst, text="Color:").pack(side=tk.LEFT)
+        self.grid_color_var = tk.StringVar(value="gray")
+        _gccb = ttk.Combobox(_gst, textvariable=self.grid_color_var,
+                              values=["gray", "black", "red", "blue", "green",
+                                      "orange", "purple", "crimson", "royalblue",
+                                      "darkorange", "teal"],
+                              state="readonly", width=9)
+        _gccb.pack(side=tk.LEFT, padx=(2, 6))
+        _gccb.bind("<<ComboboxSelected>>", lambda e: self._auto_replot())
+        ttk.Label(_gst, text="Width:").pack(side=tk.LEFT)
+        self.grid_linewidth_var = tk.StringVar(value="0.8")
+        _glw = ttk.Entry(_gst, textvariable=self.grid_linewidth_var, width=4)
+        _glw.pack(side=tk.LEFT, padx=(2, 0))
+        _glw.bind("<Return>",   lambda e: self._auto_replot())
+        _glw.bind("<FocusOut>", lambda e: self._auto_replot())
+
+        # ══ FONT ════════════════════════════════════════════════════
+        ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
+        ttk.Label(left, text="Font  (active sample)",
+                  font=("", 9, "bold")).pack(anchor=tk.W, padx=4)
+        self.font_title_size_var = tk.StringVar(value="10")
+        self.font_title_bold_var = tk.BooleanVar(value=False)
+        self.font_label_size_var = tk.StringVar(value="10")
+        self.font_label_bold_var = tk.BooleanVar(value=False)
+        self.font_tick_size_var  = tk.StringVar(value="8")
+        self.font_tick_bold_var  = tk.BooleanVar(value=False)
+        for lbl, sz_v, bd_v in (
+            ("Title:    Size", self.font_title_size_var, self.font_title_bold_var),
+            ("Axis Lbl: Size", self.font_label_size_var, self.font_label_bold_var),
+            ("Tick Nos: Size", self.font_tick_size_var,  self.font_tick_bold_var),
+        ):
+            _fr = ttk.Frame(left)
+            _fr.pack(fill=tk.X, padx=4, pady=(2, 0))
+            ttk.Label(_fr, text=lbl).pack(side=tk.LEFT)
+            _fe = ttk.Entry(_fr, textvariable=sz_v, width=4)
+            _fe.pack(side=tk.LEFT, padx=(2, 4))
+            _fe.bind("<Return>",   lambda e: self._auto_replot())
+            _fe.bind("<FocusOut>", lambda e: self._auto_replot())
+            ttk.Checkbutton(_fr, text="Bold", variable=bd_v,
+                            command=self._auto_replot).pack(side=tk.LEFT)
+        _spc = ttk.Frame(left)
+        _spc.pack(fill=tk.X, padx=4, pady=(2, 0))
+        ttk.Label(_spc, text="Spacing: Title").pack(side=tk.LEFT)
+        self.title_pad_var = tk.StringVar(value="6")
+        _tpe = ttk.Entry(_spc, textvariable=self.title_pad_var, width=4)
+        _tpe.pack(side=tk.LEFT, padx=(2, 6))
+        _tpe.bind("<Return>",   lambda e: self._auto_replot())
+        _tpe.bind("<FocusOut>", lambda e: self._auto_replot())
+        ttk.Label(_spc, text="Label").pack(side=tk.LEFT)
+        self.label_pad_var = tk.StringVar(value="4")
+        _lpe = ttk.Entry(_spc, textvariable=self.label_pad_var, width=4)
+        _lpe.pack(side=tk.LEFT, padx=(2, 0))
+        _lpe.bind("<Return>",   lambda e: self._auto_replot())
+        _lpe.bind("<FocusOut>", lambda e: self._auto_replot())
+
+        # ══ REFERENCE LINES ══════════════════════════════════════════
+        ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
+        ttk.Label(left, text="Reference Lines  (active sample)",
+                  font=("", 9, "bold")).pack(anchor=tk.W, padx=4)
+        _ra = ttk.Frame(left)
+        _ra.pack(fill=tk.X, padx=4, pady=2)
+        ttk.Label(_ra, text="X:").pack(side=tk.LEFT)
+        self._ref_x_var = tk.StringVar()
+        _rx_e = ttk.Entry(_ra, textvariable=self._ref_x_var, width=7)
+        _rx_e.pack(side=tk.LEFT, padx=(2, 0))
+        ttk.Button(_ra, text="+X", width=3, command=self._add_xrefline).pack(
+            side=tk.LEFT, padx=(2, 8))
+        ttk.Label(_ra, text="Y:").pack(side=tk.LEFT)
+        self._ref_y_var = tk.StringVar()
+        _ry_e = ttk.Entry(_ra, textvariable=self._ref_y_var, width=7)
+        _ry_e.pack(side=tk.LEFT, padx=(2, 0))
+        ttk.Button(_ra, text="+Y", width=3, command=self._add_yrefline).pack(
+            side=tk.LEFT, padx=2)
+        _rx_e.bind("<Return>", lambda e: self._add_xrefline())
+        _ry_e.bind("<Return>", lambda e: self._add_yrefline())
+
+        _rl_row = ttk.Frame(left)
+        _rl_row.pack(fill=tk.X, padx=4, pady=(0, 2))
+        self._reflines_lb = tk.Listbox(_rl_row, height=3,
+                                       selectmode=tk.SINGLE, exportselection=False)
+        self._reflines_lb.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self._reflines_lb.bind("<<ListboxSelect>>", lambda e: self._on_refline_select())
+        ttk.Button(_rl_row, text="Remove",
+                   command=self._remove_refline).pack(side=tk.RIGHT, padx=(4, 0))
+        _ro = ttk.Frame(left)
+        _ro.pack(fill=tk.X, padx=4, pady=(0, 2))
+        ttk.Label(_ro, text="Style:").pack(side=tk.LEFT)
+        self._refline_style_var = tk.StringVar(value="dashed")
+        _rls_cb = ttk.Combobox(_ro, textvariable=self._refline_style_var,
+                                values=["dashed", "dotted", "solid", "dash-dot"],
+                                state="readonly", width=9)
+        _rls_cb.pack(side=tk.LEFT, padx=(2, 6))
+        ttk.Label(_ro, text="Color:").pack(side=tk.LEFT)
+        self._refline_color_var = tk.StringVar(value="dimgray")
+        _rlc_cb = ttk.Combobox(_ro, textvariable=self._refline_color_var,
+                                values=["dimgray", "black", "red", "blue", "green",
+                                        "orange", "purple", "crimson", "royalblue",
+                                        "darkorange", "teal", "saddlebrown"],
+                                state="readonly", width=9)
+        _rlc_cb.pack(side=tk.LEFT, padx=(2, 6))
+        ttk.Label(_ro, text="Width:").pack(side=tk.LEFT)
+        self._refline_lw_var = tk.StringVar(value="1.0")
+        _rllw = ttk.Entry(_ro, textvariable=self._refline_lw_var, width=4)
+        _rllw.pack(side=tk.LEFT, padx=(2, 0))
+        _rls_cb.bind("<<ComboboxSelected>>", lambda e: self._on_refline_style_change())
+        _rlc_cb.bind("<<ComboboxSelected>>", lambda e: self._on_refline_style_change())
+        _rllw.bind("<Return>",   lambda e: self._on_refline_style_change())
+        _rllw.bind("<FocusOut>", lambda e: self._on_refline_style_change())
+
+        # ══ PLOT BUTTON + LOG ═══════════════════════════════════════
+        ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
+        ttk.Button(left, text="Plot Active Sample",
+                   command=self._auto_replot).pack(anchor=tk.W, padx=4, pady=(0, 4))
+        ttk.Label(left, text="Log", font=("", 9, "bold")).pack(anchor=tk.W, padx=4)
+        _logf = ttk.Frame(left)
+        _logf.pack(fill=tk.X, padx=4, pady=2)
+        self.log_text = tk.Text(_logf, height=4, state=tk.DISABLED,
+                                wrap=tk.WORD, relief=tk.SUNKEN, borderwidth=1)
+        _log_sc = ttk.Scrollbar(_logf, orient=tk.VERTICAL, command=self.log_text.yview)
+        self.log_text.configure(yscrollcommand=_log_sc.set)
+        _log_sc.pack(side=tk.RIGHT, fill=tk.Y)
+        self.log_text.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        # ── Right panel ────────────────────────────────────────────
+        right_outer = ttk.Frame(body)
+        body.add(right_outer, weight=1)
+        right_outer.rowconfigure(0, weight=0)
+        right_outer.rowconfigure(1, weight=0)
+        right_outer.rowconfigure(2, weight=1)
+        right_outer.columnconfigure(0, weight=1)
+
+        self.plot_w_var     = tk.StringVar(value="10.5")
+        self.plot_h_var     = tk.StringVar(value="5.5")
+        self._grid_cols_var = tk.StringVar(value="2")
+        _size_bar = ttk.Frame(right_outer)
+        _size_bar.grid(row=0, column=0, sticky="ew", padx=4, pady=2)
+        ttk.Label(_size_bar, text="Plot size (in):").pack(side=tk.LEFT, padx=(4, 2))
+        ttk.Label(_size_bar, text="W").pack(side=tk.LEFT)
+        _pw_e = ttk.Entry(_size_bar, textvariable=self.plot_w_var, width=5)
+        _pw_e.pack(side=tk.LEFT, padx=(1, 6))
+        ttk.Label(_size_bar, text="H").pack(side=tk.LEFT)
+        _ph_e = ttk.Entry(_size_bar, textvariable=self.plot_h_var, width=5)
+        _ph_e.pack(side=tk.LEFT, padx=(1, 0))
+        ttk.Label(_size_bar, text="Cols:").pack(side=tk.LEFT, padx=(10, 2))
+        _gc_e = ttk.Entry(_size_bar, textvariable=self._grid_cols_var, width=3)
+        _gc_e.pack(side=tk.LEFT, padx=(1, 0))
+        for _e in (_pw_e, _ph_e):
+            _e.bind("<Return>",   lambda ev: self._apply_plot_size())
+            _e.bind("<FocusOut>", lambda ev: self._apply_plot_size())
+        _gc_e.bind("<Return>",   lambda ev: self._on_grid_cols_change())
+        _gc_e.bind("<FocusOut>", lambda ev: self._on_grid_cols_change())
+
+        self._zoom_bar = ttk.Frame(right_outer)
+        ttk.Button(self._zoom_bar, text="← Back to Grid",
+                   command=self._unzoom_sample_view).pack(side=tk.LEFT, padx=6, pady=3)
+        self._zoom_bar.grid(row=1, column=0, sticky="ew")
+        self._zoom_bar.grid_remove()
+
+        _ri = ttk.Frame(right_outer)
+        _ri.grid(row=2, column=0, sticky="nsew")
+        _ri.rowconfigure(0, weight=1)
+        _ri.columnconfigure(0, weight=1)
+
+        self._right_canvas = tk.Canvas(_ri, highlightthickness=0)
+        _rvs = ttk.Scrollbar(_ri, orient=tk.VERTICAL,   command=self._right_canvas.yview)
+        _rhs = ttk.Scrollbar(_ri, orient=tk.HORIZONTAL, command=self._right_canvas.xview)
+        self._right_canvas.configure(yscrollcommand=_rvs.set, xscrollcommand=_rhs.set)
+        _rvs.grid(row=0, column=1, sticky="ns")
+        _rhs.grid(row=1, column=0, sticky="ew")
+        self._right_canvas.grid(row=0, column=0, sticky="nsew")
+
+        self._plots_frame = ttk.Frame(self._right_canvas)
+        self._plots_win   = self._right_canvas.create_window(
+            (0, 0), window=self._plots_frame, anchor=tk.NW)
+        self._plots_frame.bind(
+            "<Configure>",
+            lambda e: self._right_canvas.configure(
+                scrollregion=self._right_canvas.bbox("all")))
+        self._right_canvas.bind("<Configure>", self._on_right_canvas_configure)
+        self._right_canvas.bind(
+            "<MouseWheel>",
+            lambda e: self._right_canvas.yview_scroll(-1 * (e.delta // 120), "units"))
+        self._right_canvas.bind(
+            "<Shift-MouseWheel>",
+            lambda e: self._right_canvas.xview_scroll(-1 * (e.delta // 120), "units"))
+
+        self._drop_line = tk.Frame(self._plots_frame, bg="#1a73e8", height=3)
+
+        self._placeholder = ttk.Label(
+            self._plots_frame,
+            text="Create samples and load N2+O2 files to display ORR polarization curves.",
+            foreground="gray", font=("", 10))
+        self._placeholder.grid(row=0, column=0, columnspan=2, pady=60)
+
+    # ════════════════════════════════════════════════════════════════
+    # File loading (no auto-merge)
+    # ════════════════════════════════════════════════════════════════
+    def _load_files(self):
+        paths = filedialog.askopenfilenames(
+            title="Load ORR Files (N2 and O2)",
+            filetypes=[("EC-Lab files", "*.mpr *.txt"), ("All files", "*.*")])
+        if not paths:
+            return
+        added, errors = [], []
+        for path in paths:
+            stem  = os.path.splitext(os.path.basename(path))[0]
+            short = os.path.basename(path)
+            if short in self.loaded_files:
+                continue
+            try:
+                df = _read_one_df(path)
+            except Exception as exc:
+                errors.append(f"{short}: {exc}")
+                continue
+            gas    = _detect_gas(stem)
+            rpm_id = _extract_rpm_id(stem)
+            self.loaded_files[short] = {
+                "path": path, "gas": gas, "rpm_id": rpm_id, "df": df}
+            self._loaded_keys.append(short)
+            tag = f"({gas.upper() if gas else '??'})" if gas else "( ? )"
+            display = f"{tag} {short}"
+            self.loaded_lb.insert(tk.END, display)
+            added.append(short)
+
+        if errors:
+            messagebox.showerror("Load Error", "\n".join(errors[:5]))
+        if added:
+            self._log(f"Loaded {len(added)} file(s).")
+
+    def _remove_loaded_file(self):
+        sel = self.loaded_lb.curselection()
+        if not sel:
+            return
+        for i in sorted(sel, reverse=True):
+            if i < len(self._loaded_keys):
+                short = self._loaded_keys.pop(i)
+                self.loaded_files.pop(short, None)
+                self.loaded_lb.delete(i)
+
+    # ════════════════════════════════════════════════════════════════
+    # Sample management
+    # ════════════════════════════════════════════════════════════════
+    def _new_sample(self):
+        name = simpledialog.askstring("New ORR Sample", "Sample name:", parent=self)
+        if not name:
+            return
+        name = name.strip()
+        if not name or name in self.samples:
+            return
+        self.samples[name] = {"pairs": [], "reflines": []}
+        self._rebuild_sample_listbox()
+        self._create_sample_figure(name)
+        self._save_active_sample_state()
+        self._switch_active_sample(name)
+
+    def _rename_sample(self):
+        sel = self.sample_lb.curselection()
+        if not sel:
+            return
+        old = list(self.samples.keys())[sel[0]]
+        new = simpledialog.askstring("Rename Sample", "New name:",
+                                     initialvalue=old, parent=self)
+        if not new:
+            return
+        new = new.strip()
+        if not new or new == old or new in self.samples:
+            return
+        new_samples = OrderedDict()
+        for k, v in self.samples.items():
+            new_samples[new if k == old else k] = v
+        self.samples = new_samples
+        if self.active_sample == old:
+            self.active_sample = new
+        self._rebuild_sample_listbox()
+        gentry = self.samples.get(new, {})
+        if "ax" in gentry:
+            ax = gentry["ax"]
+            ax.set_title(gentry.get("custom_title", "") or new, fontsize=9)
+            gentry["canvas"].draw_idle()
+
+    def _delete_sample(self):
+        sel = self.sample_lb.curselection()
+        if not sel:
+            return
+        name = list(self.samples.keys())[sel[0]]
+        self._destroy_sample_figure(name)
+        del self.samples[name]
+        if self.active_sample == name:
+            self.active_sample = None
+            self._rebuild_pair_table(None)
+            self._refresh_reflines_lb()
+        if not self.samples:
+            self._rebuild_sample_listbox()
+            self._placeholder.grid(row=0, column=0, columnspan=2, pady=60)
+        else:
+            self._rebuild_sample_listbox()
+            self._relayout_figures()
+            new_idx = min(sel[0], self.sample_lb.size() - 1)
+            if new_idx >= 0:
+                self._switch_active_sample(list(self.samples.keys())[new_idx])
+
+    def _rebuild_sample_listbox(self):
+        self.sample_lb.clear()
+        for sn, sentry in self.samples.items():
+            vis = not sentry.get("hidden", False)
+            self.sample_lb.insert(tk.END, sn, checked=vis)
+        if self.active_sample and self.active_sample in self.samples:
+            idx = list(self.samples.keys()).index(self.active_sample)
+            self._loading = True
+            try:
+                self.sample_lb.selection_clear(0, tk.END)
+                self.sample_lb.selection_set(idx)
+            finally:
+                self._loading = False
+
+    def _on_sample_select(self, event):
+        if self._loading:
+            return
+        sel = self.sample_lb.curselection()
+        if not sel:
+            return
+        keys = list(self.samples.keys())
+        if sel[0] >= len(keys):
+            return
+        name = keys[sel[0]]
+        if name != self.active_sample:
+            self._save_active_sample_state()
+            self._switch_active_sample(name)
+
+    def _on_sample_visibility_change(self, sample_name, visible):
+        sentry = self.samples.get(sample_name)
+        if sentry is None:
+            return
+        sentry["hidden"] = not visible
+        self._relayout_figures()
+        self._right_canvas.after(50, lambda: self._right_canvas.configure(
+            scrollregion=self._right_canvas.bbox("all")))
+
+    def _on_sample_reorder(self, new_names):
+        self.samples = OrderedDict(
+            (n, self.samples[n]) for n in new_names if n in self.samples)
+        self._relayout_figures()
+
+    # ════════════════════════════════════════════════════════════════
+    # File → Sample assignment + pairing
+    # ════════════════════════════════════════════════════════════════
+    def _add_files_to_sample(self):
+        if not self.active_sample:
+            messagebox.showwarning("ORR", "Create or select a sample first.")
+            return
+        sel = list(self.loaded_lb.curselection())
+        if not sel:
+            return
+        sentry = self.samples[self.active_sample]
+
+        selected_shorts = [self._loaded_keys[i] for i in sel
+                           if i < len(self._loaded_keys)]
+
+        n2_by_id = {}
+        o2_by_id = {}
+        unknown  = []
+        for short in selected_shorts:
+            fe = self.loaded_files.get(short)
+            if fe is None:
+                continue
+            gas    = fe["gas"]
+            rpm_id = fe["rpm_id"]
+            if gas == "n2":
+                n2_by_id[rpm_id] = (short, fe)
+            elif gas == "o2":
+                o2_by_id[rpm_id] = (short, fe)
+            else:
+                unknown.append(short)
+
+        if unknown:
+            ans = messagebox.askyesno(
+                "Undetected Gas",
+                f"{len(unknown)} file(s) have no 'n2'/'o2' in their name.\n"
+                "Skip them?  (Yes = skip, No = cancel)")
+            if not ans:
+                return
+
+        all_ids = sorted(set(n2_by_id) | set(o2_by_id))
+        existing_ids = {p.get("rpm_id") for p in sentry["pairs"]}
+        added = 0
+        for rpm_id in all_ids:
+            if rpm_id in existing_ids:
+                continue
+            n2_item = n2_by_id.get(rpm_id)
+            o2_item = o2_by_id.get(rpm_id)
+            pair = {
+                "rpm_id":   rpm_id,
+                "rpm_val":  rpm_id,
+                "n2_short": n2_item[0] if n2_item else "",
+                "o2_short": o2_item[0] if o2_item else "",
+                "n2_path":  n2_item[1]["path"] if n2_item else "",
+                "o2_path":  o2_item[1]["path"] if o2_item else "",
+                "df_n2":    n2_item[1]["df"]   if n2_item else None,
+                "df_o2":    o2_item[1]["df"]   if o2_item else None,
+            }
+            sentry["pairs"].append(pair)
+            added += 1
+
+        sentry["pairs"].sort(key=lambda p: p.get("rpm_id", ""))
+        if added:
+            self._rebuild_pair_table(self.active_sample)
+            self._auto_replot()
+            self._log(f"Added {added} pair(s) to sample '{self.active_sample}'.")
+        else:
+            self._log("No new pairs added (already exist or no matching IDs).")
+
+    # ════════════════════════════════════════════════════════════════
+    # Pair table
+    # ════════════════════════════════════════════════════════════════
+    def _rebuild_pair_table(self, sample_name):
+        for w in self._pair_tbl_inner.winfo_children():
+            w.destroy()
+
+        sentry = self.samples.get(sample_name) if sample_name else None
+        pairs  = sentry["pairs"] if sentry else []
+
+        if not pairs:
+            tk.Label(self._pair_tbl_inner,
+                     text="No pairs yet. Load files and click\n"
+                          "'↓ Add Selected Files to Sample'.",
+                     bg="#f5f5f5", fg="gray", font=("", 8),
+                     justify=tk.LEFT).pack(padx=6, pady=6, anchor=tk.W)
+            return
+
+        # Header
+        hdr = tk.Frame(self._pair_tbl_inner, bg="#f5f5f5")
+        hdr.pack(fill=tk.X, padx=2, pady=(2, 0))
+        tk.Label(hdr, text="RPM", width=6, bg="#f5f5f5",
+                 font=("", 8, "bold"), anchor=tk.W).pack(side=tk.LEFT)
+        tk.Label(hdr, text="N2 file",  width=22, bg="#f5f5f5",
+                 font=("", 8, "bold"), anchor=tk.W).pack(side=tk.LEFT, padx=(2, 0))
+        tk.Label(hdr, text="O2 file",  width=22, bg="#f5f5f5",
+                 font=("", 8, "bold"), anchor=tk.W).pack(side=tk.LEFT, padx=(2, 0))
+
+        for i, pair in enumerate(pairs):
+            row_bg = "#ffffff" if i % 2 == 0 else "#eeeeee"
+            row = tk.Frame(self._pair_tbl_inner, bg=row_bg)
+            row.pack(fill=tk.X, padx=2, pady=1)
+
+            rpm_var = tk.StringVar(value=pair.get("rpm_val", pair.get("rpm_id", "")))
+
+            def _save_rpm(var=rpm_var, p=pair):
+                p["rpm_val"] = var.get()
+                self._auto_replot()
+
+            rpm_e = tk.Entry(row, textvariable=rpm_var, width=7, bg=row_bg,
+                             relief=tk.GROOVE)
+            rpm_e.pack(side=tk.LEFT, padx=(2, 2))
+            rpm_e.bind("<Return>",   lambda e, fn=_save_rpm: fn())
+            rpm_e.bind("<FocusOut>", lambda e, fn=_save_rpm: fn())
+
+            n2_s = pair.get("n2_short", "") or "—"
+            o2_s = pair.get("o2_short", "") or "—"
+            n2_bg = "#d4edda" if pair.get("n2_short") else "#f8d7da"
+            o2_bg = "#d1ecf1" if pair.get("o2_short") else "#f8d7da"
+
+            tk.Label(row, text=(n2_s[:22] if len(n2_s) > 22 else n2_s),
+                     width=22, bg=n2_bg, font=("", 7), anchor=tk.W,
+                     relief=tk.GROOVE).pack(side=tk.LEFT, padx=(0, 1))
+            tk.Label(row, text=(o2_s[:22] if len(o2_s) > 22 else o2_s),
+                     width=22, bg=o2_bg, font=("", 7), anchor=tk.W,
+                     relief=tk.GROOVE).pack(side=tk.LEFT, padx=(0, 1))
+
+            def _remove(p=pair, sn=sample_name):
+                if sn and sn in self.samples:
+                    try:
+                        self.samples[sn]["pairs"].remove(p)
+                    except ValueError:
+                        pass
+                    self._rebuild_pair_table(sn)
+                    self._auto_replot()
+
+            tk.Button(row, text="✕", width=2, command=_remove,
+                      bg=row_bg, relief=tk.FLAT, font=("", 8)).pack(side=tk.LEFT, padx=(1, 2))
+
+    # ════════════════════════════════════════════════════════════════
+    # Active sample state save / restore
+    # ════════════════════════════════════════════════════════════════
+    def _save_active_sample_state(self):
+        if not self.active_sample or self.active_sample not in self.samples:
+            return
+        g = self.samples[self.active_sample]
+
+        def _fv(var, default=0.0):
+            try:
+                return float(var.get())
+            except (ValueError, tk.TclError):
+                return default
+
+        g["r_sol_n2"]        = _fv(self.r_sol_n2_var)
+        g["r_sol_o2"]        = _fv(self.r_sol_o2_var)
+        g["e_ref"]           = _fv(self.e_ref_var)
+        g["area"]            = self.area_var.get()
+        g["ref_electrode"]   = self.ref_electrode_var.get()
+        g["x_min"]           = self.x_min_var.get()
+        g["x_max"]           = self.x_max_var.get()
+        g["y_min"]           = self.y_min_var.get()
+        g["y_max"]           = self.y_max_var.get()
+        g["x_grid_int"]      = self.x_grid_int_var.get()
+        g["y_grid_int"]      = self.y_grid_int_var.get()
+        g["x_flip"]          = self.x_flip_var.get()
+        g["y_flip"]          = self.y_flip_var.get()
+        g["legend_show"]     = self.legend_show_var.get()
+        g["legend_frame"]    = self.legend_frame_var.get()
+        try:
+            g["leg_size"]    = float(self.legend_size_var.get())
+        except (ValueError, tk.TclError):
+            pass
+        g["legend_loc"]      = self.legend_loc_var.get()
+        g["x_grid"]          = self.x_grid_var.get()
+        g["y_grid"]          = self.y_grid_var.get()
+        g["grid_style"]      = self.grid_style_var.get()
+        g["grid_color"]      = self.grid_color_var.get()
+        g["grid_linewidth"]  = self.grid_linewidth_var.get()
+        g["font_title_size"] = self.font_title_size_var.get()
+        g["font_title_bold"] = self.font_title_bold_var.get()
+        g["font_label_size"] = self.font_label_size_var.get()
+        g["font_label_bold"] = self.font_label_bold_var.get()
+        g["font_tick_size"]  = self.font_tick_size_var.get()
+        g["font_tick_bold"]  = self.font_tick_bold_var.get()
+        g["title_pad"]       = self.title_pad_var.get()
+        g["label_pad"]       = self.label_pad_var.get()
+        g["custom_title"]    = self.plot_title_var.get()
+
+    def _switch_active_sample(self, sample_name):
+        self.active_sample = sample_name
+        g = self.samples.get(sample_name, {})
+
+        g.setdefault("r_sol_n2",        0.0)
+        g.setdefault("r_sol_o2",        0.0)
+        g.setdefault("e_ref",           0.0)
+        g.setdefault("area",            "")
+        g.setdefault("ref_electrode",   "RHE")
+        g.setdefault("x_min",           "")
+        g.setdefault("x_max",           "")
+        g.setdefault("y_min",           "")
+        g.setdefault("y_max",           "")
+        g.setdefault("x_grid_int",      "0")
+        g.setdefault("y_grid_int",      "0")
+        g.setdefault("x_flip",          False)
+        g.setdefault("y_flip",          False)
+        g.setdefault("legend_show",     True)
+        g.setdefault("legend_frame",    True)
+        g.setdefault("leg_size",        8.0)
+        g.setdefault("legend_loc",      "best")
+        g.setdefault("x_grid",          False)
+        g.setdefault("y_grid",          False)
+        g.setdefault("grid_style",      "dashed")
+        g.setdefault("grid_color",      "gray")
+        g.setdefault("grid_linewidth",  "0.8")
+        g.setdefault("font_title_size", "10")
+        g.setdefault("font_title_bold", False)
+        g.setdefault("font_label_size", "10")
+        g.setdefault("font_label_bold", False)
+        g.setdefault("font_tick_size",  "8")
+        g.setdefault("font_tick_bold",  False)
+        g.setdefault("title_pad",       "6")
+        g.setdefault("label_pad",       "4")
+        g.setdefault("custom_title",    "")
+        g.setdefault("reflines",        [])
+
+        old = self._suppress_replot
+        self._suppress_replot = True
+        try:
+            def _sv(var, key, default=""):
+                v = g.get(key, default)
+                var.set("" if v == 0.0 and default == "" else str(v))
+
+            self.r_sol_n2_var.set(str(g["r_sol_n2"]))
+            self.r_sol_o2_var.set(str(g["r_sol_o2"]))
+            self.e_ref_var.set(str(g["e_ref"]))
+            self.area_var.set(g["area"])
+            self.ref_electrode_var.set(g["ref_electrode"])
+            self.x_min_var.set(g["x_min"])
+            self.x_max_var.set(g["x_max"])
+            self.y_min_var.set(g["y_min"])
+            self.y_max_var.set(g["y_max"])
+            self.x_grid_int_var.set(g["x_grid_int"])
+            self.y_grid_int_var.set(g["y_grid_int"])
+            self.x_flip_var.set(g["x_flip"])
+            self.y_flip_var.set(g["y_flip"])
+            self.legend_show_var.set(g["legend_show"])
+            self.legend_frame_var.set(g["legend_frame"])
+            _ls = g["leg_size"]
+            self.legend_size_var.set(str(int(_ls) if float(_ls) == int(_ls) else _ls))
+            self.legend_loc_var.set(g["legend_loc"])
+            self.x_grid_var.set(g["x_grid"])
+            self.y_grid_var.set(g["y_grid"])
+            self.grid_style_var.set(g["grid_style"])
+            self.grid_color_var.set(g["grid_color"])
+            self.grid_linewidth_var.set(g["grid_linewidth"])
+            self.font_title_size_var.set(g["font_title_size"])
+            self.font_title_bold_var.set(g["font_title_bold"])
+            self.font_label_size_var.set(g["font_label_size"])
+            self.font_label_bold_var.set(g["font_label_bold"])
+            self.font_tick_size_var.set(g["font_tick_size"])
+            self.font_tick_bold_var.set(g["font_tick_bold"])
+            self.title_pad_var.set(g["title_pad"])
+            self.label_pad_var.set(g["label_pad"])
+            self.plot_title_var.set(g.get("custom_title", ""))
+            self._rebuild_pair_table(sample_name)
+            self._refresh_reflines_lb()
+        finally:
+            self._suppress_replot = old
+
+        self._highlight_active_headers()
+        self._auto_replot()
+
+    # ════════════════════════════════════════════════════════════════
+    # Correction trigger
+    # ════════════════════════════════════════════════════════════════
+    def _on_correction_change(self):
+        self._save_active_sample_state()
+        self._auto_replot()
+
+    # ════════════════════════════════════════════════════════════════
+    # Plotting
+    # ════════════════════════════════════════════════════════════════
+    def _auto_replot(self):
+        if self._suppress_replot or not self.active_sample:
+            return
+        self._plot_sample(self.active_sample)
+
+    def _plot_sample(self, sample_name):
+        sentry = self.samples.get(sample_name)
+        if sentry is None or "ax" not in sentry:
+            return
+
+        is_active = (sample_name == self.active_sample)
+
+        def _gv(key, default=""):
+            var = getattr(self, key + "_var", None)
+            return (var.get() if (is_active and var is not None)
+                    else sentry.get(key, default))
+
+        try:
+            r_sol_n2 = float(_gv("r_sol_n2", "0") or 0)
+        except (ValueError, TypeError):
+            r_sol_n2 = 0.0
+        try:
+            r_sol_o2 = float(_gv("r_sol_o2", "0") or 0)
+        except (ValueError, TypeError):
+            r_sol_o2 = 0.0
+        try:
+            e_ref = float(_gv("e_ref", "0") or 0)
+        except (ValueError, TypeError):
+            e_ref = 0.0
+        try:
+            area  = float(_gv("area", "") or 0)
+        except (ValueError, TypeError):
+            area  = 0.0
+
+        ref      = _gv("ref_electrode", "RHE")
+        leg_show = sentry.get("legend_show", True)  if not is_active else self.legend_show_var.get()
+        leg_frm  = sentry.get("legend_frame", True) if not is_active else self.legend_frame_var.get()
+        leg_loc  = sentry.get("legend_loc", "best") if not is_active else self.legend_loc_var.get()
+        try:
+            leg_size = float(sentry.get("leg_size", 8.0) if not is_active
+                             else self.legend_size_var.get())
+        except (ValueError, TypeError):
+            leg_size = 8.0
+
+        ax     = sentry["ax"]
+        canvas = sentry["canvas"]
+
+        # Preserve zoom
+        _prev_view = ((ax.get_xlim(), ax.get_ylim())
+                      if sentry.get("auto_xlim") is not None else None)
+
+        # Save legend manual position
+        _old_leg = sentry.get("legend")
+        if _old_leg is not None:
+            _loc = getattr(_old_leg, "_loc", None)
+            if isinstance(_loc, (tuple, list)):
+                sentry["legend_manual_pos"] = tuple(_loc)
+        sentry["legend"] = None
+        self._clear_ann(sample_name, redraw=False)
+        ax.clear()
+
+        pairs = sentry.get("pairs", [])
+        plot_data = []    # (E_arr, Y_arr, label, color) — cached for annotation
+
+        for i, pair in enumerate(pairs):
+            if not pair.get("n2_short") or not pair.get("o2_short"):
+                continue
+            result = _process_pair(pair, r_sol_n2, r_sol_o2, e_ref, area)
+            if result is None:
+                continue
+            E_plot, Y_plot = result
+            color    = _PALETTE[i % len(_PALETTE)]
+            rpm_val  = pair.get("rpm_val") or pair.get("rpm_id") or f"#{i+1}"
+            label    = f"{rpm_val} rpm"
+            ax.plot(E_plot, Y_plot, color=color, linewidth=1.5,
+                    label=label, zorder=2)
+            plot_data.append((E_plot, Y_plot, label, color))
+
+        sentry["_plot_data"] = plot_data
+
+        # Axis labels
+        x_label = f"E (V vs {ref})"
+        y_label  = "J (mA cm⁻²)" if area > 0 else "I (mA)"
+        try:
+            lbl_sz  = int(sentry.get("font_label_size", "10") if not is_active
+                          else self.font_label_size_var.get())
+            lbl_wt  = "bold" if (sentry.get("font_label_bold", False) if not is_active
+                                 else self.font_label_bold_var.get()) else "normal"
+            tick_sz = int(sentry.get("font_tick_size", "8") if not is_active
+                          else self.font_tick_size_var.get())
+            tick_wt = "bold" if (sentry.get("font_tick_bold", False) if not is_active
+                                 else self.font_tick_bold_var.get()) else "normal"
+            tit_sz  = int(sentry.get("font_title_size", "10") if not is_active
+                          else self.font_title_size_var.get())
+            tit_wt  = "bold" if (sentry.get("font_title_bold", False) if not is_active
+                                 else self.font_title_bold_var.get()) else "normal"
+            t_pad   = int(sentry.get("title_pad", "6") if not is_active
+                          else self.title_pad_var.get())
+            l_pad   = int(sentry.get("label_pad", "4") if not is_active
+                          else self.label_pad_var.get())
+        except (ValueError, TypeError):
+            lbl_sz = 10; lbl_wt = "normal"; tick_sz = 8; tick_wt = "normal"
+            tit_sz = 10; tit_wt = "normal"; t_pad = 6; l_pad = 4
+
+        ax.set_xlabel(x_label, fontsize=lbl_sz, fontweight=lbl_wt, labelpad=l_pad)
+        ax.set_ylabel(y_label, fontsize=lbl_sz, fontweight=lbl_wt, labelpad=l_pad)
+        ax.tick_params(labelsize=tick_sz)
+        for lbl in ax.get_xticklabels() + ax.get_yticklabels():
+            lbl.set_fontweight(tick_wt)
+
+        title = (sentry.get("custom_title", "") if not is_active
+                 else self.plot_title_var.get()) or sample_name
+        ax.set_title(title, fontsize=tit_sz, fontweight=tit_wt, pad=t_pad)
+
+        # Legend
+        _leg = None
+        if leg_show and plot_data:
+            _leg = ax.legend(fontsize=leg_size, frameon=leg_frm, loc=leg_loc)
+            _mp  = sentry.get("legend_manual_pos")
+            if isinstance(_mp, (tuple, list)):
+                _leg._loc = tuple(_mp)
+            _leg.set_draggable(True)
+        sentry["legend"] = _leg
+
+        # Layout
+        _lv = ax.get_legend()
+        if _lv:
+            _lv.set_visible(False)
+        try:
+            sentry["fig"].tight_layout(pad=0.5)
+            sentry["fig"].set_layout_engine("none")
+        except Exception:
+            pass
+        if _lv:
+            _lv.set_visible(True)
+
+        canvas.draw()
+
+        sentry["auto_xlim"] = ax.get_xlim()
+        sentry["auto_ylim"] = ax.get_ylim()
+
+        if _prev_view:
+            ax.set_xlim(_prev_view[0])
+            ax.set_ylim(_prev_view[1])
+
+        # Manual range
+        self._apply_sample_range(sample_name, is_active)
+
+        # Grid
+        try:
+            x_g  = sentry.get("x_grid", False) if not is_active else self.x_grid_var.get()
+            y_g  = sentry.get("y_grid", False) if not is_active else self.y_grid_var.get()
+            g_st = sentry.get("grid_style", "dashed") if not is_active else self.grid_style_var.get()
+            g_co = sentry.get("grid_color",  "gray")  if not is_active else self.grid_color_var.get()
+            g_lw = float(sentry.get("grid_linewidth", "0.8") if not is_active
+                         else self.grid_linewidth_var.get())
+            apply_grid(ax, x_g, y_g, g_st, g_co, g_lw)
+        except Exception:
+            pass
+
+        # Reference lines
+        reflines = (sentry.get("reflines", []) if not is_active
+                    else self._get_current_reflines())
+        draw_reflines(ax, reflines)
+
+        # X/Y grid interval ticks
+        try:
+            xi = float(sentry.get("x_grid_int", "0") if not is_active
+                       else self.x_grid_int_var.get())
+            yi = float(sentry.get("y_grid_int", "0") if not is_active
+                       else self.y_grid_int_var.get())
+            if xi > 0:
+                import matplotlib.ticker as ticker
+                ax.xaxis.set_major_locator(ticker.MultipleLocator(xi))
+            if yi > 0:
+                import matplotlib.ticker as ticker
+                ax.yaxis.set_major_locator(ticker.MultipleLocator(yi))
+        except (ValueError, TypeError):
+            pass
+
+        canvas.draw_idle()
+
+    def _apply_sample_range(self, sample_name, is_active=None):
+        sentry = self.samples.get(sample_name)
+        if sentry is None or "ax" not in sentry:
+            return
+        if is_active is None:
+            is_active = (sample_name == self.active_sample)
+        ax = sentry["ax"]
+
+        def _val(key, var_attr):
+            if is_active:
+                var = getattr(self, var_attr, None)
+                return var.get() if var else ""
+            return sentry.get(key, "")
+
+        try:
+            xmin = float(_val("x_min", "x_min_var")); ax.set_xlim(left=xmin)
+        except (ValueError, TypeError): pass
+        try:
+            xmax = float(_val("x_max", "x_max_var")); ax.set_xlim(right=xmax)
+        except (ValueError, TypeError): pass
+        try:
+            ymin = float(_val("y_min", "y_min_var")); ax.set_ylim(bottom=ymin)
+        except (ValueError, TypeError): pass
+        try:
+            ymax = float(_val("y_max", "y_max_var")); ax.set_ylim(top=ymax)
+        except (ValueError, TypeError): pass
+
+        xl = ax.get_xlim()
+        yl = ax.get_ylim()
+        flip_x = sentry.get("x_flip", False) if not is_active else self.x_flip_var.get()
+        flip_y = sentry.get("y_flip", False) if not is_active else self.y_flip_var.get()
+        if flip_x and xl[0] < xl[1]:
+            ax.set_xlim(xl[1], xl[0])
+        elif not flip_x and xl[0] > xl[1]:
+            ax.set_xlim(xl[1], xl[0])
+        if flip_y and yl[0] < yl[1]:
+            ax.set_ylim(yl[1], yl[0])
+        elif not flip_y and yl[0] > yl[1]:
+            ax.set_ylim(yl[1], yl[0])
+
+    def _reset_sample_view(self, sample_name):
+        sentry = self.samples.get(sample_name)
+        if sentry and sentry.get("auto_xlim") is not None:
+            sentry["ax"].set_xlim(sentry["auto_xlim"])
+            sentry["ax"].set_ylim(sentry["auto_ylim"])
+            sentry["canvas"].draw_idle()
+
+    # ════════════════════════════════════════════════════════════════
+    # Reference lines
+    # ════════════════════════════════════════════════════════════════
+    def _get_current_reflines(self):
+        if not self.active_sample:
+            return []
+        return self.samples.get(self.active_sample, {}).get("reflines", [])
+
+    def _add_xrefline(self):
+        try:
+            val = float(self._ref_x_var.get())
+        except ValueError:
+            return
+        self._add_refline("x", val)
+
+    def _add_yrefline(self):
+        try:
+            val = float(self._ref_y_var.get())
+        except ValueError:
+            return
+        self._add_refline("y", val)
+
+    def _add_refline(self, axis, val):
+        if not self.active_sample or self.active_sample not in self.samples:
+            return
+        self._save_active_sample_state()
+        style = self._refline_style_var.get()
+        color = self._refline_color_var.get()
+        try:
+            lw = float(self._refline_lw_var.get())
+        except ValueError:
+            lw = 1.0
+        self.samples[self.active_sample]["reflines"].append((axis, val, style, color, lw))
+        self._refresh_reflines_lb()
+        self._auto_replot()
+
+    def _remove_refline(self):
+        if not self.active_sample:
+            return
+        sel = self._reflines_lb.curselection()
+        if not sel:
+            return
+        reflines = self.samples[self.active_sample].get("reflines", [])
+        idx = sel[0]
+        if idx < len(reflines):
+            reflines.pop(idx)
+        self._refresh_reflines_lb()
+        self._auto_replot()
+
+    def _on_refline_select(self):
+        if not self.active_sample:
+            return
+        sel = self._reflines_lb.curselection()
+        if not sel:
+            return
+        reflines = self.samples[self.active_sample].get("reflines", [])
+        idx = sel[0]
+        if idx < len(reflines):
+            rl = reflines[idx]
+            style = rl[2] if len(rl) > 2 else "dashed"
+            color = rl[3] if len(rl) > 3 else "dimgray"
+            lw    = rl[4] if len(rl) > 4 else 1.0
+            self._refline_style_var.set(style)
+            self._refline_color_var.set(color)
+            self._refline_lw_var.set(str(lw))
+
+    def _on_refline_style_change(self):
+        if not self.active_sample:
+            return
+        sel = self._reflines_lb.curselection()
+        if not sel:
+            return
+        reflines = self.samples[self.active_sample].get("reflines", [])
+        idx = sel[0]
+        if idx < len(reflines):
+            rl = list(reflines[idx])
+            rl[2] = self._refline_style_var.get()
+            rl[3] = self._refline_color_var.get()
+            try:
+                rl_lw = float(self._refline_lw_var.get())
+            except ValueError:
+                rl_lw = 1.0
+            if len(rl) > 4:
+                rl[4] = rl_lw
+            else:
+                rl.append(rl_lw)
+            reflines[idx] = tuple(rl)
+        self._auto_replot()
+
+    def _refresh_reflines_lb(self):
+        self._reflines_lb.delete(0, tk.END)
+        if not self.active_sample:
+            return
+        for rl in self.samples.get(self.active_sample, {}).get("reflines", []):
+            axis = rl[0]; val = rl[1]
+            self._reflines_lb.insert(tk.END, f"{axis.upper()}={val:.4g}")
+
+    # ════════════════════════════════════════════════════════════════
+    # Figure creation / destruction / layout
+    # ════════════════════════════════════════════════════════════════
+    def _create_sample_figure(self, sample_name):
+        sentry = self.samples.get(sample_name)
+        if sentry is None or "fig" in sentry:
+            return
+        panel_ref = self
+        self._placeholder.grid_remove()
+
+        frame  = tk.Frame(self._plots_frame, relief="groove", bd=2)
+        header = tk.Frame(frame, bg=_SAMPLE_HDR_BG, cursor="fleur")
+        header.pack(fill=tk.X, side=tk.TOP)
+        lbl = tk.Label(header, text=f"⠿  {sample_name}",
+                       bg=_SAMPLE_HDR_BG, font=("", 9, "bold"), anchor=tk.W)
+        lbl.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=6, pady=3)
+
+        inner = ttk.Frame(frame, padding=(4, 2, 4, 2))
+        inner.pack()
+
+        try:
+            _fw = float(self.plot_w_var.get())
+            _fh = float(self.plot_h_var.get())
+        except (ValueError, AttributeError):
+            _fw, _fh = 9.5, 5.5
+
+        fig = Figure(figsize=(_fw, _fh), dpi=100)
+        ax  = fig.add_subplot(111)
+        canvas = FigureCanvasTkAgg(fig, master=inner)
+        canvas.get_tk_widget().pack()
+
+        tb_frame = ttk.Frame(inner)
+        tb_frame.pack(fill=tk.X)
+
+        class _Toolbar(NavigationToolbar2Tk):
+            def home(tb_self, *a):
+                panel_ref._reset_sample_view(sample_name)
+
+        _tb = _Toolbar(canvas, tb_frame, pack_toolbar=False)
+        _tb.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        _tb.update()
+        tk.Button(tb_frame, text="Copy",
+                  command=lambda f=fig: copy_figure_to_clipboard(f),
+                  relief=tk.RAISED, borderwidth=1, padx=6).pack(
+            side=tk.LEFT, padx=(4, 2), pady=1)
+
+        def _fwd(e):
+            self._right_canvas.yview_scroll(-1 * (e.delta // 120), "units")
+        frame.bind("<MouseWheel>",    _fwd)
+        header.bind("<MouseWheel>",   _fwd)
+        tb_frame.bind("<MouseWheel>", _fwd)
+
+        for _w in (header, lbl):
+            _w.bind("<ButtonPress-1>",   lambda e, s=sample_name: self._on_frame_press(e, s))
+            _w.bind("<B1-Motion>",       lambda e, s=sample_name: self._on_frame_drag(e, s))
+            _w.bind("<ButtonRelease-1>", lambda e, s=sample_name: self._on_frame_release(e, s))
+            _w.bind("<Double-Button-1>", lambda e, s=sample_name: self._toggle_zoom(s))
+
+        def _activate(e=None):
+            self._activate_sample(sample_name)
+        frame.bind("<Button-1>",    _activate, add="+")
+        tb_frame.bind("<Button-1>", _activate, add="+")
+
+        canvas.mpl_connect("scroll_event",         lambda ev: self._on_scroll(ev, sample_name))
+        canvas.mpl_connect("button_press_event",   lambda ev: self._on_press(ev, sample_name))
+        canvas.mpl_connect("button_release_event", lambda ev: self._on_release(ev, sample_name))
+        canvas.mpl_connect("motion_notify_event",  lambda ev: self._on_motion(ev, sample_name))
+
+        sentry.update({
+            "fig": fig, "ax": ax, "canvas": canvas, "toolbar": _tb,
+            "plot_frame": frame, "hdr_frame": header, "hdr_label": lbl,
+            "legend": None, "leg_size": 8.0,
+            "auto_xlim": None, "auto_ylim": None,
+            "panning": False, "pan_ax": None, "pan_start": None, "pan_moved": False,
+            "leg_resize": False, "leg_resize_start_y": None, "leg_resize_start_sz": None,
+            "ann": None, "ann_dot": None, "ann_last": None, "ann_idx": 0,
+            "_plot_data": [],
+        })
+        ax.set_title(sample_name, fontsize=9)
+        ax.set_xlabel("E (V vs RHE)")
+        ax.set_ylabel("I (mA)")
+        canvas.draw()
+        self._relayout_figures()
+
+    def _destroy_sample_figure(self, sample_name):
+        frame = self.samples.get(sample_name, {}).get("plot_frame")
+        if frame is not None:
+            frame.destroy()
+
+    def _activate_sample(self, sample_name):
+        items = list(self.samples.keys())
+        if sample_name in items:
+            idx = items.index(sample_name)
+            self.sample_lb.selection_clear(0, tk.END)
+            self.sample_lb.selection_set(idx)
+        if sample_name != self.active_sample:
+            self._save_active_sample_state()
+            self._switch_active_sample(sample_name)
+
+    def _highlight_active_headers(self):
+        for sn, sentry in self.samples.items():
+            hdr = sentry.get("hdr_frame")
+            lbl = sentry.get("hdr_label")
+            if hdr is None:
+                continue
+            color = (_SAMPLE_HDR_ACTIVE if sn == self.active_sample
+                     else _SAMPLE_HDR_BG)
+            hdr.configure(bg=color)
+            if lbl:
+                lbl.configure(bg=color)
+
+    # ════════════════════════════════════════════════════════════════
+    # Right panel layout
+    # ════════════════════════════════════════════════════════════════
+    def _on_right_canvas_configure(self, event):
+        if self._zoom_sample:
+            self._right_canvas.itemconfig(
+                self._plots_win, width=event.width, height=event.height)
+
+    def _on_grid_cols_change(self):
+        try:
+            c = max(1, int(self._grid_cols_var.get()))
+            self._grid_cols_var.set(str(c))
+        except (ValueError, AttributeError):
+            self._grid_cols_var.set("2")
+        self._relayout_figures()
+
+    def _relayout_figures(self):
+        try:
+            MAX_COLS = max(1, int(self._grid_cols_var.get()))
+        except (ValueError, AttributeError):
+            MAX_COLS = 2
+        valid = [(sn, self.samples[sn]) for sn in self.samples
+                 if "plot_frame" in self.samples[sn]
+                 and not self.samples[sn].get("hidden", False)]
+
+        if self._zoom_sample and any(sn == self._zoom_sample for sn, _ in valid):
+            for sn, sentry in valid:
+                if sn == self._zoom_sample:
+                    sentry["plot_frame"].grid(row=0, column=0,
+                                             columnspan=MAX_COLS,
+                                             sticky="nsew", padx=4, pady=4)
+                else:
+                    sentry["plot_frame"].grid_remove()
+            self._plots_frame.rowconfigure(0, weight=1)
+            return
+
+        for sn in self.samples:
+            pf = self.samples[sn].get("plot_frame")
+            if pf is not None:
+                pf.grid_remove()
+        for i, (sname, sentry) in enumerate(valid):
+            row = i // MAX_COLS
+            col = i % MAX_COLS
+            sentry["plot_frame"].grid(row=row, column=col, columnspan=1,
+                                     sticky="nsew", padx=4, pady=4)
+        n_rows = (len(valid) + MAX_COLS - 1) // MAX_COLS if valid else 0
+        for r in range(n_rows):
+            self._plots_frame.rowconfigure(r, weight=0)
+
+    def _apply_plot_size(self, event=None):
+        try:
+            w = float(self.plot_w_var.get())
+            h = float(self.plot_h_var.get())
+        except ValueError:
+            return
+        w = max(2.0, min(50.0, w))
+        h = max(1.5, min(50.0, h))
+        dpi = 100
+        self._right_canvas.itemconfig(self._plots_win, width=0, height=0)
+        for sentry in self.samples.values():
+            fig = sentry.get("fig")
+            cv  = sentry.get("canvas")
+            if fig and cv:
+                fig.set_size_inches(w, h)
+                cv.get_tk_widget().config(width=int(w * dpi), height=int(h * dpi))
+                _lgs = [a.get_legend() for a in fig.get_axes() if a.get_legend()]
+                for _l in _lgs:
+                    _l.set_visible(False)
+                fig.tight_layout(pad=0.5)
+                fig.set_layout_engine("none")
+                for _l in _lgs:
+                    _l.set_visible(True)
+                cv.draw_idle()
+
+        def _upd():
+            self._plots_frame.update_idletasks()
+            self._right_canvas.configure(scrollregion=self._right_canvas.bbox("all"))
+        self._right_canvas.after(100, _upd)
+
+    def _auto_set_initial_size(self):
+        w = self._right_canvas.winfo_width()
+        h = self._right_canvas.winfo_height()
+        if w <= 1 or h <= 1:
+            self.after(100, self._auto_set_initial_size)
+            return
+        try:
+            _ncols = max(1, int(self._grid_cols_var.get()))
+        except (ValueError, AttributeError):
+            _ncols = 2
+        plot_w = max(3.0, (w / _ncols - 30) / 100)
+        plot_h = max(2.0, round(plot_w * 0.6, 1))
+        self.plot_w_var.set(f"{plot_w:.1f}")
+        self.plot_h_var.set(f"{plot_h:.1f}")
+        self._apply_plot_size()
+
+    # ════════════════════════════════════════════════════════════════
+    # Zoom (single-sample full-panel view)
+    # ════════════════════════════════════════════════════════════════
+    def _toggle_zoom(self, sample_name):
+        if self._zoom_sample is None:
+            self._zoom_sample_view(sample_name)
+        else:
+            self._unzoom_sample_view()
+
+    def _zoom_sample_view(self, sample_name):
+        self._zoom_sample = sample_name
+        self._zoom_bar.grid()
+        self.update_idletasks()
+        w = self._right_canvas.winfo_width()
+        h = self._right_canvas.winfo_height()
+        if w > 1 and h > 1:
+            self._right_canvas.itemconfig(self._plots_win, width=w, height=h)
+            sentry = self.samples.get(sample_name, {})
+            fig = sentry.get("fig")
+            cv  = sentry.get("canvas")
+            if fig and cv:
+                fig.set_size_inches(w / 100, h / 100)
+                cv.get_tk_widget().config(width=w, height=h)
+                cv.draw_idle()
+        self._relayout_figures()
+        self._right_canvas.yview_moveto(0)
+
+    def _unzoom_sample_view(self):
+        self._zoom_sample = None
+        self._zoom_bar.grid_remove()
+        self._right_canvas.itemconfig(self._plots_win, width=0, height=0)
+        self._apply_plot_size()
+        self._relayout_figures()
+        self._plots_frame.update_idletasks()
+        self._right_canvas.configure(scrollregion=self._right_canvas.bbox("all"))
+
+    # ════════════════════════════════════════════════════════════════
+    # Drag-to-reorder subplots
+    # ════════════════════════════════════════════════════════════════
+    def _on_frame_press(self, event, sample_name):
+        self._drag = {
+            "sample": sample_name,
+            "start_x": event.x_root, "start_y": event.y_root,
+            "active": False, "target": None, "target_top": True,
+        }
+
+    def _on_frame_drag(self, event, sample_name):
+        drag = self._drag
+        if drag is None or drag["sample"] != sample_name:
+            return
+        if not drag["active"]:
+            if abs(event.x_root - drag["start_x"]) + abs(event.y_root - drag["start_y"]) < 6:
+                return
+            drag["active"] = True
+        target = None; target_top = True
+        for sn, sentry in self.samples.items():
+            if sn == sample_name or sentry.get("hidden"):
+                continue
+            pf = sentry.get("plot_frame")
+            if pf is None:
+                continue
+            x0, y0 = pf.winfo_rootx(), pf.winfo_rooty()
+            w_,  h_ = pf.winfo_width(), pf.winfo_height()
+            if x0 <= event.x_root <= x0 + w_ and y0 <= event.y_root <= y0 + h_:
+                target = sn
+                target_top = (event.y_root - y0) < h_ / 2
+                break
+        drag["target"] = target; drag["target_top"] = target_top
+        if target is not None:
+            pf = self.samples[target]["plot_frame"]
+            rx, ry = pf.winfo_x(), pf.winfo_y()
+            rw, rh = pf.winfo_width(), pf.winfo_height()
+            line_y = ry if target_top else ry + rh - 3
+            self._drop_line.place(x=rx, y=line_y, width=rw, height=3)
+            self._drop_line.lift()
+        else:
+            self._drop_line.place_forget()
+
+    def _on_frame_release(self, event, sample_name):
+        drag = self._drag; self._drag = None
+        self._drop_line.place_forget()
+        if drag is None or not drag["active"]:
+            return
+        target = drag.get("target")
+        if target is None or target == sample_name:
+            return
+        keys = list(self.samples.keys())
+        if sample_name not in keys or target not in keys:
+            return
+        keys.remove(sample_name)
+        to_idx = keys.index(target)
+        keys.insert(to_idx if drag.get("target_top", True) else to_idx + 1, sample_name)
+        self.samples = OrderedDict((k, self.samples[k]) for k in keys)
+        self._rebuild_sample_listbox()
+        self._relayout_figures()
+
+    # ════════════════════════════════════════════════════════════════
+    # Mouse interactions (scroll / pan / annotate)
+    # ════════════════════════════════════════════════════════════════
+    def _on_scroll(self, event, sample_name):
+        sentry = self.samples.get(sample_name)
+        if sentry is None or "ax" not in sentry:
+            return
+        ax = sentry["ax"]
+        canvas = sentry["canvas"]
+        if event.xdata is None or event.ydata is None:
+            return
+        factor = 1.15 if event.button == "up" else (1 / 1.15)
+        cx, cy = event.xdata, event.ydata
+        xl = ax.get_xlim(); yl = ax.get_ylim()
+        ax.set_xlim(cx + (xl[0] - cx) * factor, cx + (xl[1] - cx) * factor)
+        ax.set_ylim(cy + (yl[0] - cy) * factor, cy + (yl[1] - cy) * factor)
+        canvas.draw_idle()
+
+    def _on_press(self, event, sample_name):
+        sentry = self.samples.get(sample_name)
+        if sentry is None:
+            return
+        sentry["pan_moved"] = False
+        if event.button == 3:
+            self._clear_ann(sample_name, redraw=True)
+            return
+        if event.button != 1 or event.xdata is None:
+            return
+        sentry["panning"]   = True
+        sentry["pan_start"] = (event.xdata, event.ydata,
+                               *sentry["ax"].get_xlim(), *sentry["ax"].get_ylim())
+
+    def _on_motion(self, event, sample_name):
+        sentry = self.samples.get(sample_name)
+        if sentry is None or not sentry.get("panning"):
+            return
+        if event.xdata is None or sentry.get("pan_start") is None:
+            return
+        sentry["pan_moved"] = True
+        x0, y0, x1, x2, y1, y2 = sentry["pan_start"]
+        dx = event.xdata - x0; dy = event.ydata - y0
+        ax = sentry["ax"]
+        ax.set_xlim(x1 - dx, x2 - dx)
+        ax.set_ylim(y1 - dy, y2 - dy)
+        sentry["canvas"].draw_idle()
+
+    def _on_release(self, event, sample_name):
+        sentry = self.samples.get(sample_name)
+        if sentry is None:
+            return
+        sentry["panning"] = False
+        if event.button == 1 and not sentry.get("pan_moved"):
+            self._try_annotate(event, sample_name)
+        sentry["pan_moved"] = False
+
+    def _try_annotate(self, event, sample_name):
+        sentry = self.samples.get(sample_name)
+        if sentry is None or event.xdata is None:
+            return
+        plot_data = sentry.get("_plot_data", [])
+        if not plot_data:
+            return
+        ax = sentry["ax"]; canvas = sentry["canvas"]
+        # Find nearest point across all curves
+        best_dist = float("inf"); best_x = best_y = None; best_label = ""
+        xl = ax.get_xlim(); yl = ax.get_ylim()
+        xspan = abs(xl[1] - xl[0]) or 1; yspan = abs(yl[1] - yl[0]) or 1
+        for E_arr, Y_arr, label, color in plot_data:
+            if len(E_arr) == 0:
+                continue
+            dx = (E_arr - event.xdata) / xspan
+            dy = (Y_arr - event.ydata) / yspan
+            dist = dx**2 + dy**2
+            idx  = int(np.argmin(dist))
+            if dist[idx] < best_dist:
+                best_dist = dist[idx]; best_x = E_arr[idx]; best_y = Y_arr[idx]
+                best_label = label
+        if best_x is None or best_dist > 0.04:
+            return
+        # Increment annotation index for overlap cycling
+        ann_key = (round(best_x, 6), round(best_y, 6))
+        if sentry.get("ann_last") == ann_key:
+            sentry["ann_idx"] = (sentry.get("ann_idx", 0) + 1) % 4
+        else:
+            sentry["ann_idx"] = 0; sentry["ann_last"] = ann_key
+        self._clear_ann(sample_name, redraw=False)
+        offsets = [(8, 8), (-8, 8), (-8, -8), (8, -8)]
+        xytext  = offsets[sentry["ann_idx"] % 4]
+        ann = ax.annotate(
+            f"{best_label}\n({best_x:.4f}, {best_y:.4f})",
+            xy=(best_x, best_y), xytext=xytext,
+            textcoords="offset points", fontsize=8,
+            bbox=dict(boxstyle="round,pad=0.3", fc="lightyellow", alpha=0.85),
+            arrowprops=dict(arrowstyle="->", lw=0.8),
+        )
+        ann.set_in_layout(False)
+        dot, = ax.plot([best_x], [best_y], "ko", ms=5,
+                       label=_ANN_DOT_LABEL, zorder=10)
+        sentry["ann"] = ann; sentry["ann_dot"] = dot
+        canvas.draw_idle()
+
+    def _clear_ann(self, sample_name, *, redraw=True):
+        sentry = self.samples.get(sample_name)
+        if sentry is None:
+            return
+        for key in ("ann", "ann_dot"):
+            obj = sentry.get(key)
+            if obj is not None:
+                try:
+                    obj.remove()
+                except Exception:
+                    pass
+            sentry[key] = None
+        if redraw:
+            cv = sentry.get("canvas")
+            if cv:
+                cv.draw_idle()
+
+    # ════════════════════════════════════════════════════════════════
+    # Logging
+    # ════════════════════════════════════════════════════════════════
+    def _log(self, msg: str):
+        self.log_text.configure(state=tk.NORMAL)
+        self.log_text.insert(tk.END, msg + "\n")
+        self.log_text.see(tk.END)
+        self.log_text.configure(state=tk.DISABLED)
+
+    # ════════════════════════════════════════════════════════════════
+    # Session save / restore
+    # ════════════════════════════════════════════════════════════════
+    def get_session_state(self, data_store: dict) -> dict:
+        self._save_active_sample_state()
+
+        samples_list = []
+        for sname, sentry in self.samples.items():
+            rec = {"name": sname}
+            pairs_rec = []
+            for pair in sentry.get("pairs", []):
+                pr = {}
+                for k, v in pair.items():
+                    if k in _PAIR_RUNTIME:
+                        continue
+                    if k in ("df_n2", "df_o2"):
+                        continue
+                    try:
+                        import json; json.dumps(v)
+                        pr[k] = v
+                    except (TypeError, ValueError):
+                        pass
+                # Store DataFrames by hash
+                for gas in ("n2", "o2"):
+                    df = pair.get(f"df_{gas}")
+                    if df is not None:
+                        h = _sm.df_hash(df)
+                        data_store[h] = df
+                        pr[f"df_{gas}_hash"] = h
+                pairs_rec.append(pr)
+            rec["pairs"] = pairs_rec
+            for k, v in sentry.items():
+                if k in _SAMPLE_RUNTIME or k == "pairs":
+                    continue
+                try:
+                    import json; json.dumps(v)
+                    rec[k] = v
+                except (TypeError, ValueError):
+                    pass
+            rec["reflines"] = [list(r) for r in sentry.get("reflines", [])]
+            samples_list.append(rec)
+
+        return {
+            "active_sample": self.active_sample,
+            "plot_w_var":    self.plot_w_var.get(),
+            "plot_h_var":    self.plot_h_var.get(),
+            "grid_cols_var": self._grid_cols_var.get(),
+            "samples": samples_list,
+        }
+
+    def restore_session_state(self, state: dict, data_store: dict) -> None:
+        old = self._suppress_replot
+        self._suppress_replot = True
+
+        # Destroy existing sample figures
+        for sentry in self.samples.values():
+            pf = sentry.get("plot_frame")
+            if pf is not None:
+                try:
+                    pf.destroy()
+                except Exception:
+                    pass
+        self.samples.clear()
+        self.active_sample = None
+        self.sample_lb.clear()
+        self._zoom_sample = None
+
+        # Clear loaded files
+        self.loaded_files.clear()
+        self._loaded_keys.clear()
+        self.loaded_lb.delete(0, tk.END)
+
+        # Panel-level vars
+        try:
+            self.plot_w_var.set(state.get("plot_w_var", "10.5"))
+            self.plot_h_var.set(state.get("plot_h_var", "5.5"))
+            self._grid_cols_var.set(state.get("grid_cols_var", "2"))
+        except Exception:
+            pass
+
+        # Restore samples
+        for srec in state.get("samples", []):
+            sname = srec.get("name", "")
+            if not sname:
+                continue
+            sentry: dict = {"pairs": [], "reflines": []}
+            for k, v in srec.items():
+                if k in ("name", "pairs"):
+                    continue
+                sentry[k] = v
+            sentry["reflines"] = [tuple(r) for r in sentry.get("reflines", [])]
+
+            # Restore pairs + re-attach DataFrames from data_store
+            for prec in srec.get("pairs", []):
+                pair = dict(prec)
+                for gas in ("n2", "o2"):
+                    h = pair.pop(f"df_{gas}_hash", None)
+                    pair[f"df_{gas}"] = data_store.get(h) if h else None
+                sentry["pairs"].append(pair)
+
+            self.samples[sname] = sentry
+            self.sample_lb.insert(tk.END, sname,
+                                  checked=not srec.get("hidden", False))
+            self._create_sample_figure(sname)
+
+        self._suppress_replot = old
+        active_sample = state.get("active_sample")
+        if active_sample and active_sample in self.samples:
+            keys = list(self.samples.keys())
+            self.sample_lb.selection_set(keys.index(active_sample))
+            self._switch_active_sample(active_sample)
+        elif self.samples:
+            first = next(iter(self.samples))
+            self.sample_lb.selection_set(0)
+            self._switch_active_sample(first)
+
+        self._apply_plot_size()
+        self._relayout_figures()
