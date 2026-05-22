@@ -29,13 +29,16 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 
 from .file_manager import _read_mpr, _PALETTE, _COLOR_NAMES, _COLOR_HEX
-from .plotting import apply_grid, draw_reflines, copy_figure_to_clipboard
+from .plotting import apply_grid, draw_reflines, copy_figure_to_clipboard, _cycle_colors
 from .checklist import CheckableListbox
 from . import session_manager as _sm
 
 # ── UI constants ────────────────────────────────────────────────────────
 _SAMPLE_HDR_BG     = "#d1c4e9"   # light purple — distinct from ME1 blue / ME2 green
 _SAMPLE_HDR_ACTIVE = "#ffd54f"   # gold  (matches other tabs)
+
+# Extracts catalyst label from parentheses, e.g. "Sample_03(Pt)_…" → "Pt"
+_CATALYST_PAT = re.compile(r'\((\w+)\)')
 
 # Runtime-only keys stripped before JSON serialisation
 _SAMPLE_RUNTIME = frozenset({
@@ -84,6 +87,12 @@ def _extract_rpm_id(stem: str) -> str:
     return m.group(1) if m else ""
 
 
+def _detect_catalyst(stem: str) -> str:
+    """Extract catalyst label from parentheses, e.g. 'LTS-BDRDE_03(PGC)' → 'PGC'."""
+    m = _CATALYST_PAT.search(stem)
+    return m.group(1) if m else ""
+
+
 def _extract_anodic(E: np.ndarray, I: np.ndarray):
     """Return (E_sorted, I_sorted) for the anodic (E-increasing) half of the CV.
 
@@ -97,6 +106,31 @@ def _extract_anodic(E: np.ndarray, I: np.ndarray):
     I_an = I[min_idx:]
     order = np.argsort(E_an)
     return E_an[order], I_an[order]
+
+
+def _find_half_wave(E: np.ndarray, J: np.ndarray):
+    """Return (E_half, J_half) for an ORR polarization curve (anodic scan, E ascending).
+
+    J_lim = most negative J (diffusion-limited plateau at low E).
+    E½    = E where J crosses J_lim / 2.
+    Returns (None, None) when data is insufficient or has no cathodic current.
+    """
+    if len(E) < 4:
+        return None, None
+    j_lim = float(np.min(J))
+    if j_lim >= 0:
+        return None, None
+    j_half = j_lim / 2.0
+    diff = J - j_half
+    sign_ch = np.where(np.diff(np.sign(diff)))[0]
+    if len(sign_ch) == 0:
+        return None, None
+    idx = sign_ch[len(sign_ch) // 2]
+    e0, e1 = E[idx], E[idx + 1]
+    j0, j1 = J[idx], J[idx + 1]
+    e_half = (e0 + (j_half - j0) / (j1 - j0) * (e1 - e0)
+              if j1 != j0 else (e0 + e1) / 2.0)
+    return float(e_half), float(j_half)
 
 
 def _process_pair(pair: dict, r_sol_n2: float, r_sol_o2: float,
@@ -208,9 +242,18 @@ class ORRPanel(ttk.Frame):
         _lc.bind("<MouseWheel>", lambda e: _lc.yview_scroll(-1 * (e.delta // 120), "units"))
 
         # ══ LOADED FILES ════════════════════════════════════════════
-        ttk.Label(left, text="Loaded Files:", font=("", 9, "bold")).pack(
-            anchor=tk.W, padx=4, pady=(6, 0))
-        ttk.Label(left, text="(N2/O2 auto-detected from filename — no auto-merge)",
+        _lf_hdr = ttk.Frame(left)
+        _lf_hdr.pack(fill=tk.X, padx=4, pady=(6, 0))
+        ttk.Label(_lf_hdr, text="Loaded Files:", font=("", 9, "bold")).pack(side=tk.LEFT)
+        self._loaded_h_var = tk.IntVar(value=5)
+        ttk.Label(_lf_hdr, text="h:", foreground="gray",
+                  font=("", 8)).pack(side=tk.RIGHT)
+        ttk.Spinbox(_lf_hdr, from_=2, to=20, width=3,
+                    textvariable=self._loaded_h_var,
+                    command=lambda: self.loaded_lb.config(
+                        height=self._loaded_h_var.get())).pack(side=tk.RIGHT)
+
+        ttk.Label(left, text="(N2/O2 and catalyst auto-detected from filename)",
                   foreground="gray", font=("", 8)).pack(anchor=tk.W, padx=4)
         _fb = ttk.Frame(left)
         _fb.pack(fill=tk.X, padx=4)
@@ -228,8 +271,17 @@ class ORRPanel(ttk.Frame):
 
         # ══ SAMPLES ═════════════════════════════════════════════════
         ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=4)
-        ttk.Label(left, text="ORR Samples:", font=("", 9, "bold")).pack(
-            anchor=tk.W, padx=4)
+        _sh_hdr = ttk.Frame(left)
+        _sh_hdr.pack(fill=tk.X, padx=4)
+        ttk.Label(_sh_hdr, text="ORR Samples:", font=("", 9, "bold")).pack(side=tk.LEFT)
+        self._sample_h_var = tk.IntVar(value=3)
+        ttk.Label(_sh_hdr, text="h:", foreground="gray",
+                  font=("", 8)).pack(side=tk.RIGHT)
+        ttk.Spinbox(_sh_hdr, from_=2, to=15, width=3,
+                    textvariable=self._sample_h_var,
+                    command=lambda: self.sample_lb._canvas.config(
+                        height=self._sample_h_var.get() * 20)).pack(side=tk.RIGHT)
+
         _sb = ttk.Frame(left)
         _sb.pack(fill=tk.X, padx=4, pady=(2, 0))
         ttk.Button(_sb, text="New Sample", command=self._new_sample).pack(side=tk.LEFT, padx=(0, 2))
@@ -376,6 +428,13 @@ class ORRPanel(ttk.Frame):
         ttk.Checkbutton(_flip_row, text="Flip X", variable=self.x_flip_var,
                         command=self._auto_replot).pack(side=tk.LEFT, padx=(0, 8))
         ttk.Checkbutton(_flip_row, text="Flip Y", variable=self.y_flip_var,
+                        command=self._auto_replot).pack(side=tk.LEFT)
+
+        _ehalf_row = ttk.Frame(left)
+        _ehalf_row.pack(fill=tk.X, padx=4, pady=(2, 0))
+        self.show_half_wave_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(_ehalf_row, text="Show E½ markers",
+                        variable=self.show_half_wave_var,
                         command=self._auto_replot).pack(side=tk.LEFT)
 
         # ══ TITLE ═══════════════════════════════════════════════════
@@ -564,6 +623,23 @@ class ORRPanel(ttk.Frame):
         ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
         ttk.Button(left, text="Plot Active Sample",
                    command=self._auto_replot).pack(anchor=tk.W, padx=4, pady=(0, 4))
+
+        # ══ ANALYSIS ════════════════════════════════════════════════
+        ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
+        ttk.Label(left, text="Analysis  (active sample)",
+                  font=("", 9, "bold")).pack(anchor=tk.W, padx=4)
+        _an_row = ttk.Frame(left)
+        _an_row.pack(fill=tk.X, padx=4, pady=(2, 2))
+        ttk.Button(_an_row, text="Tafel Analysis",
+                   command=self._open_tafel_window).pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Button(_an_row, text="KL Analysis",
+                   command=self._open_kl_window).pack(side=tk.LEFT)
+
+        # ══ EXPORT ══════════════════════════════════════════════════
+        ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
+        ttk.Button(left, text="Export Active Sample to Excel",
+                   command=self._export_sample_excel).pack(anchor=tk.W, padx=4, pady=(0, 4))
+
         ttk.Label(left, text="Log", font=("", 9, "bold")).pack(anchor=tk.W, padx=4)
         _logf = ttk.Frame(left)
         _logf.pack(fill=tk.X, padx=4, pady=2)
@@ -665,13 +741,16 @@ class ORRPanel(ttk.Frame):
             except Exception as exc:
                 errors.append(f"{short}: {exc}")
                 continue
-            gas    = _detect_gas(stem)
-            rpm_id = _extract_rpm_id(stem)
+            gas      = _detect_gas(stem)
+            rpm_id   = _extract_rpm_id(stem)
+            catalyst = _detect_catalyst(stem)
             self.loaded_files[short] = {
-                "path": path, "gas": gas, "rpm_id": rpm_id, "df": df}
+                "path": path, "gas": gas, "rpm_id": rpm_id,
+                "catalyst": catalyst, "df": df}
             self._loaded_keys.append(short)
-            tag = f"({gas.upper() if gas else '??'})" if gas else "( ? )"
-            display = f"{tag} {short}"
+            gas_tag = gas.upper() if gas else "??"
+            cat_tag = f"|{catalyst}" if catalyst else ""
+            display = f"({gas_tag}{cat_tag}) {short}"
             self.loaded_lb.insert(tk.END, display)
             added.append(short)
 
@@ -809,19 +888,22 @@ class ORRPanel(ttk.Frame):
         selected_shorts = [self._loaded_keys[i] for i in sel
                            if i < len(self._loaded_keys)]
 
-        n2_by_id = {}
-        o2_by_id = {}
-        unknown  = []
+        # Group by (catalyst_id, rpm_id) so multiple catalysts can coexist
+        n2_by_key = {}   # (catalyst, rpm_id) → (short, fe)
+        o2_by_key = {}
+        unknown   = []
         for short in selected_shorts:
             fe = self.loaded_files.get(short)
             if fe is None:
                 continue
-            gas    = fe["gas"]
-            rpm_id = fe["rpm_id"]
+            gas      = fe["gas"]
+            rpm_id   = fe["rpm_id"]
+            catalyst = fe.get("catalyst", "")
+            key      = (catalyst, rpm_id)
             if gas == "n2":
-                n2_by_id[rpm_id] = (short, fe)
+                n2_by_key[key] = (short, fe)
             elif gas == "o2":
-                o2_by_id[rpm_id] = (short, fe)
+                o2_by_key[key] = (short, fe)
             else:
                 unknown.append(short)
 
@@ -833,15 +915,17 @@ class ORRPanel(ttk.Frame):
             if not ans:
                 return
 
-        all_ids = sorted(set(n2_by_id) | set(o2_by_id))
-        existing_ids = {p.get("rpm_id") for p in sentry["pairs"]}
+        all_keys = sorted(set(n2_by_key) | set(o2_by_key))
+        existing_keys = {(p.get("catalyst_id", ""), p.get("rpm_id"))
+                         for p in sentry["pairs"]}
         added = 0
-        for rpm_id in all_ids:
-            if rpm_id in existing_ids:
+        for (catalyst, rpm_id) in all_keys:
+            if (catalyst, rpm_id) in existing_keys:
                 continue
-            n2_item = n2_by_id.get(rpm_id)
-            o2_item = o2_by_id.get(rpm_id)
+            n2_item = n2_by_key.get((catalyst, rpm_id))
+            o2_item = o2_by_key.get((catalyst, rpm_id))
             pair = {
+                "catalyst_id": catalyst,
                 "rpm_id":   rpm_id,
                 "rpm_val":  rpm_id,
                 "n2_short": n2_item[0] if n2_item else "",
@@ -854,7 +938,7 @@ class ORRPanel(ttk.Frame):
             sentry["pairs"].append(pair)
             added += 1
 
-        sentry["pairs"].sort(key=lambda p: p.get("rpm_id", ""))
+        sentry["pairs"].sort(key=lambda p: (p.get("catalyst_id", ""), p.get("rpm_id", "")))
         if added:
             self._rebuild_pair_table(self.active_sample)
             self._auto_replot()
@@ -883,11 +967,13 @@ class ORRPanel(ttk.Frame):
         # Header
         hdr = tk.Frame(self._pair_tbl_inner, bg="#f5f5f5")
         hdr.pack(fill=tk.X, padx=2, pady=(2, 0))
+        tk.Label(hdr, text="Catalyst", width=7, bg="#f5f5f5",
+                 font=("", 8, "bold"), anchor=tk.W).pack(side=tk.LEFT)
         tk.Label(hdr, text="RPM", width=6, bg="#f5f5f5",
                  font=("", 8, "bold"), anchor=tk.W).pack(side=tk.LEFT)
-        tk.Label(hdr, text="N2 file",  width=22, bg="#f5f5f5",
+        tk.Label(hdr, text="N2 file",  width=18, bg="#f5f5f5",
                  font=("", 8, "bold"), anchor=tk.W).pack(side=tk.LEFT, padx=(2, 0))
-        tk.Label(hdr, text="O2 file",  width=22, bg="#f5f5f5",
+        tk.Label(hdr, text="O2 file",  width=18, bg="#f5f5f5",
                  font=("", 8, "bold"), anchor=tk.W).pack(side=tk.LEFT, padx=(2, 0))
 
         for i, pair in enumerate(pairs):
@@ -895,28 +981,36 @@ class ORRPanel(ttk.Frame):
             row = tk.Frame(self._pair_tbl_inner, bg=row_bg)
             row.pack(fill=tk.X, padx=2, pady=1)
 
+            cat_var = tk.StringVar(value=pair.get("catalyst_id", ""))
             rpm_var = tk.StringVar(value=pair.get("rpm_val", pair.get("rpm_id", "")))
 
-            def _save_rpm(var=rpm_var, p=pair):
-                p["rpm_val"] = var.get()
+            def _save_pair(cv=cat_var, rv=rpm_var, p=pair):
+                p["catalyst_id"] = cv.get()
+                p["rpm_val"]     = rv.get()
                 self._auto_replot()
 
-            rpm_e = tk.Entry(row, textvariable=rpm_var, width=7, bg=row_bg,
+            cat_e = tk.Entry(row, textvariable=cat_var, width=7, bg=row_bg,
                              relief=tk.GROOVE)
-            rpm_e.pack(side=tk.LEFT, padx=(2, 2))
-            rpm_e.bind("<Return>",   lambda e, fn=_save_rpm: fn())
-            rpm_e.bind("<FocusOut>", lambda e, fn=_save_rpm: fn())
+            cat_e.pack(side=tk.LEFT, padx=(2, 1))
+            cat_e.bind("<Return>",   lambda e, fn=_save_pair: fn())
+            cat_e.bind("<FocusOut>", lambda e, fn=_save_pair: fn())
+
+            rpm_e = tk.Entry(row, textvariable=rpm_var, width=6, bg=row_bg,
+                             relief=tk.GROOVE)
+            rpm_e.pack(side=tk.LEFT, padx=(0, 2))
+            rpm_e.bind("<Return>",   lambda e, fn=_save_pair: fn())
+            rpm_e.bind("<FocusOut>", lambda e, fn=_save_pair: fn())
 
             n2_s = pair.get("n2_short", "") or "—"
             o2_s = pair.get("o2_short", "") or "—"
             n2_bg = "#d4edda" if pair.get("n2_short") else "#f8d7da"
             o2_bg = "#d1ecf1" if pair.get("o2_short") else "#f8d7da"
 
-            tk.Label(row, text=(n2_s[:22] if len(n2_s) > 22 else n2_s),
-                     width=22, bg=n2_bg, font=("", 7), anchor=tk.W,
+            tk.Label(row, text=(n2_s[:18] if len(n2_s) > 18 else n2_s),
+                     width=18, bg=n2_bg, font=("", 7), anchor=tk.W,
                      relief=tk.GROOVE).pack(side=tk.LEFT, padx=(0, 1))
-            tk.Label(row, text=(o2_s[:22] if len(o2_s) > 22 else o2_s),
-                     width=22, bg=o2_bg, font=("", 7), anchor=tk.W,
+            tk.Label(row, text=(o2_s[:18] if len(o2_s) > 18 else o2_s),
+                     width=18, bg=o2_bg, font=("", 7), anchor=tk.W,
                      relief=tk.GROOVE).pack(side=tk.LEFT, padx=(0, 1))
 
             def _remove(p=pair, sn=sample_name):
@@ -979,6 +1073,7 @@ class ORRPanel(ttk.Frame):
         g["title_pad"]       = self.title_pad_var.get()
         g["label_pad"]       = self.label_pad_var.get()
         g["custom_title"]    = self.plot_title_var.get()
+        g["show_half_wave"]  = self.show_half_wave_var.get()
 
     def _switch_active_sample(self, sample_name):
         self.active_sample = sample_name
@@ -1015,6 +1110,7 @@ class ORRPanel(ttk.Frame):
         g.setdefault("title_pad",       "6")
         g.setdefault("label_pad",       "4")
         g.setdefault("custom_title",    "")
+        g.setdefault("show_half_wave",  True)
         g.setdefault("reflines",        [])
 
         old = self._suppress_replot
@@ -1056,6 +1152,7 @@ class ORRPanel(ttk.Frame):
             self.title_pad_var.set(g["title_pad"])
             self.label_pad_var.set(g["label_pad"])
             self.plot_title_var.set(g.get("custom_title", ""))
+            self.show_half_wave_var.set(g.get("show_half_wave", True))
             self._rebuild_pair_table(sample_name)
             self._refresh_reflines_lb()
         finally:
@@ -1138,21 +1235,59 @@ class ORRPanel(ttk.Frame):
         pairs = sentry.get("pairs", [])
         plot_data = []    # (E_arr, Y_arr, label, color) — cached for annotation
 
-        for i, pair in enumerate(pairs):
-            if not pair.get("n2_short") or not pair.get("o2_short"):
-                continue
-            result = _process_pair(pair, r_sol_n2, r_sol_o2, e_ref, area)
-            if result is None:
-                continue
-            E_plot, Y_plot = result
-            color    = _PALETTE[i % len(_PALETTE)]
-            rpm_val  = pair.get("rpm_val") or pair.get("rpm_id") or f"#{i+1}"
-            label    = f"{rpm_val} rpm"
-            ax.plot(E_plot, Y_plot, color=color, linewidth=1.5,
-                    label=label, zorder=2)
-            plot_data.append((E_plot, Y_plot, label, color))
+        # Group pairs by catalyst_id to assign per-catalyst base color + RPM gradient
+        catalyst_order = []
+        pairs_by_cat   = {}
+        for pair in pairs:
+            cat = pair.get("catalyst_id", "")
+            if cat not in catalyst_order:
+                catalyst_order.append(cat)
+                pairs_by_cat[cat] = []
+            pairs_by_cat[cat].append(pair)
+
+        for ci, cat in enumerate(catalyst_order):
+            base_col  = _PALETTE[ci % len(_PALETTE)]
+            cat_pairs = sorted(pairs_by_cat[cat],
+                               key=lambda p: p.get("rpm_id", ""))
+            n_cat = len(cat_pairs)
+            cat_colors = (_cycle_colors(base_col, n_cat, step=0.10, reverse=False)
+                          if n_cat > 1 else [base_col])
+            for j, pair in enumerate(cat_pairs):
+                if not pair.get("n2_short") or not pair.get("o2_short"):
+                    continue
+                result = _process_pair(pair, r_sol_n2, r_sol_o2, e_ref, area)
+                if result is None:
+                    continue
+                E_plot, Y_plot = result
+                color   = cat_colors[j]
+                rpm_val = pair.get("rpm_val") or pair.get("rpm_id") or f"#{j+1}"
+                prefix  = f"[{cat}] " if cat else ""
+                label   = f"{prefix}{rpm_val} rpm"
+                ax.plot(E_plot, Y_plot, color=color, linewidth=1.5,
+                        label=label, zorder=2)
+                plot_data.append((E_plot, Y_plot, label, color))
 
         sentry["_plot_data"] = plot_data
+
+        # E½ markers
+        show_hw = (self.show_half_wave_var.get() if is_active
+                   else sentry.get("show_half_wave", True))
+        if show_hw:
+            for E_pd, Y_pd, lbl_pd, col_pd in plot_data:
+                e_half, j_half = _find_half_wave(E_pd, Y_pd)
+                if e_half is not None:
+                    ax.axvline(e_half, color=col_pd, linestyle="--",
+                               linewidth=0.8, alpha=0.55, label="_ehalf")
+                    ax.plot([e_half], [j_half], marker="o", color=col_pd,
+                            ms=4, zorder=5, linestyle="none", label="_ehalf_dot")
+                    ax.annotate(
+                        f"E½={e_half:.3f} V",
+                        xy=(e_half, j_half),
+                        xytext=(4, -14), textcoords="offset points",
+                        fontsize=6, color=col_pd,
+                        bbox=dict(boxstyle="round,pad=0.2", fc="white",
+                                  alpha=0.75, ec=col_pd, lw=0.5),
+                    ).set_in_layout(False)
 
         # Axis labels
         x_label = f"E (V vs {ref})"
@@ -1194,7 +1329,11 @@ class ORRPanel(ttk.Frame):
             _leg = ax.legend(fontsize=leg_size, frameon=leg_frm, loc=leg_loc)
             _mp  = sentry.get("legend_manual_pos")
             if isinstance(_mp, (tuple, list)):
-                _leg._loc = tuple(_mp)
+                _set = getattr(_leg, "_set_loc", None)
+                if callable(_set):
+                    _set(tuple(_mp))
+                else:
+                    _leg._loc = tuple(_mp)
             _leg.set_draggable(True)
         sentry["legend"] = _leg
 
@@ -1222,7 +1361,7 @@ class ORRPanel(ttk.Frame):
         # Manual range
         self._apply_sample_range(sample_name, is_active)
 
-        # Grid
+        # Grid + tick intervals
         try:
             x_g  = sentry.get("x_grid", False) if not is_active else self.x_grid_var.get()
             y_g  = sentry.get("y_grid", False) if not is_active else self.y_grid_var.get()
@@ -1230,7 +1369,9 @@ class ORRPanel(ttk.Frame):
             g_co = sentry.get("grid_color",  "gray")  if not is_active else self.grid_color_var.get()
             g_lw = float(sentry.get("grid_linewidth", "0.8") if not is_active
                          else self.grid_linewidth_var.get())
-            apply_grid(ax, x_g, y_g, g_st, g_co, g_lw)
+            xi   = sentry.get("x_grid_int", "0") if not is_active else self.x_grid_int_var.get()
+            yi   = sentry.get("y_grid_int", "0") if not is_active else self.y_grid_int_var.get()
+            apply_grid(ax, x_g, y_g, xi, yi, g_st, linewidth=g_lw, color=g_co)
         except Exception:
             pass
 
@@ -1238,21 +1379,6 @@ class ORRPanel(ttk.Frame):
         reflines = (sentry.get("reflines", []) if not is_active
                     else self._get_current_reflines())
         draw_reflines(ax, reflines)
-
-        # X/Y grid interval ticks
-        try:
-            xi = float(sentry.get("x_grid_int", "0") if not is_active
-                       else self.x_grid_int_var.get())
-            yi = float(sentry.get("y_grid_int", "0") if not is_active
-                       else self.y_grid_int_var.get())
-            if xi > 0:
-                import matplotlib.ticker as ticker
-                ax.xaxis.set_major_locator(ticker.MultipleLocator(xi))
-            if yi > 0:
-                import matplotlib.ticker as ticker
-                ax.yaxis.set_major_locator(ticker.MultipleLocator(yi))
-        except (ValueError, TypeError):
-            pass
 
         canvas.draw_idle()
 
@@ -1756,6 +1882,23 @@ class ORRPanel(ttk.Frame):
         if event.button == 1 and not sentry.get("pan_moved"):
             self._try_annotate(event, sample_name)
         sentry["pan_moved"] = False
+        # Deferred legend-position save: fires after matplotlib's DraggableLegend
+        # finalize_offset() has completed, so _loc / _loc_real reflects new position.
+        if event.button == 1:
+            self.after(10, lambda s=sample_name: self._save_leg_pos(s))
+
+    def _save_leg_pos(self, sample_name):
+        sentry = self.samples.get(sample_name)
+        if sentry is None:
+            return
+        leg = sentry.get("legend")
+        if leg is None:
+            return
+        for attr in ("_loc_real", "_loc"):
+            _loc = getattr(leg, attr, None)
+            if isinstance(_loc, (tuple, list)) and len(_loc) == 2:
+                sentry["legend_manual_pos"] = tuple(_loc)
+                return
 
     def _try_annotate(self, event, sample_name):
         sentry = self.samples.get(sample_name)
@@ -1819,6 +1962,350 @@ class ORRPanel(ttk.Frame):
             cv = sentry.get("canvas")
             if cv:
                 cv.draw_idle()
+
+    # ════════════════════════════════════════════════════════════════
+    # Analysis windows
+    # ════════════════════════════════════════════════════════════════
+    def _get_active_curves(self):
+        """Return list of (E_arr, J_arr, rpm_float, label, color) for the active sample."""
+        if not self.active_sample or self.active_sample not in self.samples:
+            return []
+        sentry = self.samples[self.active_sample]
+        try:
+            r_n2  = float(self.r_sol_n2_var.get() or 0)
+            r_o2  = float(self.r_sol_o2_var.get() or 0)
+            e_ref = float(self.e_ref_var.get() or 0)
+            area  = float(self.area_var.get() or 0)
+        except ValueError:
+            r_n2 = r_o2 = e_ref = area = 0.0
+        curves = []
+        for i, pair in enumerate(sentry.get("pairs", [])):
+            if not pair.get("n2_short") or not pair.get("o2_short"):
+                continue
+            result = _process_pair(pair, r_n2, r_o2, e_ref, area)
+            if result is None:
+                continue
+            E_arr, J_arr = result
+            try:
+                rpm = float(pair.get("rpm_val") or pair.get("rpm_id") or 0)
+            except (ValueError, TypeError):
+                rpm = 0.0
+            label = f"{pair.get('rpm_val') or pair.get('rpm_id') or f'#{i+1}'} rpm"
+            color = _PALETTE[i % len(_PALETTE)]
+            curves.append((E_arr, J_arr, rpm, label, color))
+        return curves
+
+    def _open_tafel_window(self):
+        curves = self._get_active_curves()
+        if not curves:
+            messagebox.showwarning("Tafel", "No processed curves for active sample.")
+            return
+        ref = self.ref_electrode_var.get()
+        sname = self.active_sample
+
+        win = tk.Toplevel(self)
+        win.title(f"Tafel Analysis — {sname}")
+        win.geometry("760x660")
+
+        # ── Theory ──────────────────────────────────────────────────────
+        _th = ttk.LabelFrame(win, text="Tafel Theory")
+        _th.pack(fill=tk.X, padx=8, pady=(6, 0))
+        _th_txt = (
+            "  Tafel equation:   E = a + b · log₁₀|J|   (b = Tafel slope, mV/dec)\n"
+            "  Kinetic region: low overpotential (far from diffusion plateau)\n"
+            "  Diffusion correction:  Jᵏ = J · J_lim / (J_lim − J)   (Koutecky)\n"
+            "  Fit:  linear regression of E vs log₁₀|J| → slope = b [V/dec] × 1000 [mV/dec]"
+        )
+        ttk.Label(_th, text=_th_txt, justify=tk.LEFT,
+                  font=("Courier", 8)).pack(anchor=tk.W, padx=6, pady=3)
+
+        # Controls
+        ctrl = ttk.Frame(win)
+        ctrl.pack(side=tk.TOP, fill=tk.X, padx=8, pady=4)
+        ttk.Label(ctrl, text="Kinetic E range (V):").pack(side=tk.LEFT)
+        e_lo_var = tk.StringVar(value="0.85")
+        e_hi_var = tk.StringVar(value="0.95")
+        ttk.Entry(ctrl, textvariable=e_lo_var, width=6).pack(side=tk.LEFT, padx=(2, 0))
+        ttk.Label(ctrl, text="to").pack(side=tk.LEFT, padx=3)
+        ttk.Entry(ctrl, textvariable=e_hi_var, width=6).pack(side=tk.LEFT, padx=(0, 10))
+        use_jk_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(ctrl, text="Diffusion-correct J → Jᵏ",
+                        variable=use_jk_var).pack(side=tk.LEFT, padx=(0, 10))
+        compute_btn = ttk.Button(ctrl, text="Compute", command=lambda: _compute())
+        compute_btn.pack(side=tk.LEFT)
+
+        # Figure
+        fig = Figure(figsize=(7.0, 4.2), dpi=100)
+        ax  = fig.add_subplot(111)
+        cv  = FigureCanvasTkAgg(fig, master=win)
+        cv.get_tk_widget().pack(fill=tk.BOTH, expand=True, padx=8)
+        tb  = NavigationToolbar2Tk(cv, win, pack_toolbar=False)
+        tb.pack(side=tk.BOTTOM, fill=tk.X, padx=8)
+
+        # Results
+        res = tk.Text(win, height=5, state=tk.DISABLED, font=("Courier", 8),
+                      wrap=tk.WORD)
+        res.pack(fill=tk.X, padx=8, pady=(0, 4))
+
+        def _compute():
+            try:
+                e_lo = float(e_lo_var.get())
+                e_hi = float(e_hi_var.get())
+            except ValueError:
+                messagebox.showerror("Tafel", "Invalid E range.", parent=win)
+                return
+            if e_lo >= e_hi:
+                messagebox.showerror("Tafel", "E_lo must be < E_hi.", parent=win)
+                return
+            ax.clear()
+            lines = []
+            for E_arr, J_arr, rpm, label, color in curves:
+                j_lim = float(np.min(J_arr))
+                mask = (E_arr >= e_lo) & (E_arr <= e_hi)
+                if mask.sum() < 3:
+                    lines.append(f"{label}: < 3 points in [{e_lo},{e_hi}] V — skipped")
+                    continue
+                E_k = E_arr[mask]
+                J_k = J_arr[mask]
+                if use_jk_var.get() and j_lim < 0:
+                    with np.errstate(divide="ignore", invalid="ignore"):
+                        jk = J_k * j_lim / (j_lim - J_k)
+                    good = np.isfinite(jk) & (jk < 0)
+                    if good.sum() < 3:
+                        lines.append(f"{label}: Jᵏ correction yielded < 3 valid pts — skipped")
+                        continue
+                    E_k, J_k = E_k[good], jk[good]
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    log_j = np.log10(np.abs(J_k))
+                good = np.isfinite(log_j)
+                if good.sum() < 3:
+                    lines.append(f"{label}: log|J| not finite — skipped")
+                    continue
+                E_f, log_j_f = E_k[good], log_j[good]
+                # E vs log|J|: slope in V/dec → convert to mV/dec
+                coeffs = np.polyfit(log_j_f, E_f, 1)
+                b_mV = coeffs[0] * 1000.0
+                ax.plot(log_j_f, E_f, color=color, linewidth=1.5, label=label)
+                xfit = np.linspace(log_j_f.min(), log_j_f.max(), 60)
+                ax.plot(xfit, np.polyval(coeffs, xfit), color=color,
+                        linestyle="--", linewidth=0.8, label="_fit")
+                lines.append(f"{label:20s}  b = {b_mV:+.1f} mV/dec")
+            j_lbl = "Jᵏ" if use_jk_var.get() else "J"
+            ax.set_xlabel(f"log₁₀|{j_lbl}|  (mA cm⁻² or mA)")
+            ax.set_ylabel(f"E  (V vs {ref})")
+            ax.set_title(f"Tafel Analysis — {sname}")
+            ax.legend(fontsize=8, frameon=True)
+            fig.tight_layout(pad=0.5)
+            fig.set_layout_engine("none")
+            cv.draw()
+            res.configure(state=tk.NORMAL)
+            res.delete("1.0", tk.END)
+            res.insert(tk.END, "\n".join(lines))
+            res.configure(state=tk.DISABLED)
+
+        _compute()
+
+    def _open_kl_window(self):
+        curves = self._get_active_curves()
+        valid = [(E, J, rpm, lbl, col) for E, J, rpm, lbl, col in curves if rpm > 0]
+        if len(valid) < 2:
+            messagebox.showwarning(
+                "KL Analysis",
+                "Need at least 2 RPM pairs with numeric RPM values.")
+            return
+        ref   = self.ref_electrode_var.get()
+        sname = self.active_sample
+
+        win = tk.Toplevel(self)
+        win.title(f"Koutecky-Levich Analysis — {sname}")
+        win.geometry("800x720")
+
+        # ── Theory ──────────────────────────────────────────────────────
+        _th = ttk.LabelFrame(win, text="Koutecky-Levich Theory")
+        _th.pack(fill=tk.X, padx=8, pady=(6, 0))
+        _th_txt = (
+            "  K-L equation:   1/J = 1/Jᵏ + 1/J_L = 1/Jᵏ + 1/(B · ω^½)\n"
+            "  Levich constant:  B = 0.62 · n · F · D^(2/3) · ν^(−1/6) · C\n"
+            "  Plot 1/J vs 1/ω^½ at each chosen E; linear fit → slope = 1/(n·B_unit)\n"
+            "  n = 1 / (|slope| · B_unit)  where  B_unit = 0.62·F·D^(2/3)·ν^(−1/6)·C·1000\n"
+            "  ω (rad/s) = 2π·RPM/60    F = 96485 C/mol"
+        )
+        ttk.Label(_th, text=_th_txt, justify=tk.LEFT,
+                  font=("Courier", 8)).pack(anchor=tk.W, padx=6, pady=3)
+
+        # Electrochemical parameters
+        prm = ttk.LabelFrame(win, text="Electrolyte parameters  (O₂ in 0.1 M KOH, 25 °C)")
+        prm.pack(fill=tk.X, padx=8, pady=(6, 2))
+        _pr = ttk.Frame(prm)
+        _pr.pack(fill=tk.X, padx=6, pady=3)
+        d_var  = tk.StringVar(value="1.9e-5")
+        nu_var = tk.StringVar(value="0.01")
+        c_var  = tk.StringVar(value="1.2e-6")
+        for lbl_txt, var, unit in (
+            ("Dₒ₂ (cm²/s):", d_var,  None),
+            ("ν (cm²/s):",        nu_var, None),
+            ("Cₒ₂ (mol/cm³):", c_var, None),
+        ):
+            ttk.Label(_pr, text=lbl_txt).pack(side=tk.LEFT, padx=(0, 2))
+            ttk.Entry(_pr, textvariable=var, width=9).pack(side=tk.LEFT, padx=(0, 10))
+
+        # E-value controls
+        ectrl = ttk.Frame(win)
+        ectrl.pack(fill=tk.X, padx=8, pady=(2, 0))
+        ttk.Label(ectrl, text="E values  (V vs RHE, comma-sep):").pack(side=tk.LEFT)
+        e_vals_var = tk.StringVar(value="0.70, 0.75, 0.80, 0.85")
+        ttk.Entry(ectrl, textvariable=e_vals_var, width=28).pack(side=tk.LEFT, padx=(4, 10))
+        ttk.Button(ectrl, text="Compute KL",
+                   command=lambda: _compute()).pack(side=tk.LEFT)
+
+        # Figure
+        fig = Figure(figsize=(7.5, 4.3), dpi=100)
+        ax  = fig.add_subplot(111)
+        cv  = FigureCanvasTkAgg(fig, master=win)
+        cv.get_tk_widget().pack(fill=tk.BOTH, expand=True, padx=8)
+        tb  = NavigationToolbar2Tk(cv, win, pack_toolbar=False)
+        tb.pack(side=tk.BOTTOM, fill=tk.X, padx=8)
+
+        # Results
+        res = tk.Text(win, height=6, state=tk.DISABLED, font=("Courier", 8),
+                      wrap=tk.WORD)
+        res.pack(fill=tk.X, padx=8, pady=(0, 4))
+
+        def _compute():
+            try:
+                D  = float(d_var.get())
+                nu = float(nu_var.get())
+                C  = float(c_var.get())
+            except ValueError:
+                messagebox.showerror("KL", "Invalid parameter(s).", parent=win)
+                return
+            try:
+                e_vals = [float(x.strip()) for x in e_vals_var.get().split(",")
+                          if x.strip()]
+            except ValueError:
+                messagebox.showerror("KL", "Invalid E values.", parent=win)
+                return
+            if not e_vals:
+                return
+            F = 96485.0
+            # Levich slope per electron: B = 0.62 F D^(2/3) nu^(-1/6) C  [A cm^-2 (rad/s)^-1/2]
+            # multiply by 1000 to convert to mA
+            B_factor = 0.62 * F * (D ** (2.0 / 3.0)) * (nu ** (-1.0 / 6.0)) * C * 1000.0
+            ax.clear()
+            lines = []
+            kl_colors = [_PALETTE[k % len(_PALETTE)] for k in range(len(e_vals))]
+            for ei, (e_val, c_kl) in enumerate(zip(e_vals, kl_colors)):
+                inv_J = []; inv_sqw = []; rpm_labels = []
+                for E_arr, J_arr, rpm, label, _ in valid:
+                    if e_val < E_arr[0] or e_val > E_arr[-1]:
+                        continue
+                    j_at_e = float(np.interp(e_val, E_arr, J_arr))
+                    if j_at_e == 0 or not np.isfinite(j_at_e):
+                        continue
+                    omega = 2.0 * math.pi * rpm / 60.0
+                    inv_J.append(1.0 / j_at_e)
+                    inv_sqw.append(1.0 / math.sqrt(omega))
+                    rpm_labels.append(label)
+                if len(inv_J) < 2:
+                    lines.append(f"E={e_val:.3f} V: < 2 data points — skipped")
+                    continue
+                x = np.array(inv_sqw)
+                y = np.array(inv_J)
+                coeffs = np.polyfit(x, y, 1)
+                slope, intercept = coeffs
+                # |slope| = 1 / (n * B_factor)  →  n = 1 / (|slope| * B_factor)
+                n    = (1.0 / (abs(slope) * B_factor)) if slope != 0 else float("nan")
+                j_k  = (1.0 / intercept) if intercept != 0 else float("nan")
+                ax.scatter(x, y, color=c_kl, zorder=5, s=40)
+                xfit = np.linspace(x.min(), x.max(), 60)
+                ax.plot(xfit, np.polyval(coeffs, xfit), color=c_kl,
+                        linewidth=1.2, label=f"E={e_val:.3f} V  n={n:.2f}")
+                for xi_pt, yi_pt, rl in zip(x, y, rpm_labels):
+                    ax.annotate(rl, (xi_pt, yi_pt), fontsize=6, color=c_kl,
+                                xytext=(3, 3), textcoords="offset points")
+                lines.append(
+                    f"E={e_val:.3f} V:  n = {n:.2f}  |  Jᵏ = {j_k:+.3f} mA")
+            ax.set_xlabel(r"$\omega^{-1/2}$  (rad s$^{-1}$)$^{-1/2}$")
+            ax.set_ylabel("J⁻¹  (mA⁻¹ cm² or mA⁻¹)")
+            ax.set_title(f"Koutecky-Levich — {sname}")
+            ax.legend(fontsize=8, frameon=True)
+            fig.tight_layout(pad=0.5)
+            fig.set_layout_engine("none")
+            cv.draw()
+            res.configure(state=tk.NORMAL)
+            res.delete("1.0", tk.END)
+            res.insert(tk.END, "\n".join(lines))
+            res.configure(state=tk.DISABLED)
+
+        _compute()
+
+    # ════════════════════════════════════════════════════════════════
+    # Excel export
+    # ════════════════════════════════════════════════════════════════
+    def _export_sample_excel(self):
+        if not self.active_sample or self.active_sample not in self.samples:
+            messagebox.showwarning("ORR Export", "Select a sample first.")
+            return
+        sentry = self.samples[self.active_sample]
+        pairs  = sentry.get("pairs", [])
+        if not pairs:
+            messagebox.showwarning("ORR Export", "No pairs in active sample.")
+            return
+        try:
+            r_n2  = float(self.r_sol_n2_var.get() or 0)
+            r_o2  = float(self.r_sol_o2_var.get() or 0)
+            e_ref = float(self.e_ref_var.get() or 0)
+            area  = float(self.area_var.get() or 0)
+        except ValueError:
+            r_n2 = r_o2 = e_ref = area = 0.0
+        ref   = self.ref_electrode_var.get()
+        e_col = f"E (V vs {ref})"
+        y_col = "J (mA cm⁻²)" if area > 0 else "I_net (mA)"
+
+        path = filedialog.asksaveasfilename(
+            title="Export ORR Sample to Excel",
+            defaultextension=".xlsx",
+            filetypes=[("Excel files", "*.xlsx")],
+            initialfile=f"{self.active_sample}_ORR.xlsx",
+            parent=self)
+        if not path:
+            return
+
+        try:
+            from openpyxl import Workbook
+            wb = Workbook()
+            wb.remove(wb.active)
+            has_data = False
+            for i, pair in enumerate(pairs):
+                rpm_val    = pair.get("rpm_val") or pair.get("rpm_id") or f"#{i+1}"
+                sheet_name = f"{rpm_val} rpm"[:31]
+                ws = wb.create_sheet(title=sheet_name)
+                ws.append([e_col, y_col,
+                           "N2 short", "O2 short",
+                           "R_sol_N2 (ohm)", "R_sol_O2 (ohm)",
+                           "E_ref (V)", "Area (cm2)"])
+                result = _process_pair(pair, r_n2, r_o2, e_ref, area)
+                if result is not None:
+                    E_pl, Y_pl = result
+                    for j, (e_v, y_v) in enumerate(zip(E_pl, Y_pl)):
+                        row = [float(e_v), float(y_v)]
+                        if j == 0:
+                            row += [pair.get("n2_short", ""),
+                                    pair.get("o2_short", ""),
+                                    r_n2, r_o2, e_ref,
+                                    area if area > 0 else ""]
+                        ws.append(row)
+                    has_data = True
+                else:
+                    ws.append(["Processing failed for this pair."])
+            if not has_data:
+                messagebox.showwarning("ORR Export", "No pairs could be processed.")
+                return
+            wb.save(path)
+            self._log(f"Exported '{self.active_sample}' → {os.path.basename(path)}")
+            messagebox.showinfo("ORR Export", f"Saved:\n{path}", parent=self)
+        except Exception as exc:
+            messagebox.showerror("ORR Export", f"Export failed:\n{exc}", parent=self)
 
     # ════════════════════════════════════════════════════════════════
     # Logging
