@@ -1063,41 +1063,46 @@ class ORRPanel(ttk.Frame):
                      justify=tk.LEFT).pack(padx=6, pady=6, anchor=tk.W)
             return
 
-        # Header
+        # Header — checkbox col + catalyst + rpm fixed; N2/O2 expand; remove btn right
         hdr = tk.Frame(self._pair_tbl_inner, bg="#f5f5f5")
         hdr.pack(fill=tk.X, padx=2, pady=(2, 0))
+        tk.Label(hdr, text="Plot", width=4, bg="#f5f5f5",
+                 font=("", 8, "bold"), anchor=tk.W).pack(side=tk.LEFT)
         tk.Label(hdr, text="Catalyst", width=7, bg="#f5f5f5",
                  font=("", 8, "bold"), anchor=tk.W).pack(side=tk.LEFT)
-        tk.Label(hdr, text="RPM", width=6, bg="#f5f5f5",
+        tk.Label(hdr, text="RPM", width=5, bg="#f5f5f5",
                  font=("", 8, "bold"), anchor=tk.W).pack(side=tk.LEFT)
-        tk.Label(hdr, text="N2 file",  width=18, bg="#f5f5f5",
-                 font=("", 8, "bold"), anchor=tk.W).pack(side=tk.LEFT, padx=(2, 0))
-        tk.Label(hdr, text="O2 file",  width=18, bg="#f5f5f5",
-                 font=("", 8, "bold"), anchor=tk.W).pack(side=tk.LEFT, padx=(2, 0))
+        tk.Label(hdr, text="", width=2, bg="#f5f5f5").pack(side=tk.RIGHT)
+        tk.Label(hdr, text="O2 file", bg="#f5f5f5",
+                 font=("", 8, "bold"), anchor=tk.W).pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(2, 0))
+        tk.Label(hdr, text="N2 file", bg="#f5f5f5",
+                 font=("", 8, "bold"), anchor=tk.W).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(2, 0))
 
         for i, pair in enumerate(pairs):
             row_bg = "#ffffff" if i % 2 == 0 else "#eeeeee"
             row = tk.Frame(self._pair_tbl_inner, bg=row_bg)
             row.pack(fill=tk.X, padx=2, pady=1)
 
-            cat_var = tk.StringVar(value=pair.get("catalyst_id", ""))
-            rpm_var = tk.StringVar(value=pair.get("rpm_val", pair.get("rpm_id", "")))
+            cat_var     = tk.StringVar(value=pair.get("catalyst_id", ""))
+            rpm_var     = tk.StringVar(value=pair.get("rpm_val", pair.get("rpm_id", "")))
+            enabled_var = tk.BooleanVar(value=pair.get("enabled", True))
+
+            def _toggle_enabled(p=pair, ev=enabled_var):
+                p["enabled"] = ev.get()
+                self._auto_replot()
 
             def _save_pair(cv=cat_var, rv=rpm_var, p=pair, sn=sample_name):
                 new_cat = cv.get().strip()
                 old_cat = p.get("catalyst_id", "")
                 if new_cat and new_cat != old_cat:
-                    # Rename all pairs in this sample that share the old catalyst_id
                     sentry_ref = self.samples.get(sn, {})
                     for _p in sentry_ref.get("pairs", []):
                         if _p.get("catalyst_id") == old_cat:
                             _p["catalyst_id"] = new_cat
-                    # Rename keys in catalyst_corrections and catalyst_styles
                     for _store_key in ("catalyst_corrections", "catalyst_styles"):
                         _store = sentry_ref.get(_store_key, {})
                         if old_cat in _store:
                             _store[new_cat] = _store.pop(old_cat)
-                    # Update active catalyst reference
                     if getattr(self, "_active_catalyst", None) == old_cat:
                         self._active_catalyst = new_cat
                     self._rebuild_pair_table(sn)
@@ -1107,13 +1112,18 @@ class ORRPanel(ttk.Frame):
                 p["rpm_val"] = rv.get()
                 self._auto_replot()
 
+            # Checkbox — left edge
+            tk.Checkbutton(row, variable=enabled_var, command=_toggle_enabled,
+                           bg=row_bg, activebackground=row_bg,
+                           relief=tk.FLAT).pack(side=tk.LEFT, padx=(2, 0))
+
             cat_e = tk.Entry(row, textvariable=cat_var, width=7, bg=row_bg,
                              relief=tk.GROOVE)
-            cat_e.pack(side=tk.LEFT, padx=(2, 1))
+            cat_e.pack(side=tk.LEFT, padx=(1, 1))
             cat_e.bind("<Return>",   lambda e, fn=_save_pair: fn())
             cat_e.bind("<FocusOut>", lambda e, fn=_save_pair: fn())
 
-            rpm_e = tk.Entry(row, textvariable=rpm_var, width=6, bg=row_bg,
+            rpm_e = tk.Entry(row, textvariable=rpm_var, width=5, bg=row_bg,
                              relief=tk.GROOVE)
             rpm_e.pack(side=tk.LEFT, padx=(0, 2))
             rpm_e.bind("<Return>",   lambda e, fn=_save_pair: fn())
@@ -1124,13 +1134,6 @@ class ORRPanel(ttk.Frame):
             n2_bg = "#d4edda" if pair.get("n2_short") else "#f8d7da"
             o2_bg = "#d1ecf1" if pair.get("o2_short") else "#f8d7da"
 
-            tk.Label(row, text=(n2_s[:18] if len(n2_s) > 18 else n2_s),
-                     width=18, bg=n2_bg, font=("", 7), anchor=tk.W,
-                     relief=tk.GROOVE).pack(side=tk.LEFT, padx=(0, 1))
-            tk.Label(row, text=(o2_s[:18] if len(o2_s) > 18 else o2_s),
-                     width=18, bg=o2_bg, font=("", 7), anchor=tk.W,
-                     relief=tk.GROOVE).pack(side=tk.LEFT, padx=(0, 1))
-
             def _remove(p=pair, sn=sample_name):
                 if sn and sn in self.samples:
                     try:
@@ -1140,8 +1143,13 @@ class ORRPanel(ttk.Frame):
                     self._rebuild_pair_table(sn)
                     self._auto_replot()
 
+            # Remove button right-anchored so filename labels get all remaining space
             tk.Button(row, text="✕", width=2, command=_remove,
-                      bg=row_bg, relief=tk.FLAT, font=("", 8)).pack(side=tk.LEFT, padx=(1, 2))
+                      bg=row_bg, relief=tk.FLAT, font=("", 8)).pack(side=tk.RIGHT, padx=(1, 2))
+            tk.Label(row, text=o2_s, bg=o2_bg, font=("", 7), anchor=tk.W,
+                     relief=tk.GROOVE).pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(0, 1))
+            tk.Label(row, text=n2_s, bg=n2_bg, font=("", 7), anchor=tk.W,
+                     relief=tk.GROOVE).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 1))
 
     # ════════════════════════════════════════════════════════════════
     # Active sample state save / restore
@@ -1442,6 +1450,8 @@ class ORRPanel(ttk.Frame):
         catalyst_order = []
         pairs_by_cat   = {}
         for pair in pairs:
+            if not pair.get("enabled", True):
+                continue
             cat = pair.get("catalyst_id", "")
             if cat not in catalyst_order:
                 catalyst_order.append(cat)
@@ -2332,6 +2342,8 @@ class ORRPanel(ttk.Frame):
         curves = []
         for i, pair in enumerate(sentry.get("pairs", [])):
             if not pair.get("n2_short") or not pair.get("o2_short"):
+                continue
+            if not pair.get("enabled", True):
                 continue
             cat = pair.get("catalyst_id", "")
             _cc = cat_corrections.get(cat, {})
