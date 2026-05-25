@@ -38,8 +38,9 @@ from .legend_editor import open_legend_editor
 _SAMPLE_HDR_BG     = "#d1c4e9"   # light purple — distinct from ME1 blue / ME2 green
 _SAMPLE_HDR_ACTIVE = "#ffd54f"   # gold  (matches other tabs)
 
-# Extracts catalyst label from parentheses, e.g. "Sample_03(Pt)_…" → "Pt"
-_CATALYST_PAT = re.compile(r'\((\w+)\)')
+# Extracts catalyst label from parentheses plus optional dataset suffix,
+# e.g. "Sample_03(Pt) vs …" → "Pt", "Sample_03(Pt)_2 vs …" → "Pt_2"
+_CATALYST_PAT = re.compile(r'\((\w+)\)(_\d+)?')
 
 # Runtime-only keys stripped before JSON serialisation
 _SAMPLE_RUNTIME = frozenset({
@@ -89,9 +90,15 @@ def _extract_rpm_id(stem: str) -> str:
 
 
 def _detect_catalyst(stem: str) -> str:
-    """Extract catalyst label from parentheses, e.g. 'LTS-BDRDE_03(PGC)' → 'PGC'."""
+    """Extract catalyst label including optional dataset suffix.
+
+    'LTS-BDRDE_22(Pt) vs …'   → 'Pt'
+    'LTS-BDRDE_22(Pt)_2 vs …' → 'Pt_2'
+    """
     m = _CATALYST_PAT.search(stem)
-    return m.group(1) if m else ""
+    if not m:
+        return ""
+    return m.group(1) + (m.group(2) or "")
 
 
 def _extract_anodic(E: np.ndarray, I: np.ndarray):
