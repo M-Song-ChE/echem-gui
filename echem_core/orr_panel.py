@@ -943,8 +943,11 @@ class ORRPanel(ttk.Frame):
         selected_shorts = [self._loaded_keys[i] for i in sel
                            if i < len(self._loaded_keys)]
 
-        # Group by (catalyst_id, rpm_id) so multiple catalysts can coexist
-        n2_by_key = {}   # (catalyst, rpm_id) → (short, fe)
+        # Group by (catalyst, rpm_id) → list of files.
+        # Using lists (not single values) allows multiple datasets that share
+        # the same auto-detected catalyst label and RPM ID to coexist within
+        # a single "Add" operation.
+        n2_by_key = {}   # (catalyst, rpm_id) → [(short, fe), ...]
         o2_by_key = {}
         unknown   = []
         for short in selected_shorts:
@@ -956,9 +959,9 @@ class ORRPanel(ttk.Frame):
             catalyst = fe.get("catalyst", "")
             key      = (catalyst, rpm_id)
             if gas == "n2":
-                n2_by_key[key] = (short, fe)
+                n2_by_key.setdefault(key, []).append((short, fe))
             elif gas == "o2":
-                o2_by_key[key] = (short, fe)
+                o2_by_key.setdefault(key, []).append((short, fe))
             else:
                 unknown.append(short)
 
@@ -970,51 +973,54 @@ class ORRPanel(ttk.Frame):
             if not ans:
                 return
 
-        all_keys = sorted(set(n2_by_key) | set(o2_by_key))
-        # Deduplicate by actual file paths so the same physical files can't be
-        # added twice, but two datasets that happen to share a catalyst label
-        # and RPM ID (e.g. "(Pt)" in both) are still treated as distinct pairs.
+        # Deduplicate by actual file paths — same physical file pair can't be
+        # added twice regardless of how many times the user clicks the button.
         existing_file_pairs = {(p.get("n2_path", ""), p.get("o2_path", ""))
                                for p in sentry["pairs"]}
         added = 0
+        all_keys = sorted(set(n2_by_key) | set(o2_by_key))
         for (catalyst, rpm_id) in all_keys:
-            n2_item = n2_by_key.get((catalyst, rpm_id))
-            o2_item = o2_by_key.get((catalyst, rpm_id))
-            n2_path = n2_item[1]["path"] if n2_item else ""
-            o2_path = o2_item[1]["path"] if o2_item else ""
-            if (n2_path, o2_path) in existing_file_pairs:
-                continue
+            n2_list = n2_by_key.get((catalyst, rpm_id), [])
+            o2_list = o2_by_key.get((catalyst, rpm_id), [])
+            # Pair positionally: n2_list[0]↔o2_list[0], n2_list[1]↔o2_list[1], …
+            n_pairs = max(len(n2_list), len(o2_list))
+            for idx in range(n_pairs):
+                n2_item = n2_list[idx] if idx < len(n2_list) else None
+                o2_item = o2_list[idx] if idx < len(o2_list) else None
+                n2_path = n2_item[1]["path"] if n2_item else ""
+                o2_path = o2_item[1]["path"] if o2_item else ""
+                if (n2_path, o2_path) in existing_file_pairs:
+                    continue
 
-            # If the catalyst label + rpm_id already exists (different files,
-            # same label collision), auto-suffix to keep pairs distinguishable.
-            used_cat_rpm = {(p.get("catalyst_id", ""), p.get("rpm_id", ""))
-                            for p in sentry["pairs"]}
-            cat_label = catalyst
-            suffix = 2
-            while (cat_label, rpm_id) in used_cat_rpm:
-                cat_label = f"{catalyst}_{suffix}"
-                suffix += 1
+                # Auto-suffix catalyst label if (label, rpm_id) already taken.
+                used_cat_rpm = {(p.get("catalyst_id", ""), p.get("rpm_id", ""))
+                                for p in sentry["pairs"]}
+                cat_label = catalyst
+                suffix = 2
+                while (cat_label, rpm_id) in used_cat_rpm:
+                    cat_label = f"{catalyst}_{suffix}"
+                    suffix += 1
 
-            pair = {
-                "catalyst_id": cat_label,
-                "rpm_id":   rpm_id,
-                "rpm_val":  rpm_id,
-                "n2_short": n2_item[0] if n2_item else "",
-                "o2_short": o2_item[0] if o2_item else "",
-                "n2_path":  n2_path,
-                "o2_path":  o2_path,
-                "df_n2":    n2_item[1]["df"]   if n2_item else None,
-                "df_o2":    o2_item[1]["df"]   if o2_item else None,
-            }
-            sentry["pairs"].append(pair)
-            existing_file_pairs.add((n2_path, o2_path))
-            cc = sentry.setdefault("catalyst_corrections", {})
-            cc.setdefault(cat_label, {"r_sol_n2": 0.0, "r_sol_o2": 0.0,
-                                      "e_ref": 0.0, "area": ""})
-            cs = sentry.setdefault("catalyst_styles", {})
-            cs.setdefault(cat_label, {"color": "", "linestyle": "solid",
-                                      "linewidth": "1.5", "marker": "none"})
-            added += 1
+                pair = {
+                    "catalyst_id": cat_label,
+                    "rpm_id":   rpm_id,
+                    "rpm_val":  rpm_id,
+                    "n2_short": n2_item[0] if n2_item else "",
+                    "o2_short": o2_item[0] if o2_item else "",
+                    "n2_path":  n2_path,
+                    "o2_path":  o2_path,
+                    "df_n2":    n2_item[1]["df"] if n2_item else None,
+                    "df_o2":    o2_item[1]["df"] if o2_item else None,
+                }
+                sentry["pairs"].append(pair)
+                existing_file_pairs.add((n2_path, o2_path))
+                cc = sentry.setdefault("catalyst_corrections", {})
+                cc.setdefault(cat_label, {"r_sol_n2": 0.0, "r_sol_o2": 0.0,
+                                          "e_ref": 0.0, "area": ""})
+                cs = sentry.setdefault("catalyst_styles", {})
+                cs.setdefault(cat_label, {"color": "", "linestyle": "solid",
+                                          "linewidth": "1.5", "marker": "none"})
+                added += 1
 
         sentry["pairs"].sort(key=lambda p: (p.get("catalyst_id", ""), p.get("rpm_id", "")))
         if added:
