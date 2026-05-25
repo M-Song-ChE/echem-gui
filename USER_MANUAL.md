@@ -231,16 +231,20 @@ Use this tab to compare rotating disk electrode (RDE) oxygen reduction reaction 
 4. Files appear in the **Loaded Files** list tagged `(N2)`, `(O2)`, or `(??)` if undetected.
    - **No auto-merge** — N2 and O2 files for the same RPM share a similar name but differ in sequence; they are kept separate and matched by RPM index.
 
-### 8.2 Creating Samples
+### 8.2 Creating Samples and Pairing Files
 1. Click **New Sample** and enter a name (e.g. `Pt/C 20%`).
-2. In the Loaded Files list, select all N2 and O2 files for this sample.
-3. Click **↓ Add Selected Files to Sample** — the app pairs them by RPM index automatically.
+2. In the Loaded Files list, select one or more N2 and/or O2 files for this sample.
+3. Click **↓ Add Selected Files to Sample** — the app pairs files by RPM index automatically.
+   - N2 and O2 files for the same pair can be added in **separate clicks**. If a matching pair (same catalyst and RPM) already exists but is missing one gas slot, the new file fills that slot rather than creating a new incomplete pair.
+4. Repeat with additional files if needed (e.g. add O2 files after the N2 files).
 
 ### 8.3 RPM Pair Table
-The **RPM Pairs** section shows the matched N2/O2 pairs for the active sample:
-- **RPM** column — editable; type the actual RPM from your lab notes (e.g. `400`, `900`, `1600`). Press Enter or click away to save.
-- **N2 file** / **O2 file** — green = file found, red = missing.
-- **✕** button — remove a pair.
+The **RPM Pairs** section lists all matched N2/O2 pairs for the active sample:
+- **Plot checkbox** — include or exclude this pair from the plot without deleting it. Unchecked pairs are also excluded from Tafel and KL analyses. The enabled state is saved with the session.
+- **Catalyst** field — editable; renaming a catalyst here updates all pairs and correction entries that share the same catalyst label in this sample.
+- **RPM** field — editable; enter the actual rotation speed from your lab notes (e.g. `400`, `900`, `1600`). Press Enter or click away to save.
+- **N2 file / O2 file** — displayed at full width (green = file found, red = missing). Resize the panel or window to see more of long filenames.
+- **✕** button — remove a pair permanently.
 
 ### 8.4 Correction (active sample)
 - **R_sol N2 (Ω)** — uncompensated resistance for the N2 measurement session.

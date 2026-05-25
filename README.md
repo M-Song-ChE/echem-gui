@@ -329,27 +329,36 @@ Use this tab to compare rotating disk electrode (RDE) oxygen reduction reaction 
 
 ### 8.2 Creating Samples and Pairing Files
 1. Click **New Sample** and enter a name.
-2. Select N2 and O2 files in the Loaded Files list and click **↓ Add Selected Files to Sample**.
+2. Select one or more N2 and/or O2 files in the Loaded Files list and click **↓ Add Selected Files to Sample**.
 3. The app pairs files by RPM index automatically and shows them in the **RPM Pairs** table.
-4. Edit the **RPM** field in each row to enter the actual rotation speed from your lab notes. Press Enter to save.
+   - N2 and O2 files for the same pair can be added in **separate clicks**. If a matching pair (same catalyst and RPM) already exists but is missing one gas slot, the new file fills that slot rather than creating a new incomplete pair.
+4. Edit the **RPM** field in each row to enter the actual rotation speed from your lab notes (e.g. `400`, `900`, `1600`). Press Enter to save.
 
-### 8.3 Correction (active sample)
+### 8.3 RPM Pair Table
+The **RPM Pairs** section lists all matched N2/O2 pairs for the active sample:
+- **Plot checkbox** — include or exclude this pair from the plot without deleting it. Unchecked pairs are also excluded from Tafel and KL analyses. The enabled state is saved with the session.
+- **Catalyst** field — editable; renaming a catalyst here updates all pairs and correction entries sharing the same label in this sample.
+- **RPM** field — editable; actual rotation speed from your lab notes.
+- **N2 file / O2 file** — displayed at full width (green = found, red = missing). Resize the panel or window to see more of long filenames.
+- **✕** button — remove a pair permanently.
+
+### 8.4 Correction (active sample)
 - **R_sol N2 (Ω)** — uncompensated resistance for the N2 session: `E = Ewe/V − (I/1000) × R_sol`.
 - **R_sol O2 (Ω)** — uncompensated resistance for the O2 session (applied independently).
 - **E_ref (V vs RHE)** — shared RHE offset: `E_RHE = E_corr + E_ref`.
 - **Area (cm²)** — leave blank for I (mA); enter a value for J (mA cm⁻²).
 
-### 8.4 Processing Pipeline (per pair)
+### 8.5 Processing Pipeline (per pair)
 1. Extract the **last cycle** from both N2 and O2.
 2. Apply separate IR correction, then shared RHE conversion.
 3. Extract the **anodic scan** (cathodic-vertex upward, sorted ascending).
 4. Restrict to the overlapping E range and interpolate N2 → O2 grid.
 5. Subtract: `I_net = I_O2 − I_N2_interp`. Divide by area if provided.
 
-### 8.5 Multiple Samples
+### 8.6 Multiple Samples
 Each sample has its own subplot. Use **Cols** to control the grid width. Double-click a header strip to zoom; drag to reorder; uncheck to hide.
 
-### 8.6 Plot Size
+### 8.7 Plot Size
 **W [__] H [__] inches** — size for all sample subplots; scrollbars appear automatically.
 
 ---
