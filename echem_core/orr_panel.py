@@ -950,27 +950,16 @@ class ORRPanel(ttk.Frame):
         selected_shorts = [self._loaded_keys[i] for i in sel
                            if i < len(self._loaded_keys)]
 
-        # Group by (catalyst, rpm_id) → list of files.
-        # Using lists (not single values) allows multiple datasets that share
-        # the same auto-detected catalyst label and RPM ID to coexist within
-        # a single "Add" operation.
-        n2_by_key = {}   # (catalyst, rpm_id) → [(short, fe), ...]
-        o2_by_key = {}
-        unknown   = []
+        unknown = []
+        file_entries = []
         for short in selected_shorts:
             fe = self.loaded_files.get(short)
             if fe is None:
                 continue
-            gas      = fe["gas"]
-            rpm_id   = fe["rpm_id"]
-            catalyst = fe.get("catalyst", "")
-            key      = (catalyst, rpm_id)
-            if gas == "n2":
-                n2_by_key.setdefault(key, []).append((short, fe))
-            elif gas == "o2":
-                o2_by_key.setdefault(key, []).append((short, fe))
-            else:
+            if fe["gas"] not in ("n2", "o2"):
                 unknown.append(short)
+            else:
+                file_entries.append((short, fe))
 
         if unknown:
             ans = messagebox.askyesno(
@@ -980,54 +969,72 @@ class ORRPanel(ttk.Frame):
             if not ans:
                 return
 
-        # Deduplicate by actual file paths — same physical file pair can't be
-        # added twice regardless of how many times the user clicks the button.
-        existing_file_pairs = {(p.get("n2_path", ""), p.get("o2_path", ""))
-                               for p in sentry["pairs"]}
+        # Track all paths already committed to any pair slot (exact-dup guard).
+        all_existing_paths = set()
+        for p in sentry["pairs"]:
+            if p.get("n2_path"):
+                all_existing_paths.add(p["n2_path"])
+            if p.get("o2_path"):
+                all_existing_paths.add(p["o2_path"])
+
         added = 0
-        all_keys = sorted(set(n2_by_key) | set(o2_by_key))
-        for (catalyst, rpm_id) in all_keys:
-            n2_list = n2_by_key.get((catalyst, rpm_id), [])
-            o2_list = o2_by_key.get((catalyst, rpm_id), [])
-            # Pair positionally: n2_list[0]↔o2_list[0], n2_list[1]↔o2_list[1], …
-            n_pairs = max(len(n2_list), len(o2_list))
-            for idx in range(n_pairs):
-                n2_item = n2_list[idx] if idx < len(n2_list) else None
-                o2_item = o2_list[idx] if idx < len(o2_list) else None
-                n2_path = n2_item[1]["path"] if n2_item else ""
-                o2_path = o2_item[1]["path"] if o2_item else ""
-                if (n2_path, o2_path) in existing_file_pairs:
-                    continue
+        for short, fe in file_entries:
+            gas      = fe["gas"]
+            rpm_id   = fe["rpm_id"]
+            catalyst = fe.get("catalyst", "")
+            path     = fe["path"]
 
-                # Auto-suffix catalyst label if (label, rpm_id) already taken.
-                used_cat_rpm = {(p.get("catalyst_id", ""), p.get("rpm_id", ""))
-                                for p in sentry["pairs"]}
-                cat_label = catalyst
-                suffix = 2
-                while (cat_label, rpm_id) in used_cat_rpm:
-                    cat_label = f"{catalyst}_{suffix}"
-                    suffix += 1
+            if path in all_existing_paths:
+                continue
 
-                pair = {
-                    "catalyst_id": cat_label,
-                    "rpm_id":   rpm_id,
-                    "rpm_val":  rpm_id,
-                    "n2_short": n2_item[0] if n2_item else "",
-                    "o2_short": o2_item[0] if o2_item else "",
-                    "n2_path":  n2_path,
-                    "o2_path":  o2_path,
-                    "df_n2":    n2_item[1]["df"] if n2_item else None,
-                    "df_o2":    o2_item[1]["df"] if o2_item else None,
-                }
-                sentry["pairs"].append(pair)
-                existing_file_pairs.add((n2_path, o2_path))
-                cc = sentry.setdefault("catalyst_corrections", {})
-                cc.setdefault(cat_label, {"r_sol_n2": 0.0, "r_sol_o2": 0.0,
-                                          "e_ref": 0.0, "area": ""})
-                cs = sentry.setdefault("catalyst_styles", {})
-                cs.setdefault(cat_label, {"color": "", "linestyle": "solid",
-                                          "linewidth": "1.5", "marker": "none"})
+            # Try to merge into an existing incomplete pair that matches
+            # (catalyst_id, rpm_id) and has this gas slot empty.
+            merged = False
+            for pair in sentry["pairs"]:
+                if (pair.get("catalyst_id") == catalyst
+                        and pair.get("rpm_id") == rpm_id
+                        and not pair.get(f"{gas}_path")):
+                    pair[f"{gas}_path"]  = path
+                    pair[f"{gas}_short"] = short
+                    pair[f"df_{gas}"]    = fe["df"]
+                    merged = True
+                    break
+
+            if merged:
+                all_existing_paths.add(path)
                 added += 1
+                continue
+
+            # No mergeable slot — create a new (possibly incomplete) pair.
+            # Auto-suffix catalyst label if (label, rpm_id) is already taken.
+            used_cat_rpm = {(p.get("catalyst_id", ""), p.get("rpm_id", ""))
+                            for p in sentry["pairs"]}
+            cat_label = catalyst
+            suffix = 2
+            while (cat_label, rpm_id) in used_cat_rpm:
+                cat_label = f"{catalyst}_{suffix}"
+                suffix += 1
+
+            new_pair = {
+                "catalyst_id": cat_label,
+                "rpm_id":      rpm_id,
+                "rpm_val":     rpm_id,
+                "n2_short":    short if gas == "n2" else "",
+                "o2_short":    short if gas == "o2" else "",
+                "n2_path":     path  if gas == "n2" else "",
+                "o2_path":     path  if gas == "o2" else "",
+                "df_n2":       fe["df"] if gas == "n2" else None,
+                "df_o2":       fe["df"] if gas == "o2" else None,
+            }
+            sentry["pairs"].append(new_pair)
+            all_existing_paths.add(path)
+            cc = sentry.setdefault("catalyst_corrections", {})
+            cc.setdefault(cat_label, {"r_sol_n2": 0.0, "r_sol_o2": 0.0,
+                                      "e_ref": 0.0, "area": ""})
+            cs = sentry.setdefault("catalyst_styles", {})
+            cs.setdefault(cat_label, {"color": "", "linestyle": "solid",
+                                      "linewidth": "1.5", "marker": "none"})
+            added += 1
 
         sentry["pairs"].sort(key=lambda p: (p.get("catalyst_id", ""), p.get("rpm_id", "")))
         if added:
