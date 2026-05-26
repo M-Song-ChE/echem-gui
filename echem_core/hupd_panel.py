@@ -68,15 +68,26 @@ def _split_scans(E: np.ndarray, I: np.ndarray):
     return E_an, I_an, E_cat, I_cat
 
 
+def _dl_baseline(E_s, I_s, dl_lo, dl_hi):
+    """Two-point baseline through the first and last data points in the DL region.
+    Returns coeffs = [slope, intercept] (numpy polyval-compatible), or None."""
+    mask = (E_s >= dl_lo) & (E_s <= dl_hi)
+    if mask.sum() < 2:
+        return None
+    E_dl = E_s[mask]; I_dl = I_s[mask]
+    dE = E_dl[-1] - E_dl[0]
+    slope = (I_dl[-1] - I_dl[0]) / dE if dE != 0 else 0.0
+    intercept = I_dl[0] - slope * E_dl[0]
+    return np.array([slope, intercept])
+
+
 def _integrate_one(E_s, I_s, dl_lo, dl_hi, e1, e2, v_mVs):
-    """
-    Fit baseline in DL region; integrate (I - baseline) in Hupd range.
+    """Two-point DL baseline; integrate (I - baseline) in Hupd range.
     Returns (q_uC, coeffs) or (None, None) on failure.
     """
-    mask_dl = (E_s >= dl_lo) & (E_s <= dl_hi)
-    if mask_dl.sum() < 2:
+    coeffs = _dl_baseline(E_s, I_s, dl_lo, dl_hi)
+    if coeffs is None:
         return None, None
-    coeffs = np.polyfit(E_s[mask_dl], I_s[mask_dl], 1)
 
     mask_h = (E_s >= e1) & (E_s <= e2)
     if mask_h.sum() < 2:
@@ -487,48 +498,54 @@ class HupdPanel(ttk.Frame):
         # Choose which scan to overlay the baseline and shading on
         E_s, I_s = (E_cat, I_cat) if scan_dir == "cathodic" else (E_an, I_an)
 
-        # ── Guide overlays that don't need a computed result ──────────────
         if p:
-            # DL region — orange band
+            # DL region — orange band (shows where baseline is anchored)
             ax.axvspan(p["dl_lo"], p["dl_hi"],
                        alpha=0.15, color="orange", zorder=0,
-                       label=f"DL baseline region [{p['dl_lo']:.2f}–{p['dl_hi']:.2f} V]")
-            # Hupd range boundary lines
+                       label=f"DL region [{p['dl_lo']:.2f}–{p['dl_hi']:.2f} V]")
+            # Hupd boundary lines
             ax.axvline(p["e1"], color="seagreen", linewidth=1.0, linestyle=":",
-                       zorder=5, label=f"Hupd E₁ = {p['e1']:.2f} V")
+                       zorder=5, label=f"E₁ = {p['e1']:.2f} V")
             ax.axvline(p["e2"], color="seagreen", linewidth=1.0, linestyle=":",
-                       zorder=5, label=f"Hupd E₂ = {p['e2']:.2f} V")
+                       zorder=5, label=f"E₂ = {p['e2']:.2f} V")
 
-        # ── Computed overlays ─────────────────────────────────────────────
-        if result and p:
-            coeffs = result["coeffs"]
+            # ── Baseline: two-point line through first/last DL data points ──
+            coeffs = _dl_baseline(E_s, I_s, p["dl_lo"], p["dl_hi"])
+            if coeffs is not None:
+                # Mark the two anchor points
+                mask_dl = (E_s >= p["dl_lo"]) & (E_s <= p["dl_hi"])
+                E_dl = E_s[mask_dl]; I_dl = I_s[mask_dl]
+                ax.plot([E_dl[0], E_dl[-1]], [I_dl[0], I_dl[-1]],
+                        "o", color="darkorange", markersize=5, zorder=6)
 
-            # Baseline line — drawn across the full E range of the chosen scan
-            E_bl = np.linspace(E_s.min(), E_s.max(), 300)
-            ax.plot(E_bl, np.polyval(coeffs, E_bl),
-                    color="black", linewidth=1.3, linestyle="--",
-                    zorder=4, label="Baseline (DL linear fit)")
+                # Extrapolated baseline drawn across the full scan range
+                E_bl = np.linspace(E_s.min(), E_s.max(), 300)
+                ax.plot(E_bl, np.polyval(coeffs, E_bl),
+                        color="black", linewidth=1.3, linestyle="--",
+                        zorder=4, label="Baseline (two-point DL)")
 
-            # Integration area fill — between I_measured and baseline
-            mask_h = (E_s >= p["e1"]) & (E_s <= p["e2"])
-            if mask_h.sum() >= 2:
-                E_f   = E_s[mask_h]
-                I_f   = I_s[mask_h]
-                I_bl_f = np.polyval(coeffs, E_f)
-                ax.fill_between(
-                    E_f, I_f, I_bl_f,
-                    alpha=0.45, color="mediumseagreen", zorder=3,
-                    label=f"Q$_{{Hupd}}$ area  ({result['q_h']:.1f} μC)")
+                # Integration fill between measured I and baseline
+                mask_h = (E_s >= p["e1"]) & (E_s <= p["e2"])
+                if mask_h.sum() >= 2:
+                    E_f    = E_s[mask_h]
+                    I_f    = I_s[mask_h]
+                    I_bl_f = np.polyval(coeffs, E_f)
+                    q_label = (f"Q$_{{Hupd}}$ area ({result['q_h']:.1f} μC)"
+                               if result else "Q$_{{Hupd}}$ area")
+                    ax.fill_between(E_f, I_f, I_bl_f,
+                                    alpha=0.45, color="mediumseagreen",
+                                    zorder=3, label=q_label)
 
-            # Annotation box — top-left
-            ann = (f"Q$_H$  = {result['q_h']:.2f} μC\n"
-                   f"ECSA = {result['ecsa']:.4f} cm²\n"
-                   f"RF    = {result['rf']:.2f}")
-            ax.text(0.02, 0.97, ann,
-                    transform=ax.transAxes, fontsize=8.5,
-                    verticalalignment="top", family="monospace",
-                    bbox=dict(boxstyle="round,pad=0.5", fc="white",
-                              alpha=0.90, ec="steelblue", lw=0.9))
+            # Annotation box — only when Q_H has been computed
+            if result:
+                ann = (f"Q$_H$  = {result['q_h']:.2f} μC\n"
+                       f"ECSA = {result['ecsa']:.4f} cm²\n"
+                       f"RF    = {result['rf']:.2f}")
+                ax.text(0.02, 0.97, ann,
+                        transform=ax.transAxes, fontsize=8.5,
+                        verticalalignment="top", family="monospace",
+                        bbox=dict(boxstyle="round,pad=0.5", fc="white",
+                                  alpha=0.90, ec="steelblue", lw=0.9))
 
         ax.axhline(0, color="black", linewidth=0.5, alpha=0.30, zorder=0)
         xlabel = "E (V vs. RHE)" if e_ref != 0.0 else "E (V vs. Ref)"
