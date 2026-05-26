@@ -29,7 +29,8 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 
 from .file_manager import _read_mpr, _PALETTE, _COLOR_NAMES, _COLOR_HEX
-from .plotting import apply_grid, draw_reflines, copy_figure_to_clipboard, _cycle_colors
+from .plotting import (apply_grid, draw_reflines, copy_figure_to_clipboard,
+                        _cycle_colors, _scale_legend_spacing)
 from .checklist import CheckableListbox
 from . import session_manager as _sm
 from .legend_editor import open_legend_editor
@@ -2155,6 +2156,19 @@ class ORRPanel(ttk.Frame):
                     pass
 
         if event.button == 3:
+            # Right-drag on legend → resize; right-click elsewhere → dismiss annotation
+            leg = sentry.get("legend")
+            if leg is not None:
+                try:
+                    hit, _ = leg.contains(event)
+                    if hit:
+                        sentry["leg_resize"] = True
+                        sentry["leg_resize_start_y"]  = event.y
+                        sentry["leg_resize_start_sz"] = sentry.get(
+                            "leg_size_live", sentry.get("leg_size", 8.0))
+                        return
+                except Exception:
+                    pass
             self._clear_ann(sample_name, redraw=True)
             return
         if event.button != 1 or event.xdata is None:
@@ -2200,7 +2214,29 @@ class ORRPanel(ttk.Frame):
 
     def _on_motion(self, event, sample_name):
         sentry = self.samples.get(sample_name)
-        if sentry is None or not sentry.get("panning"):
+        if sentry is None:
+            return
+
+        # Legend resize (right-drag on legend)
+        if sentry.get("leg_resize"):
+            leg = sentry.get("legend")
+            if leg is not None and event.y is not None:
+                dy = event.y - sentry["leg_resize_start_y"]
+                new_sz = sentry["leg_resize_start_sz"] + dy / 5.0
+                new_sz = max(4.0, min(30.0, new_sz))
+                prev_sz = sentry.get("leg_size_live", sentry.get("leg_size", 8.0))
+                sentry["leg_size_live"] = new_sz
+                if prev_sz > 0:
+                    _scale_legend_spacing(leg, new_sz / prev_sz)
+                for txt in leg.get_texts():
+                    txt.set_fontsize(new_sz)
+                ttl = leg.get_title()
+                if ttl:
+                    ttl.set_fontsize(new_sz)
+                sentry["canvas"].draw()
+            return
+
+        if not sentry.get("panning"):
             return
         if event.xdata is None or sentry.get("pan_start") is None:
             return
@@ -2216,6 +2252,16 @@ class ORRPanel(ttk.Frame):
         sentry = self.samples.get(sample_name)
         if sentry is None:
             return
+
+        # Legend resize release → commit final size
+        if sentry.get("leg_resize"):
+            sentry["leg_resize"] = False
+            live = sentry.get("leg_size_live")
+            if live is not None:
+                sentry["leg_size"] = live
+                sentry["leg_size_live"] = None
+            return
+
         sentry["panning"] = False
         if event.button == 1 and not sentry.get("pan_moved"):
             self._try_annotate(event, sample_name)
