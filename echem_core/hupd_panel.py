@@ -33,7 +33,6 @@ _DEF = dict(
     e2="0.40",
     q_ref="210",
     geo_area="0.1963",
-    scan_dir="anodic",
 )
 
 
@@ -54,16 +53,30 @@ def _last_cycle(df: pd.DataFrame) -> pd.DataFrame:
     return df.copy().reset_index(drop=True)
 
 
+_trapz = getattr(np, "trapezoid", getattr(np, "trapz", None))
+
+
 def _split_scans(E: np.ndarray, I: np.ndarray):
-    """Return (E_an, I_an, E_cat, I_cat) each sorted by E ascending."""
+    """Split into (E_an, I_an, E_cat, I_cat) each sorted by E ascending.
+
+    Uses whichever extreme (min or max) sits most centrally as the pivot,
+    so it handles scans that start from either the cathodic or anodic vertex.
+    """
     if len(E) < 4:
         return E, I, E, I
+    n = len(E)
     min_idx = int(np.argmin(E))
-    # Anodic: cathodic vertex → end of array
-    E_an = E[min_idx:].copy(); I_an = I[min_idx:].copy()
-    o = np.argsort(E_an); E_an, I_an = E_an[o], I_an[o]
-    # Cathodic: start → cathodic vertex (sort ascending for trapz consistency)
-    E_cat = E[:min_idx + 1].copy(); I_cat = I[:min_idx + 1].copy()
+    max_idx = int(np.argmax(E))
+    # Choose the more central extreme as the scan-direction pivot
+    if abs(max_idx / n - 0.5) <= abs(min_idx / n - 0.5):
+        # Anodic vertex is more central → scan: cathodic↑anodic vertex↓cathodic
+        E_an  = E[:max_idx + 1].copy(); I_an  = I[:max_idx + 1].copy()
+        E_cat = E[max_idx:].copy();     I_cat = I[max_idx:].copy()
+    else:
+        # Cathodic vertex is more central → scan: anodic↓cathodic vertex↑anodic
+        E_cat = E[:min_idx + 1].copy(); I_cat = I[:min_idx + 1].copy()
+        E_an  = E[min_idx:].copy();     I_an  = I[min_idx:].copy()
+    o = np.argsort(E_an);  E_an,  I_an  = E_an[o],  I_an[o]
     o = np.argsort(E_cat); E_cat, I_cat = E_cat[o], I_cat[o]
     return E_an, I_an, E_cat, I_cat
 
@@ -95,16 +108,18 @@ def _integrate_one(E_s, I_s, dl_lo, dl_hi, e1, e2, v_mVs):
 
     E_h = E_s[mask_h]; I_h = I_s[mask_h]
     I_bl = np.polyval(coeffs, E_h)
+    I_net = np.clip(I_h - I_bl, 0, None)  # area ABOVE baseline only
 
-    # Q [C] = |integral(I_A - I_bl_A, dE_V)| / v_Vs
-    v_si = v_mVs * 1e-3                                    # mV/s → V/s
-    q_c  = abs(np.trapz((I_h - I_bl) * 1e-3, E_h)) / v_si # A·V / (V/s) = C
-    return q_c * 1e6, coeffs                                # C → µC
+    # Q [C] = integral(I_net_A, dE_V) / v_Vs
+    v_si = v_mVs * 1e-3                          # mV/s → V/s
+    q_c  = _trapz(I_net * 1e-3, E_h) / v_si      # A·V / (V/s) = C
+    return q_c * 1e6, coeffs                      # C → µC
 
 
-def _compute_result(df_lc, scan_dir, v, dl_lo, dl_hi, e1, e2, q_ref, geo,
+def _compute_result(df_lc, v, dl_lo, dl_hi, e1, e2, q_ref, geo,
                     r_sol=0.0, e_ref=0.0):
-    """Full Hupd computation for one last-cycle DataFrame. Returns dict or None."""
+    """Full Hupd computation for one last-cycle DataFrame (anodic scan only).
+    Returns dict or None."""
     if df_lc is None or len(df_lc) < 10:
         return None
     if "Ewe/V" not in df_lc.columns or "I/mA" not in df_lc.columns:
@@ -112,21 +127,9 @@ def _compute_result(df_lc, scan_dir, v, dl_lo, dl_hi, e1, e2, q_ref, geo,
 
     I = df_lc["I/mA"].values.astype(float)
     E = df_lc["Ewe/V"].values.astype(float) - (I * 1e-3) * r_sol + e_ref
-    E_an, I_an, E_cat, I_cat = _split_scans(E, I)
+    E_an, I_an, _, _ = _split_scans(E, I)
 
-    if scan_dir == "anodic":
-        q_h, coeffs = _integrate_one(E_an, I_an, dl_lo, dl_hi, e1, e2, v)
-    elif scan_dir == "cathodic":
-        q_h, coeffs = _integrate_one(E_cat, I_cat, dl_lo, dl_hi, e1, e2, v)
-    else:  # average
-        q_an,  c_an  = _integrate_one(E_an,  I_an,  dl_lo, dl_hi, e1, e2, v)
-        q_cat, c_cat = _integrate_one(E_cat, I_cat, dl_lo, dl_hi, e1, e2, v)
-        vals = [q for q in (q_an, q_cat) if q is not None]
-        if not vals:
-            return None
-        q_h    = float(np.mean(vals))
-        coeffs = c_an if c_an is not None else c_cat
-
+    q_h, coeffs = _integrate_one(E_an, I_an, dl_lo, dl_hi, e1, e2, v)
     if q_h is None:
         return None
 
@@ -221,7 +224,6 @@ class HupdPanel(ttk.Frame):
         self._v_e2   = tk.StringVar(value=_DEF["e2"])
         self._v_qref = tk.StringVar(value=_DEF["q_ref"])
         self._v_geo  = tk.StringVar(value=_DEF["geo_area"])
-        self._v_dir  = tk.StringVar(value=_DEF["scan_dir"])
 
         def _entry_row(parent, label, var, width=9, unit=""):
             r = ttk.Frame(parent)
@@ -258,14 +260,6 @@ class HupdPanel(ttk.Frame):
             e.bind("<Return>",   lambda ev: self._replot())
             e.bind("<FocusOut>", lambda ev: self._replot())
         ttk.Label(hr, text="V", foreground="gray", font=("", 8)).pack(side=tk.LEFT)
-
-        # Scan direction radio buttons
-        sdr = ttk.Frame(pf)
-        sdr.pack(fill=tk.X, padx=6, pady=2)
-        ttk.Label(sdr, text="Integrate scan:", width=24, anchor=tk.W).pack(side=tk.LEFT)
-        for txt, val in [("Anodic", "anodic"), ("Cathodic", "cathodic"), ("Average", "avg")]:
-            ttk.Radiobutton(sdr, text=txt, variable=self._v_dir,
-                            value=val, command=self._replot).pack(side=tk.LEFT, padx=2)
 
         _entry_row(pf, "qᵣₑf (μC/cm²):", self._v_qref)
         _entry_row(pf, "Geometric area:", self._v_geo, unit="cm²")
@@ -424,7 +418,6 @@ class HupdPanel(ttk.Frame):
             entry = self.files[short]
             res = _compute_result(
                 entry["df_lc"],
-                self._v_dir.get(),
                 p["v"], p["dl_lo"], p["dl_hi"],
                 p["e1"], p["e2"], p["q_ref"], p["geo"],
                 r_sol=entry.get("r_sol", 0.0),
@@ -481,22 +474,17 @@ class HupdPanel(ttk.Frame):
         I = df_lc["I/mA"].values.astype(float)
         E = df_lc["Ewe/V"].values.astype(float) - (I * 1e-3) * r_sol + e_ref
         E_an, I_an, E_cat, I_cat = _split_scans(E, I)
-        scan_dir = self._v_dir.get()
 
         # ── Full last-cycle background (light gray) ───────────────────────
         ax.plot(E_cat, I_cat, color="#c0c0c0", linewidth=1.0, zorder=1)
         ax.plot(E_an,  I_an,  color="#c0c0c0", linewidth=1.0, zorder=1)
 
-        # ── Highlighted scan direction(s) ─────────────────────────────────
-        if scan_dir in ("anodic", "avg"):
-            ax.plot(E_an, I_an, color="steelblue", linewidth=1.8,
-                    zorder=2, label="Anodic scan")
-        if scan_dir in ("cathodic", "avg"):
-            ax.plot(E_cat, I_cat, color="tomato", linewidth=1.8,
-                    zorder=2, label="Cathodic scan")
+        # ── Anodic scan highlighted (Hupd is anodic peak) ─────────────────
+        ax.plot(E_an, I_an, color="steelblue", linewidth=1.8,
+                zorder=2, label="Anodic scan")
 
-        # Choose which scan to overlay the baseline and shading on
-        E_s, I_s = (E_cat, I_cat) if scan_dir == "cathodic" else (E_an, I_an)
+        # Overlay: baseline and fill always computed on anodic scan
+        E_s, I_s = E_an, I_an
 
         if p:
             # DL region — orange band (shows where baseline is anchored)
@@ -524,15 +512,17 @@ class HupdPanel(ttk.Frame):
                         color="black", linewidth=1.3, linestyle="--",
                         zorder=4, label="Baseline (two-point DL)")
 
-                # Integration fill between measured I and baseline
+                # Integration fill — only area ABOVE baseline
                 mask_h = (E_s >= p["e1"]) & (E_s <= p["e2"])
                 if mask_h.sum() >= 2:
                     E_f    = E_s[mask_h]
                     I_f    = I_s[mask_h]
                     I_bl_f = np.polyval(coeffs, E_f)
+                    # fill_between with where=(I_f > I_bl_f) shows only the peak
                     q_label = (f"Q$_{{Hupd}}$ area ({result['q_h']:.1f} μC)"
                                if result else "Q$_{{Hupd}}$ area")
                     ax.fill_between(E_f, I_f, I_bl_f,
+                                    where=(I_f > I_bl_f),
                                     alpha=0.45, color="mediumseagreen",
                                     zorder=3, label=q_label)
 
@@ -569,7 +559,6 @@ class HupdPanel(ttk.Frame):
             "e2":          self._v_e2.get(),
             "q_ref":       self._v_qref.get(),
             "geo_area":    self._v_geo.get(),
-            "scan_dir":    self._v_dir.get(),
             "active_file": self.active_file,
             "files":       [],
         }
@@ -591,7 +580,6 @@ class HupdPanel(ttk.Frame):
             self._v_e2.set(state.get("e2",         _DEF["e2"]))
             self._v_qref.set(state.get("q_ref",    _DEF["q_ref"]))
             self._v_geo.set(state.get("geo_area",  _DEF["geo_area"]))
-            self._v_dir.set(state.get("scan_dir",  _DEF["scan_dir"]))
 
             self.files.clear()
             self._keys.clear()
