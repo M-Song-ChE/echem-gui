@@ -1351,12 +1351,6 @@ class EchemGUI(tk.Tk):
         multi2_panel.pack(fill=tk.BOTH, expand=True)
         self._panels["multi_echem2"] = multi2_panel
 
-        ecsa_tab = ttk.Frame(notebook)
-        notebook.add(ecsa_tab, text="ECSA Calc")
-        ecsa_panel = ECSAPanel(ecsa_tab)
-        ecsa_panel.pack(fill=tk.BOTH, expand=True)
-        self._panels["ecsa"] = ecsa_panel
-
         eis_tab = ttk.Frame(notebook)
         notebook.add(eis_tab, text="Nyquist Plot")
         eis_panel = EISPanel(eis_tab)
@@ -1370,10 +1364,16 @@ class EchemGUI(tk.Tk):
         self._panels["orr"] = orr_panel
 
         hupd_tab = ttk.Frame(notebook)
-        notebook.add(hupd_tab, text="Hupd Calc")
+        notebook.add(hupd_tab, text="ECSA_Hupd")
         hupd_panel = HupdPanel(hupd_tab)
         hupd_panel.pack(fill=tk.BOTH, expand=True)
         self._panels["hupd"] = hupd_panel
+
+        ecsa_tab = ttk.Frame(notebook)
+        notebook.add(ecsa_tab, text="ECSA_Cdl")
+        ecsa_panel = ECSAPanel(ecsa_tab)
+        ecsa_panel.pack(fill=tk.BOTH, expand=True)
+        self._panels["ecsa"] = ecsa_panel
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
