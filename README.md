@@ -327,17 +327,20 @@ Use this tab to compare rotating disk electrode (RDE) oxygen reduction reaction 
 1. Click **Load Files** to select `.mpr` or `.txt` CV files (N2 and O2, any number of RPM values).
 2. N2 vs O2 is auto-detected from the filename (looks for `n2`/`o2` as word fragments).
 3. The RPM index is auto-extracted from the filename pattern `_NN_CV_` (e.g. `_04_CV_`, `_1600_CV_`).
-4. Files appear tagged `(N2)`, `(O2)`, or `(??)` — **no auto-merge** is performed.
+4. Files appear tagged `(N2)`, `(O2)`, or `(??)` with **color coding**: N2 rows are light blue, O2 rows are light orange — no auto-merge is performed.
+5. Use **Sel N2** / **Sel O2** buttons above the list to instantly select all N2 or all O2 files for quick sample assignment.
 
 ### 8.2 Creating Samples and Pairing Files
 1. Click **New Sample** and enter a name.
 2. Select one or more N2 and/or O2 files in the Loaded Files list and click **↓ Add Selected Files to Sample**.
 3. The app pairs files by RPM index automatically and shows them in the **RPM Pairs** table.
-   - N2 and O2 files for the same pair can be added in **separate clicks**. If a matching pair (same catalyst and RPM) already exists but is missing one gas slot, the new file fills that slot rather than creating a new incomplete pair.
+   - Files selected **in the same batch** that share the same catalyst and RPM are paired together first, preventing cross-contamination when the same catalyst/RPM exists in different experiments.
+   - Lone files (single gas in the batch) merge into an existing incomplete pair if one matches.
 4. Edit the **RPM** field in each row to enter the actual rotation speed from your lab notes (e.g. `400`, `900`, `1600`). Press Enter to save.
 
 ### 8.3 RPM Pair Table
 The **RPM Pairs** section lists all matched N2/O2 pairs for the active sample:
+- Pairs are **grouped by catalyst** with a purple separator header between each catalyst group.
 - **Plot checkbox** — include or exclude this pair from the plot without deleting it. Unchecked pairs are also excluded from Tafel and KL analyses. The enabled state is saved with the session.
 - **Catalyst** field — editable; renaming a catalyst here updates all pairs and correction entries sharing the same label in this sample.
 - **RPM** field — editable; actual rotation speed from your lab notes.

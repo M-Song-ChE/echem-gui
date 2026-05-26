@@ -262,6 +262,13 @@ class ORRPanel(ttk.Frame):
         ttk.Button(_fb, text="Load Files", command=self._load_files).pack(side=tk.LEFT, padx=(0, 4))
         ttk.Button(_fb, text="Remove",     command=self._remove_loaded_file).pack(side=tk.LEFT)
 
+        _gb = ttk.Frame(left)
+        _gb.pack(fill=tk.X, padx=4, pady=(1, 0))
+        ttk.Button(_gb, text="Sel N2", width=7,
+                   command=self._select_n2).pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Button(_gb, text="Sel O2", width=7,
+                   command=self._select_o2).pack(side=tk.LEFT)
+
         _lf = ttk.Frame(left)
         _lf.pack(fill=tk.X, padx=4, pady=2)
         self.loaded_lb = tk.Listbox(_lf, height=5, selectmode=tk.EXTENDED,
@@ -815,6 +822,8 @@ class ORRPanel(ttk.Frame):
             cat_tag = f"|{catalyst}" if catalyst else ""
             display = f"({gas_tag}{cat_tag}) {short}"
             self.loaded_lb.insert(tk.END, display)
+            _gas_bg = {"n2": "#dbeafe", "o2": "#ffedd5"}
+            self.loaded_lb.itemconfig(tk.END, background=_gas_bg.get(gas, "white"))
             added.append(short)
 
         if errors:
@@ -831,6 +840,18 @@ class ORRPanel(ttk.Frame):
                 short = self._loaded_keys.pop(i)
                 self.loaded_files.pop(short, None)
                 self.loaded_lb.delete(i)
+
+    def _select_n2(self):
+        self.loaded_lb.selection_clear(0, tk.END)
+        for i, k in enumerate(self._loaded_keys):
+            if self.loaded_files.get(k, {}).get("gas") == "n2":
+                self.loaded_lb.selection_set(i)
+
+    def _select_o2(self):
+        self.loaded_lb.selection_clear(0, tk.END)
+        for i, k in enumerate(self._loaded_keys):
+            if self.loaded_files.get(k, {}).get("gas") == "o2":
+                self.loaded_lb.selection_set(i)
 
     # ════════════════════════════════════════════════════════════════
     # Sample management
@@ -979,7 +1000,67 @@ class ORRPanel(ttk.Frame):
                 all_existing_paths.add(p["o2_path"])
 
         added = 0
+
+        # ── Batch-isolation: group this batch by (catalyst_base, rpm_id) ──
+        # First-seen gas wins each slot; duplicates fall through to lone-file path.
+        batch_groups: dict = {}
         for short, fe in file_entries:
+            key = (fe.get("catalyst", ""), fe["rpm_id"])
+            gas = fe["gas"]
+            batch_groups.setdefault(key, {})
+            if gas not in batch_groups[key]:
+                batch_groups[key][gas] = (short, fe)
+
+        # Step 1: create complete pairs from within this batch.
+        # Batch-internal pairs are never merged into existing incomplete pairs —
+        # this prevents cross-contamination when the same catalyst/rpm appears in
+        # multiple experiments loaded in separate batches.
+        batch_paired: set = set()
+        for (cat_base, rpm_id), gas_map in batch_groups.items():
+            if "n2" not in gas_map or "o2" not in gas_map:
+                continue
+            n2_short, n2_fe = gas_map["n2"]
+            o2_short, o2_fe = gas_map["o2"]
+            if n2_fe["path"] in all_existing_paths or o2_fe["path"] in all_existing_paths:
+                batch_paired.add(n2_short)
+                batch_paired.add(o2_short)
+                continue
+            used_cat_rpm = {(p.get("catalyst_id", ""), p.get("rpm_id", ""))
+                            for p in sentry["pairs"]}
+            cat_label = cat_base
+            suffix = 2
+            while (cat_label, rpm_id) in used_cat_rpm:
+                cat_label = f"{cat_base}_{suffix}"
+                suffix += 1
+            new_pair = {
+                "catalyst_id":   cat_label,
+                "catalyst_base": cat_base,
+                "rpm_id":        rpm_id,
+                "rpm_val":       rpm_id,
+                "n2_short":      n2_short,
+                "o2_short":      o2_short,
+                "n2_path":       n2_fe["path"],
+                "o2_path":       o2_fe["path"],
+                "df_n2":         n2_fe["df"],
+                "df_o2":         o2_fe["df"],
+            }
+            sentry["pairs"].append(new_pair)
+            all_existing_paths.add(n2_fe["path"])
+            all_existing_paths.add(o2_fe["path"])
+            batch_paired.add(n2_short)
+            batch_paired.add(o2_short)
+            cc = sentry.setdefault("catalyst_corrections", {})
+            cc.setdefault(cat_label, {"r_sol_n2": 0.0, "r_sol_o2": 0.0,
+                                      "e_ref": 0.0, "area": ""})
+            cs = sentry.setdefault("catalyst_styles", {})
+            cs.setdefault(cat_label, {"color": "", "linestyle": "solid",
+                                      "linewidth": "1.5", "marker": "none"})
+            added += 2
+
+        # Step 2: process lone files not handled by batch-internal pairing.
+        for short, fe in file_entries:
+            if short in batch_paired:
+                continue
             gas      = fe["gas"]
             rpm_id   = fe["rpm_id"]
             catalyst = fe.get("catalyst", "")
@@ -990,9 +1071,6 @@ class ORRPanel(ttk.Frame):
 
             # Try to merge into an existing incomplete pair that matches
             # (catalyst_base, rpm_id) and has this gas slot empty.
-            # catalyst_base is the originally detected name before any auto-suffix,
-            # so files from the same measurement set always find each other even
-            # when a collision forced a suffix on the first file loaded.
             merged = False
             for pair in sentry["pairs"]:
                 pair_base = pair.get("catalyst_base", pair.get("catalyst_id", ""))
@@ -1019,18 +1097,17 @@ class ORRPanel(ttk.Frame):
             while (cat_label, rpm_id) in used_cat_rpm:
                 cat_label = f"{catalyst}_{suffix}"
                 suffix += 1
-
             new_pair = {
                 "catalyst_id":   cat_label,
-                "catalyst_base": catalyst,   # original name before auto-suffix
+                "catalyst_base": catalyst,
                 "rpm_id":        rpm_id,
-                "rpm_val":     rpm_id,
-                "n2_short":    short if gas == "n2" else "",
-                "o2_short":    short if gas == "o2" else "",
-                "n2_path":     path  if gas == "n2" else "",
-                "o2_path":     path  if gas == "o2" else "",
-                "df_n2":       fe["df"] if gas == "n2" else None,
-                "df_o2":       fe["df"] if gas == "o2" else None,
+                "rpm_val":       rpm_id,
+                "n2_short":      short if gas == "n2" else "",
+                "o2_short":      short if gas == "o2" else "",
+                "n2_path":       path  if gas == "n2" else "",
+                "o2_path":       path  if gas == "o2" else "",
+                "df_n2":         fe["df"] if gas == "n2" else None,
+                "df_o2":         fe["df"] if gas == "o2" else None,
             }
             sentry["pairs"].append(new_pair)
             all_existing_paths.add(path)
@@ -1084,7 +1161,21 @@ class ORRPanel(ttk.Frame):
         tk.Label(hdr, text="N2 file", bg="#f5f5f5",
                  font=("", 8, "bold"), anchor=tk.W).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(2, 0))
 
-        for i, pair in enumerate(pairs):
+        prev_cat = None
+        row_idx  = 0
+        for pair in pairs:
+            cat = pair.get("catalyst_id", "")
+            if cat != prev_cat:
+                _sep_bg = "#e8d5f5"
+                _sep = tk.Frame(self._pair_tbl_inner, bg=_sep_bg)
+                _sep.pack(fill=tk.X, padx=2, pady=(6 if prev_cat is not None else 2, 0))
+                tk.Label(_sep, text=f"── {cat} ──", bg=_sep_bg,
+                         font=("", 8, "bold"), anchor=tk.W, padx=6).pack(fill=tk.X)
+                prev_cat = cat
+                row_idx  = 0
+
+            i = row_idx
+            row_idx += 1
             row_bg = "#ffffff" if i % 2 == 0 else "#eeeeee"
             row = tk.Frame(self._pair_tbl_inner, bg=row_bg)
             row.pack(fill=tk.X, padx=2, pady=1)
