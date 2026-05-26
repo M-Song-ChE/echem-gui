@@ -146,8 +146,9 @@ class HupdPanel(ttk.Frame):
         ttk.Frame.__init__(self, master)
         self.files       = OrderedDict()  # short → {path, df, df_lc, result}
         self._keys       = []              # ordered list of short names
-        self.active_file = None
-        self._suppress   = False
+        self.active_file  = None
+        self._suppress    = False
+        self._dragging_var = None   # StringVar currently being dragged
         self._build()
 
     # ── Construction ─────────────────────────────────────────────────────────
@@ -304,6 +305,57 @@ class HupdPanel(ttk.Frame):
         ttk.Button(tb_row, text="Copy",
                    command=lambda: copy_figure_to_clipboard(self._fig)
                    ).pack(side=tk.LEFT, padx=4)
+
+        self._cv.mpl_connect("button_press_event",   self._on_drag_press)
+        self._cv.mpl_connect("motion_notify_event",  self._on_drag_motion)
+        self._cv.mpl_connect("button_release_event", self._on_drag_release)
+
+    # ── Drag handlers ────────────────────────────────────────────────────────
+    def _safe_float(self, var, default=0.0):
+        try:
+            return float(var.get())
+        except ValueError:
+            return default
+
+    def _on_drag_press(self, event):
+        if event.inaxes is not self._ax or event.button != 1 or event.xdata is None:
+            return
+        if getattr(self._tb, "mode", "") != "":
+            return  # toolbar pan/zoom active — don't interfere
+        x = event.xdata
+        xlim = self._ax.get_xlim()
+        tol = (xlim[1] - xlim[0]) * 0.025
+        candidates = [
+            (self._v_dllo, abs(x - self._safe_float(self._v_dllo))),
+            (self._v_dlhi, abs(x - self._safe_float(self._v_dlhi))),
+            (self._v_e1,   abs(x - self._safe_float(self._v_e1))),
+            (self._v_e2,   abs(x - self._safe_float(self._v_e2))),
+        ]
+        nearest = min(candidates, key=lambda t: t[1])
+        if nearest[1] <= tol:
+            self._dragging_var = nearest[0]
+
+    def _on_drag_motion(self, event):
+        widget = self._cv.get_tk_widget()
+        if event.inaxes is not self._ax or event.xdata is None:
+            if self._dragging_var is None:
+                widget.config(cursor="")
+            return
+        x = event.xdata
+        xlim = self._ax.get_xlim()
+        tol = (xlim[1] - xlim[0]) * 0.025
+        if self._dragging_var is not None:
+            x_c = round(max(0.0, x), 3)
+            self._dragging_var.set(f"{x_c:.3f}")
+            self._replot()
+        else:
+            vals = [self._safe_float(v) for v in
+                    (self._v_dllo, self._v_dlhi, self._v_e1, self._v_e2)]
+            near = any(abs(x - v) <= tol for v in vals)
+            widget.config(cursor="sb_h_double_arrow" if near else "")
+
+    def _on_drag_release(self, event):
+        self._dragging_var = None
 
     # ── File operations ──────────────────────────────────────────────────────
     def _load(self):
@@ -487,15 +539,19 @@ class HupdPanel(ttk.Frame):
         E_s, I_s = E_an, I_an
 
         if p:
-            # DL region — orange band (shows where baseline is anchored)
+            # DL region — orange band + draggable edge lines
             ax.axvspan(p["dl_lo"], p["dl_hi"],
                        alpha=0.15, color="orange", zorder=0,
-                       label=f"DL region [{p['dl_lo']:.2f}–{p['dl_hi']:.2f} V]")
-            # Hupd boundary lines
-            ax.axvline(p["e1"], color="seagreen", linewidth=1.0, linestyle=":",
-                       zorder=5, label=f"E₁ = {p['e1']:.2f} V")
-            ax.axvline(p["e2"], color="seagreen", linewidth=1.0, linestyle=":",
-                       zorder=5, label=f"E₂ = {p['e2']:.2f} V")
+                       label=f"DL region [{p['dl_lo']:.3f}–{p['dl_hi']:.3f} V]")
+            ax.axvline(p["dl_lo"], color="darkorange", linewidth=2.0,
+                       linestyle="--", zorder=6)
+            ax.axvline(p["dl_hi"], color="darkorange", linewidth=2.0,
+                       linestyle="--", zorder=6)
+            # Hupd boundary draggable lines
+            ax.axvline(p["e1"], color="seagreen", linewidth=2.0, linestyle="--",
+                       zorder=5, label=f"Hupd [{p['e1']:.3f}–{p['e2']:.3f} V]")
+            ax.axvline(p["e2"], color="seagreen", linewidth=2.0, linestyle="--",
+                       zorder=5)
 
             # ── Baseline: two-point line through first/last DL data points ──
             coeffs = _dl_baseline(E_s, I_s, p["dl_lo"], p["dl_hi"])
