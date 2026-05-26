@@ -91,15 +91,16 @@ def _integrate_one(E_s, I_s, dl_lo, dl_hi, e1, e2, v_mVs):
     return q_c * 1e6, coeffs                                # C → µC
 
 
-def _compute_result(df_lc, scan_dir, v, dl_lo, dl_hi, e1, e2, q_ref, geo):
+def _compute_result(df_lc, scan_dir, v, dl_lo, dl_hi, e1, e2, q_ref, geo,
+                    r_sol=0.0, e_ref=0.0):
     """Full Hupd computation for one last-cycle DataFrame. Returns dict or None."""
     if df_lc is None or len(df_lc) < 10:
         return None
     if "Ewe/V" not in df_lc.columns or "I/mA" not in df_lc.columns:
         return None
 
-    E = df_lc["Ewe/V"].values.astype(float)
     I = df_lc["I/mA"].values.astype(float)
+    E = df_lc["Ewe/V"].values.astype(float) - (I * 1e-3) * r_sol + e_ref
     E_an, I_an, E_cat, I_cat = _split_scans(E, I)
 
     if scan_dir == "anodic":
@@ -176,6 +177,32 @@ class HupdPanel(ttk.Frame):
         pf = ttk.LabelFrame(left, text="Parameters")
         pf.pack(fill=tk.X, padx=4, pady=4)
 
+        # ── Correction (per file) ─────────────────────────────────────────
+        cf = ttk.LabelFrame(left, text="Correction (per file)")
+        cf.pack(fill=tk.X, padx=4, pady=4)
+
+        self._v_rsol = tk.StringVar(value="0.0")
+        self._v_eref = tk.StringVar(value="0.0")
+
+        def _corr_row(parent, label, var, unit=""):
+            r = ttk.Frame(parent)
+            r.pack(fill=tk.X, padx=6, pady=2)
+            ttk.Label(r, text=label, width=24, anchor=tk.W).pack(side=tk.LEFT)
+            e = ttk.Entry(r, textvariable=var, width=9)
+            e.pack(side=tk.LEFT)
+            e.bind("<Return>",   lambda ev: (self._save_corr(), self._replot()))
+            e.bind("<FocusOut>", lambda ev: (self._save_corr(), self._replot()))
+            if unit:
+                ttk.Label(r, text=unit, foreground="gray",
+                          font=("", 8)).pack(side=tk.LEFT, padx=(3, 0))
+
+        _corr_row(cf, "R_sol (IR correction):", self._v_rsol, unit="Ω")
+        _corr_row(cf, "E_ref (RHE offset):",    self._v_eref, unit="V")
+
+        ttk.Label(cf, text="E_corr = E_raw − I·R_sol + E_ref",
+                  font=("", 7), foreground="gray").pack(padx=6, pady=(0, 4), anchor=tk.W)
+
+        # ── Parameters ───────────────────────────────────────────────────
         self._v_sr   = tk.StringVar(value=_DEF["scan_rate"])
         self._v_dllo = tk.StringVar(value=_DEF["dl_lo"])
         self._v_dlhi = tk.StringVar(value=_DEF["dl_hi"])
@@ -290,7 +317,8 @@ class HupdPanel(ttk.Frame):
                 df    = _read_one(path)
                 df_lc = _last_cycle(df)
                 self.files[short] = {"path": path, "df": df,
-                                     "df_lc": df_lc, "result": None}
+                                     "df_lc": df_lc, "result": None,
+                                     "r_sol": 0.0, "e_ref": 0.0}
                 self._keys.append(short)
                 self._lb.insert(tk.END, short)
             except Exception as ex:
@@ -318,13 +346,33 @@ class HupdPanel(ttk.Frame):
                 self._on_lb()
         self._replot()
 
+    def _save_corr(self):
+        if not self.active_file or self.active_file not in self.files:
+            return
+        entry = self.files[self.active_file]
+        try:
+            entry["r_sol"] = float(self._v_rsol.get())
+        except ValueError:
+            pass
+        try:
+            entry["e_ref"] = float(self._v_eref.get())
+        except ValueError:
+            pass
+
     def _on_lb(self, event=None):
         sel = self._lb.curselection()
         if not sel:
             return
         short = self._keys[sel[0]]
         if short != self.active_file:
+            self._save_corr()
             self.active_file = short
+            entry = self.files[short]
+            old = self._suppress
+            self._suppress = True
+            self._v_rsol.set(str(entry.get("r_sol", 0.0)))
+            self._v_eref.set(str(entry.get("e_ref", 0.0)))
+            self._suppress = old
             self._replot()
 
     def _on_tv(self, event=None):
@@ -362,11 +410,14 @@ class HupdPanel(ttk.Frame):
             return
         any_ok = False
         for short in self._keys:
+            entry = self.files[short]
             res = _compute_result(
-                self.files[short]["df_lc"],
+                entry["df_lc"],
                 self._v_dir.get(),
                 p["v"], p["dl_lo"], p["dl_hi"],
-                p["e1"], p["e2"], p["q_ref"], p["geo"])
+                p["e1"], p["e2"], p["q_ref"], p["geo"],
+                r_sol=entry.get("r_sol", 0.0),
+                e_ref=entry.get("e_ref", 0.0))
             self.files[short]["result"] = res
             if res:
                 any_ok = True
@@ -414,8 +465,10 @@ class HupdPanel(ttk.Frame):
             self._cv.draw_idle()
             return
 
-        E = df_lc["Ewe/V"].values.astype(float)
+        r_sol = entry.get("r_sol", 0.0)
+        e_ref = entry.get("e_ref", 0.0)
         I = df_lc["I/mA"].values.astype(float)
+        E = df_lc["Ewe/V"].values.astype(float) - (I * 1e-3) * r_sol + e_ref
         E_an, I_an, E_cat, I_cat = _split_scans(E, I)
         scan_dir = self._v_dir.get()
 
@@ -478,7 +531,8 @@ class HupdPanel(ttk.Frame):
                               alpha=0.90, ec="steelblue", lw=0.9))
 
         ax.axhline(0, color="black", linewidth=0.5, alpha=0.30, zorder=0)
-        ax.set_xlabel("E (V vs Ref)")
+        xlabel = "E (V vs. RHE)" if e_ref != 0.0 else "E (V vs. Ref)"
+        ax.set_xlabel(xlabel)
         ax.set_ylabel("I (mA)")
         ax.set_title(f"Hupd ECSA — {self.active_file}  (last cycle)")
         ax.legend(fontsize=7.5, frameon=True, loc="upper right")
@@ -505,7 +559,9 @@ class HupdPanel(ttk.Frame):
         for short, entry in self.files.items():
             h = df_hash(entry["df"])
             data_store[h] = entry["df"]
-            state["files"].append({"short": short, "path": entry["path"], "hash": h})
+            state["files"].append({"short": short, "path": entry["path"], "hash": h,
+                                   "r_sol": entry.get("r_sol", 0.0),
+                                   "e_ref": entry.get("e_ref", 0.0)})
         return state
 
     def restore_session_state(self, state, data_store):
@@ -531,7 +587,9 @@ class HupdPanel(ttk.Frame):
                 short = rec["short"]
                 df_lc = _last_cycle(df)
                 self.files[short] = {"path": rec["path"], "df": df,
-                                     "df_lc": df_lc, "result": None}
+                                     "df_lc": df_lc, "result": None,
+                                     "r_sol": rec.get("r_sol", 0.0),
+                                     "e_ref": rec.get("e_ref", 0.0)}
                 self._keys.append(short)
                 self._lb.insert(tk.END, short)
 
@@ -540,6 +598,9 @@ class HupdPanel(ttk.Frame):
                 self.active_file = self._keys[0] if self._keys else None
             if self.active_file:
                 self._lb.selection_set(self._keys.index(self.active_file))
+                entry = self.files[self.active_file]
+                self._v_rsol.set(str(entry.get("r_sol", 0.0)))
+                self._v_eref.set(str(entry.get("e_ref", 0.0)))
         finally:
             self._suppress = False
         self._compute_all()
