@@ -46,10 +46,25 @@ def _read_one(path: str) -> pd.DataFrame:
     return df.reset_index(drop=True)
 
 
-def _last_cycle(df: pd.DataFrame) -> pd.DataFrame:
+def _fmt_cycle(c) -> str:
+    """Display a cycle number as an integer string (EC-Lab stores them as floats)."""
+    try:
+        return str(int(c))
+    except (TypeError, ValueError):
+        return str(c)
+
+
+def _get_cycles(df: pd.DataFrame):
+    """Return sorted list of cycle numbers, or [] if no cycle column."""
     if "cycle number" in df.columns and len(df):
-        last = df["cycle number"].max()
-        return df[df["cycle number"] == last].copy().reset_index(drop=True)
+        return sorted(df["cycle number"].unique().tolist())
+    return []
+
+
+def _get_cycle(df: pd.DataFrame, cycle_num) -> pd.DataFrame:
+    """Return rows for a specific cycle number (or all rows if no cycle column)."""
+    if cycle_num is not None and "cycle number" in df.columns:
+        return df[df["cycle number"] == cycle_num].copy().reset_index(drop=True)
     return df.copy().reset_index(drop=True)
 
 
@@ -185,8 +200,18 @@ class HupdPanel(ttk.Frame):
         lbs = ttk.Scrollbar(ff, orient=tk.VERTICAL, command=self._lb.yview)
         self._lb.configure(yscrollcommand=lbs.set)
         lbs.pack(side=tk.RIGHT, fill=tk.Y, padx=(0, 4))
-        self._lb.pack(fill=tk.X, padx=4, pady=(0, 4))
+        self._lb.pack(fill=tk.X, padx=4, pady=(0, 2))
         self._lb.bind("<<ListboxSelect>>", self._on_lb)
+
+        # Cycle selector
+        cr = ttk.Frame(ff)
+        cr.pack(fill=tk.X, padx=4, pady=(0, 6))
+        ttk.Label(cr, text="Cycle:", anchor=tk.W).pack(side=tk.LEFT)
+        self._v_cycle = tk.StringVar()
+        self._cycle_cb = ttk.Combobox(cr, textvariable=self._v_cycle,
+                                      width=6, state="readonly")
+        self._cycle_cb.pack(side=tk.LEFT, padx=(4, 0))
+        self._cycle_cb.bind("<<ComboboxSelected>>", self._on_cycle_change)
 
         # ── Parameters ───────────────────────────────────────────────────
         pf = ttk.LabelFrame(left, text="Parameters")
@@ -371,11 +396,14 @@ class HupdPanel(ttk.Frame):
             while short in self.files:
                 short = f"{base}_{n}{ext}"; n += 1
             try:
-                df    = _read_one(path)
-                df_lc = _last_cycle(df)
+                df     = _read_one(path)
+                cycles = _get_cycles(df)
+                sel_c  = cycles[-1] if cycles else None
+                df_lc  = _get_cycle(df, sel_c)
                 self.files[short] = {"path": path, "df": df,
                                      "df_lc": df_lc, "result": None,
-                                     "r_sol": 0.0, "e_ref": 0.0}
+                                     "r_sol": 0.0, "e_ref": 0.0,
+                                     "cycles": cycles, "sel_cycle": sel_c}
                 self._keys.append(short)
                 self._lb.insert(tk.END, short)
             except Exception as ex:
@@ -416,6 +444,25 @@ class HupdPanel(ttk.Frame):
         except ValueError:
             pass
 
+    def _on_cycle_change(self, event=None):
+        if not self.active_file or self.active_file not in self.files:
+            return
+        entry = self.files[self.active_file]
+        raw = self._v_cycle.get()
+        # Match back to original cycle number (stored as float by EC-Lab)
+        cycles = entry.get("cycles", [])
+        try:
+            sel_c = next(c for c in cycles if _fmt_cycle(c) == raw)
+        except StopIteration:
+            try:
+                sel_c = float(raw)
+            except ValueError:
+                return
+        entry["sel_cycle"] = sel_c
+        entry["df_lc"]     = _get_cycle(entry["df"], sel_c)
+        entry["result"]    = None
+        self._replot()
+
     def _on_lb(self, event=None):
         sel = self._lb.curselection()
         if not sel:
@@ -429,6 +476,11 @@ class HupdPanel(ttk.Frame):
             self._suppress = True
             self._v_rsol.set(str(entry.get("r_sol", 0.0)))
             self._v_eref.set(str(entry.get("e_ref", 0.0)))
+            # Populate cycle combobox for this file
+            cycles = entry.get("cycles", [])
+            self._cycle_cb["values"] = [_fmt_cycle(c) for c in cycles]
+            sel_c = entry.get("sel_cycle")
+            self._v_cycle.set(_fmt_cycle(sel_c) if sel_c is not None else "")
             self._suppress = old
             self._replot()
 
@@ -597,7 +649,9 @@ class HupdPanel(ttk.Frame):
         xlabel = "E (V vs. RHE)" if e_ref != 0.0 else "E (V vs. Ref)"
         ax.set_xlabel(xlabel)
         ax.set_ylabel("I (mA)")
-        ax.set_title(f"Hupd ECSA — {self.active_file}  (last cycle)")
+        entry_title = self.files.get(self.active_file, {})
+        cycle_str = _fmt_cycle(entry_title.get("sel_cycle")) if entry_title.get("sel_cycle") is not None else "?"
+        ax.set_title(f"Hupd ECSA — {self.active_file}  (cycle {cycle_str})")
         ax.legend(fontsize=7.5, frameon=True, loc="upper right")
 
         self._fig.tight_layout(pad=0.7)
@@ -623,7 +677,8 @@ class HupdPanel(ttk.Frame):
             data_store[h] = entry["df"]
             state["files"].append({"short": short, "path": entry["path"], "hash": h,
                                    "r_sol": entry.get("r_sol", 0.0),
-                                   "e_ref": entry.get("e_ref", 0.0)})
+                                   "e_ref": entry.get("e_ref", 0.0),
+                                   "sel_cycle": entry.get("sel_cycle")})
         return state
 
     def restore_session_state(self, state, data_store):
@@ -646,11 +701,16 @@ class HupdPanel(ttk.Frame):
                 if df is None:
                     continue
                 short = rec["short"]
-                df_lc = _last_cycle(df)
+                cycles = _get_cycles(df)
+                sel_c  = rec.get("sel_cycle")
+                if sel_c is None and cycles:
+                    sel_c = cycles[-1]
+                df_lc = _get_cycle(df, sel_c)
                 self.files[short] = {"path": rec["path"], "df": df,
                                      "df_lc": df_lc, "result": None,
                                      "r_sol": rec.get("r_sol", 0.0),
-                                     "e_ref": rec.get("e_ref", 0.0)}
+                                     "e_ref": rec.get("e_ref", 0.0),
+                                     "cycles": cycles, "sel_cycle": sel_c}
                 self._keys.append(short)
                 self._lb.insert(tk.END, short)
 
@@ -662,6 +722,10 @@ class HupdPanel(ttk.Frame):
                 entry = self.files[self.active_file]
                 self._v_rsol.set(str(entry.get("r_sol", 0.0)))
                 self._v_eref.set(str(entry.get("e_ref", 0.0)))
+                cycles = entry.get("cycles", [])
+                self._cycle_cb["values"] = [_fmt_cycle(c) for c in cycles]
+                sel_c = entry.get("sel_cycle")
+                self._v_cycle.set(_fmt_cycle(sel_c) if sel_c is not None else "")
         finally:
             self._suppress = False
         self._compute_all()
