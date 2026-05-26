@@ -288,44 +288,70 @@ Use this tab to calculate the electrochemically active surface area (ECSA) and r
 
 ### 9.1 Loading Files
 
-Click **Add Files** to load one or more `.mpr` or `.txt` CV files. Each file appears in the file list on the left. Only the **last cycle** of each file is used for analysis.
+Click **Load Files** to load one or more `.mpr` or `.txt` CV files. Each file appears in the file list on the left. Use the **Cycle** combobox below the list to select which cycle to analyse; the default is the last cycle.
 
-### 9.2 Parameters
+### 9.2 Per-File Correction
+
+Each file has independent correction values entered in the **Correction** section:
+
+| Field | Formula | Description |
+|-------|---------|-------------|
+| **R_sol (Ω)** | `E_corr = E_raw − I·R_sol` | Uncompensated resistance (IR correction) |
+| **E_ref (V)** | `E_RHE = E_corr + E_ref` | Reference electrode offset (RHE conversion) |
+
+Press Enter or click away to apply; the plot updates immediately.
+
+### 9.3 Parameters
 
 | Parameter | Description |
 |-----------|-------------|
 | **Scan Rate (mV/s)** | Potential sweep rate used during the CV measurement |
 | **DL Region (V)** | Two-field range (Lo / Hi) defining the double-layer region for baseline fitting (e.g. `0.40` – `0.50` V vs. RHE) |
 | **Hupd Range (V)** | Two-field range (E1 / E2) defining the Hupd integration limits (e.g. `0.05` – `0.40` V vs. RHE) |
-| **Scan Direction** | **Anodic** (positive sweep) or **Cathodic** (negative sweep) half-cycle used for integration |
 | **Q_ref (µC/cm²)** | Reference charge density for a hydrogen monolayer — 210 µC/cm² for Pt |
 | **Geo Area (cm²)** | Geometric electrode area used to compute roughness factor (e.g. `0.1963` cm² for 5 mm RDE) |
 
-### 9.3 Computing Results
+### 9.4 Computing Results
 
 Click **Compute All** to run the analysis on every file in the list. For each file:
-1. The last CV cycle is extracted and split into anodic and cathodic half-cycles.
-2. A linear baseline is fit in the DL region and extrapolated across the full potential range.
-3. Q_H is calculated by integrating the difference between the measured current and the baseline over the Hupd range:
+1. The selected CV cycle is extracted and IR/RHE corrected using that file's individual values.
+2. The anodic half-cycle is isolated (Hupd appears as an anodic peak).
+3. A two-point linear baseline is drawn through the first and last data points in the DL region and extrapolated across the full potential range.
+4. Q_H is calculated by integrating only the area **above** the baseline over the Hupd range:
 
-   Q_H [µC] = (1 / v) × |∫_{E1}^{E2} (I_meas − I_baseline) dE|
+   Q_H [µC] = (1 / v) × ∫_{E1}^{E2} max(I_meas − I_baseline, 0) dE
 
-4. ECSA = Q_H / Q_ref (cm²)
-5. RF = ECSA / Geo Area
+5. ECSA = Q_H / Q_ref (cm²);  RF = ECSA / Geo Area
 
 Results appear in the **Results Table** at the bottom left (columns: File, Q_H [µC], ECSA [cm²], RF).
 
-### 9.4 Plot
+### 9.5 Plot
 
-The right panel shows the selected file's last cycle with:
-- **Gray** — the full last cycle (both half-cycles)
-- **Colored** — the integration half-cycle (anodic or cathodic)
-- **Orange shaded band** — the DL region used for baseline fitting
-- **Dashed vertical lines** — E1 and E2 Hupd integration limits
-- **Black dashed line** — the extrapolated linear baseline
-- **Green shaded area** — the region being integrated (between measured current and baseline)
+The right panel shows the selected file's corrected cycle with:
+- **Gray** — the full corrected cycle (both half-cycles)
+- **Blue** — the anodic half-cycle used for integration
+- **Orange shaded band + orange dashed edge lines** — the DL region; the two orange circles mark the baseline anchor points
+- **Green dashed vertical lines** — E1 and E2 Hupd integration limits
+- **Black dashed line** — the extrapolated two-point baseline
+- **Green shaded area** — the area above the baseline being integrated
+- **Light blue annotation box** — Q_H, ECSA, and RF values (appears after Compute All)
 
-Click any file in the list to view its plot. The plot updates automatically when parameters change.
+The plot updates automatically whenever parameters, correction values, or the selected cycle change.
+
+### 9.6 Draggable Elements
+
+Four boundary markers can be repositioned directly on the plot by clicking and dragging:
+
+| Marker | Color | Controls |
+|--------|-------|---------|
+| DL region left edge | Orange dashed | **DL Lo** field |
+| DL region right edge | Orange dashed | **DL Hi** field |
+| Hupd range left edge | Green dashed | **E1** field |
+| Hupd range right edge | Green dashed | **E2** field |
+
+The corresponding input field updates in real time as you drag. The cursor changes to a double-headed arrow when hovering near a draggable line.
+
+After running **Compute All**, the result annotation box (Q_H / ECSA / RF) is also draggable — click and drag it to any position on the plot. The plot legend can likewise be dragged to a new position; both positions are preserved across replots.
 
 ---
 

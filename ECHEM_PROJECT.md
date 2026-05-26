@@ -117,18 +117,30 @@ Each panel is fully **independent**: its own `files` dict, `active_file`, figure
 
 ### HupdPanel (Hupd Calc)
 - Inherits only `ttk.Frame` — no FileManagerMixin; file loading handled internally
-- **Data model**: `self._files = OrderedDict[str, {path, df}]` — loaded files keyed by short filename; `self._active = None` — currently selected file
+- **Data model**: `self.files = OrderedDict[str, entry]` keyed by short filename; `self.active_file = None`
+  - Entry fields: `{path, df, df_lc, result, r_sol, e_ref, cycles, sel_cycle}`
+  - `df` = full raw DataFrame; `df_lc` = rows for the selected cycle; `result` = last `_compute_result` output or `None`
+  - `r_sol` (float, Ω) and `e_ref` (float, V) are per-file — independent between files
+  - `cycles` = sorted list of cycle numbers (floats, EC-Lab convention); `sel_cycle` = currently selected cycle
 - **Module-level helpers**:
-  - `_read_one(path)` — reads `.mpr` or `.txt`; strips `<>` from column names (galvani convention)
-  - `_last_cycle(df)` — extracts rows of the last `cycle number` from a CV DataFrame
-  - `_split_scans(E, I)` — splits into anodic (ascending E) and cathodic (descending E) half-cycles, both sorted by ascending E
-  - `_integrate_one(E_s, I_s, dl_lo, dl_hi, e1, e2, v_mVs)` — linear baseline fit in DL region via `np.polyfit`; integrates `|trapz((I_h − I_bl) × 1e-3, E_h)| / (v_mVs × 1e-3)` to get Q in Coulombs; returns `(q_uC, coeffs)`; correct SI: `v_si [V/s] = v_mVs × 1e-3`, `I_si [A] = I_mA × 1e-3`, result in µC = C × 1e6
-  - `_compute_result(df_lc, scan_dir, v, dl_lo, dl_hi, e1, e2, q_ref, geo)` — calls `_split_scans` and `_integrate_one`, returns `dict(q_h, ecsa, rf, coeffs)` or `None`
-- **Left panel**: Add/Remove file buttons + `tk.Listbox`; parameters section (scan_rate, dl_lo/hi, e1/e2, scan direction radios, q_ref, geo_area); **Compute All** button; results `ttk.Treeview` (columns: File, Q_H [µC], ECSA [cm²], RF)
-- **Right panel**: single matplotlib Figure; plot shows last cycle with: gray full cycle, colored integration half-cycle, orange `axvspan` for DL region, dashed vertical lines at E1/E2, black dashed baseline, green `fill_between` integration area, annotation box with Q_H/ECSA/RF
-- **Plot update triggers**: file click in listbox, any parameter change (StringVar traces), or after Compute All
-- **Session**: `get_session_state(data_store)` / `restore_session_state(state, data_store)` — DataFrames stored by SHA-256 hash in `data_store`
-- **Default parameters** (`_DEF`): `scan_rate="50"`, `dl_lo="0.40"`, `dl_hi="0.50"`, `e1="0.05"`, `e2="0.40"`, `q_ref="210"`, `geo_area="0.1963"`, `scan_dir="anodic"`
+  - `_read_one(path)` — reads `.mpr` or `.txt`; strips `<>` from column names
+  - `_fmt_cycle(c)` — converts float cycle number (e.g. `3.0`) to int string `"3"` for display
+  - `_get_cycles(df)` — returns sorted list of unique `cycle number` values, or `[]`
+  - `_get_cycle(df, cycle_num)` — returns rows where `cycle number == cycle_num`; returns all rows if no cycle column
+  - `_split_scans(E, I)` — uses whichever extreme (min or max E) sits most centrally as the pivot; handles scans starting from either vertex; returns `(E_an, I_an, E_cat, I_cat)` each sorted ascending by E
+  - `_dl_baseline(E_s, I_s, dl_lo, dl_hi)` — two-point baseline through the **first and last** data points in the DL region; returns `[slope, intercept]` (polyval-compatible) or `None`
+  - `_integrate_one(E_s, I_s, dl_lo, dl_hi, e1, e2, v_mVs)` — calls `_dl_baseline`; clips `I_net = clip(I_h − I_bl, 0, None)` so only area **above** baseline is counted; uses `_trapz = getattr(np, "trapezoid", getattr(np, "trapz", None))` for numpy ≥2 compat; returns `(q_uC, coeffs)`
+  - `_compute_result(df_lc, v, dl_lo, dl_hi, e1, e2, q_ref, geo, r_sol, e_ref)` — applies IR/RHE correction (`E = Ewe/V − (I × 1e-3) × r_sol + e_ref`), calls `_split_scans` (anodic only), then `_integrate_one`; returns `dict(q_h, ecsa, rf, coeffs)` or `None`
+- **Left panel**: Load/Remove buttons + `tk.Listbox`; Cycle combobox (`_cycle_cb` / `_v_cycle`); Correction LabelFrame (R_sol / E_ref per file); Parameters LabelFrame (scan_rate, dl_lo/hi, e1/e2, q_ref, geo_area); **Compute All** button; results `ttk.Treeview` (columns: File, Q_H [µC], ECSA [cm²], RF)
+- **Right panel**: single matplotlib Figure; `_replot()` shows: gray full cycle, blue anodic half-cycle, orange `axvspan` + orange dashed `axvline` edge handles for DL region, green dashed `axvline` handles at E1/E2, orange circles at baseline anchor points, black dashed extrapolated baseline, green `fill_between` integration area (above-baseline only), light blue annotation box with Q_H/ECSA/RF
+- **Draggable boundary lines**: `_on_drag_press/motion/release`; detect nearest of 4 dashed `axvline` handles (tol = 2.5% of xlim); set `self._dragging_var` to corresponding `StringVar`; update field and call `_replot()` on each motion event; cursor shows `sb_h_double_arrow` when hovering near a line
+- **Draggable annotation box**: `self._ann_artist` = result Text artist; `self._ann_pos = [x, y]` in axes fraction (default `[0.02, 0.97]`); `_on_drag_press` checks `_ann_artist.contains(event)` before boundary lines and sets `_dragging_ann = True`; `_on_drag_motion` moves artist in-place via `set_position()` without calling `_replot()`; position persists across replots via `_ann_pos`; `_ann_artist` reset to `None` at start of every `_replot()`
+- **Draggable legend**: `self._leg.set_draggable(True)` on every `_replot()`; before `ax.clear()`, `self._leg._loc` is read — if it is a `(x, y)` tuple/array (user dragged it), saved to `self._leg_pos`; new legend created with `loc=self._leg_pos` to restore position; `set_draggable(False)` called before clear to disconnect event handlers and prevent accumulation
+- **Drag priority** in `_on_drag_press`: (1) `_leg.contains` → return (let matplotlib DraggableLegend handle it), (2) `_ann_artist.contains` → set `_dragging_ann`, (3) boundary line proximity → set `_dragging_var`
+- **Cycle selector**: `_on_cycle_change` matches combobox string to float cycle number via `_fmt_cycle`; updates `entry["sel_cycle"]` and rebuilds `entry["df_lc"]`; triggers `_replot()`
+- **Per-file state save/restore**: `_on_lb` calls `_save_corr()` before switching files; restores R_sol/E_ref and cycle selector from `entry`
+- **Session**: `get_session_state(data_store)` / `restore_session_state(state, data_store)` — DataFrames stored by SHA-256 hash; `sel_cycle` persisted; `restore_session_state` ends by calling `_compute_all()` to repopulate results
+- **Default parameters** (`_DEF`): `scan_rate="50"`, `dl_lo="0.40"`, `dl_hi="0.50"`, `e1="0.05"`, `e2="0.40"`, `q_ref="210"`, `geo_area="0.1963"`
 
 ### EchemGUI (main window)
 - Inherits only `tk.Tk`

@@ -371,32 +371,36 @@ Use this tab to calculate ECSA and roughness factor (RF) from the hydrogen under
 
 ### 9.1 Loading Files
 
-Click **Add Files** to load one or more `.mpr` or `.txt` CV files. Only the **last cycle** of each file is used.
+Click **Load Files** to load one or more `.mpr` or `.txt` CV files. Use the **Cycle** combobox to select which cycle to analyse (default: last cycle). Each file has independent **R_sol** (IR correction) and **E_ref** (RHE offset) fields.
 
 ### 9.2 Parameters
 
 | Parameter | Description |
 |-----------|-------------|
 | **Scan Rate (mV/s)** | Potential sweep rate |
-| **DL Region (V)** | Double-layer region for linear baseline fit (Lo / Hi) |
+| **DL Region (V)** | Double-layer region for two-point baseline (Lo / Hi) |
 | **Hupd Range (V)** | Integration window E1 – E2 (e.g. 0.05 – 0.40 V vs. RHE) |
-| **Scan Direction** | Anodic or cathodic half-cycle used for integration |
 | **Q_ref (µC/cm²)** | Reference charge for H monolayer (210 µC/cm² for Pt) |
 | **Geo Area (cm²)** | Geometric electrode area for RF calculation |
 
 ### 9.3 Results
 
-Click **Compute All**. For each file the app fits a linear baseline in the DL region, integrates `(I_meas − I_baseline)` over the Hupd range:
+Click **Compute All**. For each file the app isolates the anodic half-cycle, fits a two-point linear baseline in the DL region, and integrates only the area **above** the baseline:
 
-Q_H [µC] = (1/v) × |∫_{E1}^{E2} (I_meas − I_baseline) dE|
+Q_H [µC] = (1/v) × ∫_{E1}^{E2} max(I_meas − I_baseline, 0) dE
 
 then reports **Q_H**, **ECSA** (= Q_H / Q_ref), and **RF** (= ECSA / Geo Area) in the results table.
 
 ### 9.4 Plot
 
-- Gray — full last cycle; colored — selected half-cycle
-- Orange band — DL region; dashed verticals — E1/E2
-- Black dashed — baseline; green fill — integration area
+- Gray — full corrected cycle; blue — anodic half-cycle
+- Orange band + dashed edge lines — DL region; green dashed verticals — E1/E2
+- Black dashed — two-point baseline; green fill — integration area above baseline
+- Light blue annotation box — Q_H/ECSA/RF (appears after Compute All)
+
+### 9.5 Draggable Elements
+
+Drag the four dashed boundary lines on the plot to adjust DL Lo/Hi and Hupd E1/E2; input fields update in real time. After Compute All, the result annotation box and the plot legend are also draggable and their positions persist across replots.
 
 ---
 
