@@ -988,10 +988,14 @@ class ORRPanel(ttk.Frame):
                 continue
 
             # Try to merge into an existing incomplete pair that matches
-            # (catalyst_id, rpm_id) and has this gas slot empty.
+            # (catalyst_base, rpm_id) and has this gas slot empty.
+            # catalyst_base is the originally detected name before any auto-suffix,
+            # so files from the same measurement set always find each other even
+            # when a collision forced a suffix on the first file loaded.
             merged = False
             for pair in sentry["pairs"]:
-                if (pair.get("catalyst_id") == catalyst
+                pair_base = pair.get("catalyst_base", pair.get("catalyst_id", ""))
+                if (pair_base == catalyst
                         and pair.get("rpm_id") == rpm_id
                         and not pair.get(f"{gas}_path")):
                     pair[f"{gas}_path"]  = path
@@ -1016,8 +1020,9 @@ class ORRPanel(ttk.Frame):
                 suffix += 1
 
             new_pair = {
-                "catalyst_id": cat_label,
-                "rpm_id":      rpm_id,
+                "catalyst_id":   cat_label,
+                "catalyst_base": catalyst,   # original name before auto-suffix
+                "rpm_id":        rpm_id,
                 "rpm_val":     rpm_id,
                 "n2_short":    short if gas == "n2" else "",
                 "o2_short":    short if gas == "o2" else "",
