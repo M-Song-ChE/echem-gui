@@ -163,7 +163,13 @@ class HupdPanel(ttk.Frame):
         self._keys       = []              # ordered list of short names
         self.active_file  = None
         self._suppress    = False
-        self._dragging_var = None   # StringVar currently being dragged
+        self._dragging_var = None        # StringVar currently being dragged
+        self._dragging_ann = False       # True when dragging the annotation box
+        self._ann_drag_offset = [0.0, 0.0]
+        self._ann_pos  = [0.02, 0.97]   # annotation position in axes fraction
+        self._ann_artist = None          # Text artist reference
+        self._leg      = None            # Legend artist reference
+        self._leg_pos  = None            # saved legend position (axes-frac tuple)
         self._build()
 
     # ── Construction ─────────────────────────────────────────────────────────
@@ -347,6 +353,31 @@ class HupdPanel(ttk.Frame):
             return
         if getattr(self._tb, "mode", "") != "":
             return  # toolbar pan/zoom active — don't interfere
+
+        # Let matplotlib's DraggableLegend handle legend clicks
+        if self._leg is not None:
+            try:
+                contains, _ = self._leg.contains(event)
+                if contains:
+                    return
+            except Exception:
+                pass
+
+        # Annotation drag: move the result box in-place (no replot)
+        if self._ann_artist is not None:
+            try:
+                contains, _ = self._ann_artist.contains(event)
+                if contains:
+                    self._dragging_ann = True
+                    ax_x, ax_y = self._ax.transAxes.inverted().transform(
+                        (event.x, event.y))
+                    ann_x, ann_y = self._ann_artist.get_position()
+                    self._ann_drag_offset = [ax_x - ann_x, ax_y - ann_y]
+                    return
+            except Exception:
+                pass
+
+        # Boundary line drag
         x = event.xdata
         xlim = self._ax.get_xlim()
         tol = (xlim[1] - xlim[0]) * 0.025
@@ -362,6 +393,19 @@ class HupdPanel(ttk.Frame):
 
     def _on_drag_motion(self, event):
         widget = self._cv.get_tk_widget()
+
+        # Annotation drag: move artist in-place without a full replot
+        if self._dragging_ann:
+            if event.x is not None and event.y is not None and self._ann_artist is not None:
+                ax_x, ax_y = self._ax.transAxes.inverted().transform(
+                    (event.x, event.y))
+                new_x = max(0.0, min(1.0, ax_x - self._ann_drag_offset[0]))
+                new_y = max(0.0, min(1.0, ax_y - self._ann_drag_offset[1]))
+                self._ann_artist.set_position((new_x, new_y))
+                self._ann_pos = [new_x, new_y]
+                self._cv.draw_idle()
+            return
+
         if event.inaxes is not self._ax or event.xdata is None:
             if self._dragging_var is None:
                 widget.config(cursor="")
@@ -381,6 +425,7 @@ class HupdPanel(ttk.Frame):
 
     def _on_drag_release(self, event):
         self._dragging_var = None
+        self._dragging_ann = False
 
     # ── File operations ──────────────────────────────────────────────────────
     def _load(self):
@@ -556,6 +601,19 @@ class HupdPanel(ttk.Frame):
         if self._suppress:
             return
         ax = self._ax
+
+        # Save legend position (if user dragged it) and disconnect handlers
+        if self._leg is not None:
+            try:
+                loc = self._leg._loc
+                if hasattr(loc, "__len__") and len(loc) == 2:
+                    self._leg_pos = (float(loc[0]), float(loc[1]))
+                self._leg.set_draggable(False)
+            except Exception:
+                pass
+            self._leg = None
+
+        self._ann_artist = None
         ax.clear()
 
         if not self.active_file or self.active_file not in self.files:
@@ -634,16 +692,17 @@ class HupdPanel(ttk.Frame):
                                     alpha=0.45, color="mediumseagreen",
                                     zorder=3, label=q_label)
 
-            # Annotation box — only when Q_H has been computed
+            # Annotation box — only when Q_H has been computed (draggable)
             if result:
                 ann = (f"Q$_H$  = {result['q_h']:.2f} μC\n"
                        f"ECSA = {result['ecsa']:.4f} cm²\n"
                        f"RF    = {result['rf']:.2f}")
-                ax.text(0.02, 0.97, ann,
-                        transform=ax.transAxes, fontsize=8.5,
-                        verticalalignment="top", family="monospace",
-                        bbox=dict(boxstyle="round,pad=0.5", fc="white",
-                                  alpha=0.90, ec="steelblue", lw=0.9))
+                self._ann_artist = ax.text(
+                    self._ann_pos[0], self._ann_pos[1], ann,
+                    transform=ax.transAxes, fontsize=8.5,
+                    verticalalignment="top", family="monospace",
+                    bbox=dict(boxstyle="round,pad=0.5", fc="white",
+                              alpha=0.90, ec="steelblue", lw=0.9))
 
         ax.axhline(0, color="black", linewidth=0.5, alpha=0.30, zorder=0)
         xlabel = "E (V vs. RHE)" if e_ref != 0.0 else "E (V vs. Ref)"
@@ -652,7 +711,11 @@ class HupdPanel(ttk.Frame):
         entry_title = self.files.get(self.active_file, {})
         cycle_str = _fmt_cycle(entry_title.get("sel_cycle")) if entry_title.get("sel_cycle") is not None else "?"
         ax.set_title(f"Hupd ECSA — {self.active_file}  (cycle {cycle_str})")
-        ax.legend(fontsize=7.5, frameon=True, loc="upper right")
+        if self._leg_pos is not None:
+            self._leg = ax.legend(fontsize=7.5, frameon=True, loc=self._leg_pos)
+        else:
+            self._leg = ax.legend(fontsize=7.5, frameon=True, loc="upper right")
+        self._leg.set_draggable(True)
 
         self._fig.tight_layout(pad=0.7)
         self._fig.set_layout_engine("none")
