@@ -9,9 +9,10 @@
 6. [ECSA Calc Tab](#6-ecsa-calc-tab)
 7. [Nyquist Plot Tab](#7-nyquist-plot-tab)
 8. [ORR Analysis Tab](#8-orr-analysis-tab)
-9. [Common Controls (All Tabs)](#9-common-controls-all-tabs)
-10. [Tips and Shortcuts](#10-tips-and-shortcuts)
-11. [Session Save & Restore](#11-session-save--restore)
+9. [Hupd Calc Tab](#9-hupd-calc-tab)
+10. [Common Controls (All Tabs)](#10-common-controls-all-tabs)
+11. [Tips and Shortcuts](#11-tips-and-shortcuts)
+12. [Session Save & Restore](#12-session-save--restore)
 
 ---
 
@@ -42,6 +43,7 @@ The app has six tabs at the top:
 | **ECSA Calc** | Extract electrochemical surface area (ECSA) from CV data |
 | **Nyquist Plot** | Plot EIS impedance data as a Nyquist diagram |
 | **ORR Analysis** | Background-subtracted RDE polarization curves (N2/O2, per RPM, per sample) |
+| **Hupd Calc** | Hupd-based ECSA calculation from CV data — Q_H integration, ECSA, and roughness factor |
 
 Each tab is fully **independent** — files loaded in one tab are not shared with others.
 
@@ -363,7 +365,42 @@ Each sample has its own subplot. Use **Cols** to control the grid width. Double-
 
 ---
 
-## 9. Common Controls (All Tabs)
+## 9. Hupd Calc Tab
+
+Use this tab to calculate ECSA and roughness factor (RF) from the hydrogen underpotential deposition (Hupd) region of a CV.
+
+### 9.1 Loading Files
+
+Click **Add Files** to load one or more `.mpr` or `.txt` CV files. Only the **last cycle** of each file is used.
+
+### 9.2 Parameters
+
+| Parameter | Description |
+|-----------|-------------|
+| **Scan Rate (mV/s)** | Potential sweep rate |
+| **DL Region (V)** | Double-layer region for linear baseline fit (Lo / Hi) |
+| **Hupd Range (V)** | Integration window E1 – E2 (e.g. 0.05 – 0.40 V vs. RHE) |
+| **Scan Direction** | Anodic or cathodic half-cycle used for integration |
+| **Q_ref (µC/cm²)** | Reference charge for H monolayer (210 µC/cm² for Pt) |
+| **Geo Area (cm²)** | Geometric electrode area for RF calculation |
+
+### 9.3 Results
+
+Click **Compute All**. For each file the app fits a linear baseline in the DL region, integrates `(I_meas − I_baseline)` over the Hupd range:
+
+Q_H [µC] = (1/v) × |∫_{E1}^{E2} (I_meas − I_baseline) dE|
+
+then reports **Q_H**, **ECSA** (= Q_H / Q_ref), and **RF** (= ECSA / Geo Area) in the results table.
+
+### 9.4 Plot
+
+- Gray — full last cycle; colored — selected half-cycle
+- Orange band — DL region; dashed verticals — E1/E2
+- Black dashed — baseline; green fill — integration area
+
+---
+
+## 10. Common Controls (All Tabs)
 
 ### Mouse Interactions on the Plot
 | Action | Effect |
@@ -398,7 +435,7 @@ The legend size is preserved when any other plot change is made (cycle selection
 
 ---
 
-## 10. Tips and Shortcuts
+## 11. Tips and Shortcuts
 
 - **Per-file independence** — every control in the left panel saves its value to the currently active file. Switch files freely; settings are never mixed up between files. In Multi E.Chem 2, cycle selection and corrections are also independent per file *per group* — the same file can have different cycles selected in different groups.
 - **Plot highlight** — clicking a file in the list or clicking a line on the plot activates highlight mode: the selected line glows and others are dimmed. Right-click anywhere on the plot to clear the highlight. Highlight is never activated automatically when loading files.
@@ -423,7 +460,7 @@ The legend size is preserved when any other plot change is made (cycle selection
 
 ---
 
-## 11. Session Save & Restore
+## 12. Session Save & Restore
 
 The app can save the complete state of all five tabs — loaded files, groups, axis settings, corrections, cycle selections, colors, legend positions, and plot sizes — into a single `.echemsession` file. Raw data is embedded inside the file, so sessions can be shared or moved to another computer without bringing the original data files along.
 

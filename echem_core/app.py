@@ -21,6 +21,7 @@ from .multi_echem_panel import MultiEchemPanel
 from .multi_echem2_panel import MultiEchem2Panel
 from .eis_panel import EISPanel
 from .orr_panel import ORRPanel
+from .hupd_panel import HupdPanel
 from . import session_manager as _sm
 
 _CYCLE_BG = "#e8f0fe"   # light blue for the cycle checkbox area
@@ -1367,6 +1368,12 @@ class EchemGUI(tk.Tk):
         orr_panel = ORRPanel(orr_tab)
         orr_panel.pack(fill=tk.BOTH, expand=True)
         self._panels["orr"] = orr_panel
+
+        hupd_tab = ttk.Frame(notebook)
+        notebook.add(hupd_tab, text="Hupd Calc")
+        hupd_panel = HupdPanel(hupd_tab)
+        hupd_panel.pack(fill=tk.BOTH, expand=True)
+        self._panels["hupd"] = hupd_panel
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 

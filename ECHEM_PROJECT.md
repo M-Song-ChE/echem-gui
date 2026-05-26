@@ -19,6 +19,7 @@ echem_gui/
     ecsa_panel.py           ← ECSAPanel class (dedicated ECSA Calc tab)
     eis_panel.py            ← EISPanel class (Nyquist Plot tab)
     orr_panel.py            ← ORRPanel class (ORR Analysis tab — N2/O2 background subtraction, per-RPM, per-sample)
+    hupd_panel.py           ← HupdPanel class (Hupd Calc tab — Hupd-based ECSA from last CV cycle)
     file_manager.py         ← FileManagerMixin: load/remove/switch files; data-type-aware _default_xcol/_default_ycol; column-type predicates (_is_voltage_col, _is_current_col, _is_time_col, _is_impedance_col); _on_file_visibility_change; _on_file_reorder; _MPR_DESIRED frozenset; _read_mpr(path) with retry loop for unknown galvani column IDs (tries <f4>/<f8>/<u4>/<u2> until buffer size matches)
     correction.py           ← CorrectionMixin: IR compensation + RHE conversion
     plotting.py             ← PlottingMixin: plot, zoom, pan, legend drag/resize, reset view, click-annotate; draw_reflines() helper; _build_legend_order() module-level helper (rank-1 file first, cycles ascending within each file); _reorder_legend_handles() module-level helper (apply saved custom order)
@@ -30,13 +31,14 @@ echem_gui/
 ```
 
 ## Architecture
-The app uses a **six-tab Notebook** at the top level (in this order):
+The app uses a **seven-tab Notebook** at the top level (in this order):
 - **General E.Chem tab** → `EchemPanel(ttk.Frame + all mixins)`, `show_log=True`
 - **Multi E.Chem tab** → `MultiEchemPanel(ttk.Frame + FileManagerMixin + CorrectionMixin)`
 - **Multi E.Chem 2 tab** → `MultiEchem2Panel(ttk.Frame + FileManagerMixin + CorrectionMixin)` — group-based overlay; each group has its own figure; files assigned to groups; active group drives left-panel controls
 - **ECSA Calc tab** → `ECSAPanel(ttk.Frame + FileManagerMixin + CorrectionMixin)`
 - **Nyquist Plot tab** → `EISPanel(ttk.Frame + FileManagerMixin)`
 - **ORR Analysis tab** → `ORRPanel(ttk.Frame)` — sample-based; N2/O2 CV files paired by RPM; background subtraction + IR/RHE correction per sample; anodic-scan extraction; no auto-merge
+- **Hupd Calc tab** → `HupdPanel(ttk.Frame)` — multi-file; last-cycle extraction; linear DL baseline; Hupd-range Q_H integration; ECSA and RF results table
 
 Each panel is fully **independent**: its own `files` dict, `active_file`, figures, and canvases. Switching tabs never affects the other tab's data or plots.
 
@@ -113,11 +115,26 @@ Each panel is fully **independent**: its own `files` dict, `active_file`, figure
 - **Layout**: identical to ME2 — scrollable right panel, drag-to-reorder headers, CheckableListbox, `_relayout_figures()`, configurable grid cols, single-sample zoom toggle, `_drop_line` blue indicator
 - **`_SAMPLE_RUNTIME`** / **`_PAIR_RUNTIME`** frozensets strip non-serialisable keys before JSON
 
+### HupdPanel (Hupd Calc)
+- Inherits only `ttk.Frame` — no FileManagerMixin; file loading handled internally
+- **Data model**: `self._files = OrderedDict[str, {path, df}]` — loaded files keyed by short filename; `self._active = None` — currently selected file
+- **Module-level helpers**:
+  - `_read_one(path)` — reads `.mpr` or `.txt`; strips `<>` from column names (galvani convention)
+  - `_last_cycle(df)` — extracts rows of the last `cycle number` from a CV DataFrame
+  - `_split_scans(E, I)` — splits into anodic (ascending E) and cathodic (descending E) half-cycles, both sorted by ascending E
+  - `_integrate_one(E_s, I_s, dl_lo, dl_hi, e1, e2, v_mVs)` — linear baseline fit in DL region via `np.polyfit`; integrates `|trapz((I_h − I_bl) × 1e-3, E_h)| / (v_mVs × 1e-3)` to get Q in Coulombs; returns `(q_uC, coeffs)`; correct SI: `v_si [V/s] = v_mVs × 1e-3`, `I_si [A] = I_mA × 1e-3`, result in µC = C × 1e6
+  - `_compute_result(df_lc, scan_dir, v, dl_lo, dl_hi, e1, e2, q_ref, geo)` — calls `_split_scans` and `_integrate_one`, returns `dict(q_h, ecsa, rf, coeffs)` or `None`
+- **Left panel**: Add/Remove file buttons + `tk.Listbox`; parameters section (scan_rate, dl_lo/hi, e1/e2, scan direction radios, q_ref, geo_area); **Compute All** button; results `ttk.Treeview` (columns: File, Q_H [µC], ECSA [cm²], RF)
+- **Right panel**: single matplotlib Figure; plot shows last cycle with: gray full cycle, colored integration half-cycle, orange `axvspan` for DL region, dashed vertical lines at E1/E2, black dashed baseline, green `fill_between` integration area, annotation box with Q_H/ECSA/RF
+- **Plot update triggers**: file click in listbox, any parameter change (StringVar traces), or after Compute All
+- **Session**: `get_session_state(data_store)` / `restore_session_state(state, data_store)` — DataFrames stored by SHA-256 hash in `data_store`
+- **Default parameters** (`_DEF`): `scan_rate="50"`, `dl_lo="0.40"`, `dl_hi="0.50"`, `e1="0.05"`, `e2="0.40"`, `q_ref="210"`, `geo_area="0.1963"`, `scan_dir="anodic"`
+
 ### EchemGUI (main window)
 - Inherits only `tk.Tk`
-- Creates `ttk.Notebook`, adds `gen_tab`, `multi_tab`, `multi2_tab`, `ecsa_tab`, `eis_tab`, `orr_tab` frames in that order
+- Creates `ttk.Notebook`, adds `gen_tab`, `multi_tab`, `multi2_tab`, `ecsa_tab`, `eis_tab`, `orr_tab`, `hupd_tab` frames in that order
 - Each tab instantiates its panel directly; no shared state
-- `self._panels = {"general": EchemPanel, "multi_echem": MultiEchemPanel, "multi_echem2": MultiEchem2Panel, "ecsa": ECSAPanel, "nyquist": EISPanel, "orr": ORRPanel}` assembled in `_build_ui()`; passed to `session_manager` for save/load
+- `self._panels = {"general": EchemPanel, "multi_echem": MultiEchemPanel, "multi_echem2": MultiEchem2Panel, "ecsa": ECSAPanel, "nyquist": EISPanel, "orr": ORRPanel, "hupd": HupdPanel}` assembled in `_build_ui()`; passed to `session_manager` for save/load
 - `_build_menubar()` — File menu with Load Session (Ctrl+O), Save Session (Ctrl+S), Save Session As, Exit; calls `_sm.save_session` / `_sm.load_session`
 - `_on_close()` — auto-saves via `_sm.autosave(self._panels)` then destroys the window; registered via `self.protocol("WM_DELETE_WINDOW", self._on_close)`
 - `_check_autosave_on_launch()` — called at end of `_build_ui()`; if autosave exists shows yes/no messagebox with file modification timestamp; calls `_sm.load_session` if confirmed

@@ -1,0 +1,545 @@
+"""Hupd ECSA Calculation panel.
+
+Workflow per file:
+  1. Load CV file(s); extract the last cycle.
+  2. User sets the double-layer (DL) baseline region and Hupd integration range.
+  3. Linear baseline is fitted in the DL region and extrapolated.
+  4. Q_H [uC] = (1 / v [V/s]) * |integral(I_measured - I_baseline, dE)| over Hupd range.
+  5. ECSA [cm2] = Q_H / q_ref;  RF = ECSA / geometric_area.
+  6. Results shown in a table; the active file's last cycle is plotted with
+     the baseline, the DL region highlighted, and the integration area shaded.
+"""
+
+import os
+from collections import OrderedDict
+
+import numpy as np
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox
+
+import pandas as pd
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+
+from .file_manager import _read_mpr
+from .plotting import copy_figure_to_clipboard
+
+# ── defaults ────────────────────────────────────────────────────────────────
+_DEF = dict(
+    scan_rate="50",
+    dl_lo="0.40",
+    dl_hi="0.50",
+    e1="0.05",
+    e2="0.40",
+    q_ref="210",
+    geo_area="0.1963",
+    scan_dir="anodic",
+)
+
+
+# ── module-level helpers ─────────────────────────────────────────────────────
+def _read_one(path: str) -> pd.DataFrame:
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".mpr":
+        return _read_mpr(path)
+    df = pd.read_csv(path, sep="\t", encoding="latin-1", on_bad_lines="skip")
+    df.columns = [c.strip().replace("<", "").replace(">", "") for c in df.columns]
+    return df.reset_index(drop=True)
+
+
+def _last_cycle(df: pd.DataFrame) -> pd.DataFrame:
+    if "cycle number" in df.columns and len(df):
+        last = df["cycle number"].max()
+        return df[df["cycle number"] == last].copy().reset_index(drop=True)
+    return df.copy().reset_index(drop=True)
+
+
+def _split_scans(E: np.ndarray, I: np.ndarray):
+    """Return (E_an, I_an, E_cat, I_cat) each sorted by E ascending."""
+    if len(E) < 4:
+        return E, I, E, I
+    min_idx = int(np.argmin(E))
+    # Anodic: cathodic vertex → end of array
+    E_an = E[min_idx:].copy(); I_an = I[min_idx:].copy()
+    o = np.argsort(E_an); E_an, I_an = E_an[o], I_an[o]
+    # Cathodic: start → cathodic vertex (sort ascending for trapz consistency)
+    E_cat = E[:min_idx + 1].copy(); I_cat = I[:min_idx + 1].copy()
+    o = np.argsort(E_cat); E_cat, I_cat = E_cat[o], I_cat[o]
+    return E_an, I_an, E_cat, I_cat
+
+
+def _integrate_one(E_s, I_s, dl_lo, dl_hi, e1, e2, v_mVs):
+    """
+    Fit baseline in DL region; integrate (I - baseline) in Hupd range.
+    Returns (q_uC, coeffs) or (None, None) on failure.
+    """
+    mask_dl = (E_s >= dl_lo) & (E_s <= dl_hi)
+    if mask_dl.sum() < 2:
+        return None, None
+    coeffs = np.polyfit(E_s[mask_dl], I_s[mask_dl], 1)
+
+    mask_h = (E_s >= e1) & (E_s <= e2)
+    if mask_h.sum() < 2:
+        return None, coeffs
+
+    E_h = E_s[mask_h]; I_h = I_s[mask_h]
+    I_bl = np.polyval(coeffs, E_h)
+
+    # Q [C] = |integral(I_A - I_bl_A, dE_V)| / v_Vs
+    v_si = v_mVs * 1e-3                                    # mV/s → V/s
+    q_c  = abs(np.trapz((I_h - I_bl) * 1e-3, E_h)) / v_si # A·V / (V/s) = C
+    return q_c * 1e6, coeffs                                # C → µC
+
+
+def _compute_result(df_lc, scan_dir, v, dl_lo, dl_hi, e1, e2, q_ref, geo):
+    """Full Hupd computation for one last-cycle DataFrame. Returns dict or None."""
+    if df_lc is None or len(df_lc) < 10:
+        return None
+    if "Ewe/V" not in df_lc.columns or "I/mA" not in df_lc.columns:
+        return None
+
+    E = df_lc["Ewe/V"].values.astype(float)
+    I = df_lc["I/mA"].values.astype(float)
+    E_an, I_an, E_cat, I_cat = _split_scans(E, I)
+
+    if scan_dir == "anodic":
+        q_h, coeffs = _integrate_one(E_an, I_an, dl_lo, dl_hi, e1, e2, v)
+    elif scan_dir == "cathodic":
+        q_h, coeffs = _integrate_one(E_cat, I_cat, dl_lo, dl_hi, e1, e2, v)
+    else:  # average
+        q_an,  c_an  = _integrate_one(E_an,  I_an,  dl_lo, dl_hi, e1, e2, v)
+        q_cat, c_cat = _integrate_one(E_cat, I_cat, dl_lo, dl_hi, e1, e2, v)
+        vals = [q for q in (q_an, q_cat) if q is not None]
+        if not vals:
+            return None
+        q_h    = float(np.mean(vals))
+        coeffs = c_an if c_an is not None else c_cat
+
+    if q_h is None:
+        return None
+
+    ecsa = q_h / q_ref if q_ref > 0 else float("nan")
+    rf   = ecsa / geo  if geo   > 0 else float("nan")
+    return dict(q_h=q_h, ecsa=ecsa, rf=rf, coeffs=coeffs)
+
+
+# ── Panel ────────────────────────────────────────────────────────────────────
+class HupdPanel(ttk.Frame):
+    """Hupd-based ECSA calculation panel."""
+
+    def __init__(self, master):
+        ttk.Frame.__init__(self, master)
+        self.files       = OrderedDict()  # short → {path, df, df_lc, result}
+        self._keys       = []              # ordered list of short names
+        self.active_file = None
+        self._suppress   = False
+        self._build()
+
+    # ── Construction ─────────────────────────────────────────────────────────
+    def _build(self):
+        paned = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
+        paned.pack(fill=tk.BOTH, expand=True)
+
+        # ── Left (scrollable) ────────────────────────────────────────────
+        lo = ttk.Frame(paned, width=340)
+        paned.add(lo, weight=0)
+
+        lc = tk.Canvas(lo, highlightthickness=0)
+        ls = ttk.Scrollbar(lo, orient=tk.VERTICAL, command=lc.yview)
+        lc.configure(yscrollcommand=ls.set)
+        ls.pack(side=tk.RIGHT, fill=tk.Y)
+        lc.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        left = tk.Frame(lc)
+        lw = lc.create_window((0, 0), window=left, anchor=tk.NW)
+        left.bind("<Configure>", lambda e: lc.configure(scrollregion=lc.bbox("all")))
+        lc.bind("<Configure>",   lambda e: lc.itemconfig(lw, width=e.width))
+        lc.bind("<MouseWheel>",  lambda e: lc.yview_scroll(-1*(e.delta//120), "units"))
+
+        # ── File list ────────────────────────────────────────────────────
+        ff = ttk.LabelFrame(left, text="Loaded Files")
+        ff.pack(fill=tk.X, padx=4, pady=4)
+
+        bf = ttk.Frame(ff)
+        bf.pack(fill=tk.X, padx=4, pady=(4, 2))
+        ttk.Button(bf, text="Load Files", command=self._load).pack(side=tk.LEFT)
+        ttk.Button(bf, text="Remove",     command=self._remove).pack(side=tk.LEFT, padx=4)
+
+        self._lb = tk.Listbox(ff, height=5, selectmode=tk.SINGLE,
+                              exportselection=False, font=("", 8))
+        lbs = ttk.Scrollbar(ff, orient=tk.VERTICAL, command=self._lb.yview)
+        self._lb.configure(yscrollcommand=lbs.set)
+        lbs.pack(side=tk.RIGHT, fill=tk.Y, padx=(0, 4))
+        self._lb.pack(fill=tk.X, padx=4, pady=(0, 4))
+        self._lb.bind("<<ListboxSelect>>", self._on_lb)
+
+        # ── Parameters ───────────────────────────────────────────────────
+        pf = ttk.LabelFrame(left, text="Parameters")
+        pf.pack(fill=tk.X, padx=4, pady=4)
+
+        self._v_sr   = tk.StringVar(value=_DEF["scan_rate"])
+        self._v_dllo = tk.StringVar(value=_DEF["dl_lo"])
+        self._v_dlhi = tk.StringVar(value=_DEF["dl_hi"])
+        self._v_e1   = tk.StringVar(value=_DEF["e1"])
+        self._v_e2   = tk.StringVar(value=_DEF["e2"])
+        self._v_qref = tk.StringVar(value=_DEF["q_ref"])
+        self._v_geo  = tk.StringVar(value=_DEF["geo_area"])
+        self._v_dir  = tk.StringVar(value=_DEF["scan_dir"])
+
+        def _entry_row(parent, label, var, width=9, unit=""):
+            r = ttk.Frame(parent)
+            r.pack(fill=tk.X, padx=6, pady=2)
+            ttk.Label(r, text=label, width=24, anchor=tk.W).pack(side=tk.LEFT)
+            e = ttk.Entry(r, textvariable=var, width=width)
+            e.pack(side=tk.LEFT)
+            e.bind("<Return>",   lambda ev: self._replot())
+            e.bind("<FocusOut>", lambda ev: self._replot())
+            if unit:
+                ttk.Label(r, text=unit, foreground="gray",
+                          font=("", 8)).pack(side=tk.LEFT, padx=(3, 0))
+
+        _entry_row(pf, "Scan rate:", self._v_sr, unit="mV/s")
+
+        # DL baseline region — two entries on one row
+        dr = ttk.Frame(pf)
+        dr.pack(fill=tk.X, padx=6, pady=2)
+        ttk.Label(dr, text="DL baseline region:", width=24, anchor=tk.W).pack(side=tk.LEFT)
+        for v in (self._v_dllo, self._v_dlhi):
+            e = ttk.Entry(dr, textvariable=v, width=6)
+            e.pack(side=tk.LEFT, padx=(0, 2))
+            e.bind("<Return>",   lambda ev: self._replot())
+            e.bind("<FocusOut>", lambda ev: self._replot())
+        ttk.Label(dr, text="V", foreground="gray", font=("", 8)).pack(side=tk.LEFT)
+
+        # Hupd integration range — two entries on one row
+        hr = ttk.Frame(pf)
+        hr.pack(fill=tk.X, padx=6, pady=2)
+        ttk.Label(hr, text="Hupd range:", width=24, anchor=tk.W).pack(side=tk.LEFT)
+        for v in (self._v_e1, self._v_e2):
+            e = ttk.Entry(hr, textvariable=v, width=6)
+            e.pack(side=tk.LEFT, padx=(0, 2))
+            e.bind("<Return>",   lambda ev: self._replot())
+            e.bind("<FocusOut>", lambda ev: self._replot())
+        ttk.Label(hr, text="V", foreground="gray", font=("", 8)).pack(side=tk.LEFT)
+
+        # Scan direction radio buttons
+        sdr = ttk.Frame(pf)
+        sdr.pack(fill=tk.X, padx=6, pady=2)
+        ttk.Label(sdr, text="Integrate scan:", width=24, anchor=tk.W).pack(side=tk.LEFT)
+        for txt, val in [("Anodic", "anodic"), ("Cathodic", "cathodic"), ("Average", "avg")]:
+            ttk.Radiobutton(sdr, text=txt, variable=self._v_dir,
+                            value=val, command=self._replot).pack(side=tk.LEFT, padx=2)
+
+        _entry_row(pf, "qᵣₑf (μC/cm²):", self._v_qref)
+        _entry_row(pf, "Geometric area:", self._v_geo, unit="cm²")
+
+        ttk.Button(pf, text="  Compute All  ",
+                   command=self._compute_all).pack(padx=6, pady=(6, 8), anchor=tk.W)
+
+        # ── Results table ─────────────────────────────────────────────────
+        rf = ttk.LabelFrame(left, text="Results")
+        rf.pack(fill=tk.BOTH, padx=4, pady=4, expand=True)
+
+        cols = ("file", "q_h", "ecsa", "rf")
+        self._tv = ttk.Treeview(rf, columns=cols, show="headings",
+                                height=7, selectmode="browse")
+        self._tv.heading("file", text="File")
+        self._tv.heading("q_h",  text="Q_H (μC)")
+        self._tv.heading("ecsa", text="ECSA (cm²)")
+        self._tv.heading("rf",   text="RF")
+        self._tv.column("file", width=150, anchor=tk.W, stretch=True)
+        self._tv.column("q_h",  width=70,  anchor=tk.CENTER, stretch=False)
+        self._tv.column("ecsa", width=80,  anchor=tk.CENTER, stretch=False)
+        self._tv.column("rf",   width=45,  anchor=tk.CENTER, stretch=False)
+        tvs = ttk.Scrollbar(rf, orient=tk.VERTICAL, command=self._tv.yview)
+        self._tv.configure(yscrollcommand=tvs.set)
+        tvs.pack(side=tk.RIGHT, fill=tk.Y)
+        self._tv.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
+        self._tv.bind("<<TreeviewSelect>>", self._on_tv)
+
+        # ── Right: matplotlib figure ──────────────────────────────────────
+        rp = ttk.Frame(paned)
+        paned.add(rp, weight=1)
+
+        self._fig = Figure(figsize=(10, 6), dpi=100)
+        self._ax  = self._fig.add_subplot(111)
+        self._cv  = FigureCanvasTkAgg(self._fig, master=rp)
+        self._cv.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+        tb_row = ttk.Frame(rp)
+        tb_row.pack(fill=tk.X)
+        self._tb = NavigationToolbar2Tk(self._cv, tb_row, pack_toolbar=False)
+        self._tb.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Button(tb_row, text="Copy",
+                   command=lambda: copy_figure_to_clipboard(self._fig)
+                   ).pack(side=tk.LEFT, padx=4)
+
+    # ── File operations ──────────────────────────────────────────────────────
+    def _load(self):
+        paths = filedialog.askopenfilenames(
+            title="Load CV files (Hupd)",
+            filetypes=[("Data files", "*.mpr *.txt"), ("All files", "*.*")])
+        if not paths:
+            return
+        for path in paths:
+            short = os.path.basename(path)
+            base, ext = os.path.splitext(short)
+            n = 1
+            while short in self.files:
+                short = f"{base}_{n}{ext}"; n += 1
+            try:
+                df    = _read_one(path)
+                df_lc = _last_cycle(df)
+                self.files[short] = {"path": path, "df": df,
+                                     "df_lc": df_lc, "result": None}
+                self._keys.append(short)
+                self._lb.insert(tk.END, short)
+            except Exception as ex:
+                messagebox.showerror("Load error", f"{short}:\n{ex}")
+        if not self.active_file and self._keys:
+            self._lb.selection_set(0)
+            self._on_lb()
+
+    def _remove(self):
+        sel = self._lb.curselection()
+        if not sel:
+            return
+        idx   = sel[0]
+        short = self._keys[idx]
+        del self.files[short]
+        self._keys.pop(idx)
+        self._lb.delete(idx)
+        for item in self._tv.get_children():
+            if self._tv.item(item, "values")[0] == short:
+                self._tv.delete(item); break
+        if self.active_file == short:
+            self.active_file = None
+            if self._keys:
+                self._lb.selection_set(min(idx, len(self._keys) - 1))
+                self._on_lb()
+        self._replot()
+
+    def _on_lb(self, event=None):
+        sel = self._lb.curselection()
+        if not sel:
+            return
+        short = self._keys[sel[0]]
+        if short != self.active_file:
+            self.active_file = short
+            self._replot()
+
+    def _on_tv(self, event=None):
+        sel = self._tv.selection()
+        if not sel:
+            return
+        short = self._tv.item(sel[0], "values")[0]
+        if short in self.files:
+            idx = self._keys.index(short)
+            self._lb.selection_clear(0, tk.END)
+            self._lb.selection_set(idx)
+            self.active_file = short
+            self._replot()
+
+    # ── Parameter parsing ────────────────────────────────────────────────────
+    def _params(self):
+        try:
+            return dict(
+                v     = float(self._v_sr.get()),
+                dl_lo = float(self._v_dllo.get()),
+                dl_hi = float(self._v_dlhi.get()),
+                e1    = float(self._v_e1.get()),
+                e2    = float(self._v_e2.get()),
+                q_ref = float(self._v_qref.get()),
+                geo   = float(self._v_geo.get()),
+            )
+        except ValueError:
+            return None
+
+    # ── Computation ──────────────────────────────────────────────────────────
+    def _compute_all(self):
+        p = self._params()
+        if p is None:
+            messagebox.showerror("Hupd", "Invalid parameters — check all fields are numeric.")
+            return
+        any_ok = False
+        for short in self._keys:
+            res = _compute_result(
+                self.files[short]["df_lc"],
+                self._v_dir.get(),
+                p["v"], p["dl_lo"], p["dl_hi"],
+                p["e1"], p["e2"], p["q_ref"], p["geo"])
+            self.files[short]["result"] = res
+            if res:
+                any_ok = True
+        self._rebuild_tv()
+        self._replot()
+        if not any_ok and self._keys:
+            messagebox.showwarning(
+                "Hupd",
+                "No valid results.\n"
+                "Check that the DL baseline region and Hupd range fall within the CV data.")
+
+    def _rebuild_tv(self):
+        for item in self._tv.get_children():
+            self._tv.delete(item)
+        for short in self._keys:
+            r = self.files[short].get("result")
+            if r:
+                vals = (short,
+                        f"{r['q_h']:.1f}",
+                        f"{r['ecsa']:.4f}",
+                        f"{r['rf']:.2f}")
+            else:
+                vals = (short, "—", "—", "—")
+            self._tv.insert("", tk.END, values=vals)
+
+    # ── Plot ─────────────────────────────────────────────────────────────────
+    def _replot(self):
+        if self._suppress:
+            return
+        ax = self._ax
+        ax.clear()
+
+        if not self.active_file or self.active_file not in self.files:
+            self._cv.draw_idle()
+            return
+
+        entry  = self.files[self.active_file]
+        df_lc  = entry["df_lc"]
+        result = entry.get("result")
+        p      = self._params()
+
+        if "Ewe/V" not in df_lc.columns or "I/mA" not in df_lc.columns:
+            ax.text(0.5, 0.5, "No Ewe/V or I/mA columns",
+                    transform=ax.transAxes, ha="center")
+            self._cv.draw_idle()
+            return
+
+        E = df_lc["Ewe/V"].values.astype(float)
+        I = df_lc["I/mA"].values.astype(float)
+        E_an, I_an, E_cat, I_cat = _split_scans(E, I)
+        scan_dir = self._v_dir.get()
+
+        # ── Full last-cycle background (light gray) ───────────────────────
+        ax.plot(E_cat, I_cat, color="#c0c0c0", linewidth=1.0, zorder=1)
+        ax.plot(E_an,  I_an,  color="#c0c0c0", linewidth=1.0, zorder=1)
+
+        # ── Highlighted scan direction(s) ─────────────────────────────────
+        if scan_dir in ("anodic", "avg"):
+            ax.plot(E_an, I_an, color="steelblue", linewidth=1.8,
+                    zorder=2, label="Anodic scan")
+        if scan_dir in ("cathodic", "avg"):
+            ax.plot(E_cat, I_cat, color="tomato", linewidth=1.8,
+                    zorder=2, label="Cathodic scan")
+
+        # Choose which scan to overlay the baseline and shading on
+        E_s, I_s = (E_cat, I_cat) if scan_dir == "cathodic" else (E_an, I_an)
+
+        # ── Guide overlays that don't need a computed result ──────────────
+        if p:
+            # DL region — orange band
+            ax.axvspan(p["dl_lo"], p["dl_hi"],
+                       alpha=0.15, color="orange", zorder=0,
+                       label=f"DL baseline region [{p['dl_lo']:.2f}–{p['dl_hi']:.2f} V]")
+            # Hupd range boundary lines
+            ax.axvline(p["e1"], color="seagreen", linewidth=1.0, linestyle=":",
+                       zorder=5, label=f"Hupd E₁ = {p['e1']:.2f} V")
+            ax.axvline(p["e2"], color="seagreen", linewidth=1.0, linestyle=":",
+                       zorder=5, label=f"Hupd E₂ = {p['e2']:.2f} V")
+
+        # ── Computed overlays ─────────────────────────────────────────────
+        if result and p:
+            coeffs = result["coeffs"]
+
+            # Baseline line — drawn across the full E range of the chosen scan
+            E_bl = np.linspace(E_s.min(), E_s.max(), 300)
+            ax.plot(E_bl, np.polyval(coeffs, E_bl),
+                    color="black", linewidth=1.3, linestyle="--",
+                    zorder=4, label="Baseline (DL linear fit)")
+
+            # Integration area fill — between I_measured and baseline
+            mask_h = (E_s >= p["e1"]) & (E_s <= p["e2"])
+            if mask_h.sum() >= 2:
+                E_f   = E_s[mask_h]
+                I_f   = I_s[mask_h]
+                I_bl_f = np.polyval(coeffs, E_f)
+                ax.fill_between(
+                    E_f, I_f, I_bl_f,
+                    alpha=0.45, color="mediumseagreen", zorder=3,
+                    label=f"Q$_{{Hupd}}$ area  ({result['q_h']:.1f} μC)")
+
+            # Annotation box — top-left
+            ann = (f"Q$_H$  = {result['q_h']:.2f} μC\n"
+                   f"ECSA = {result['ecsa']:.4f} cm²\n"
+                   f"RF    = {result['rf']:.2f}")
+            ax.text(0.02, 0.97, ann,
+                    transform=ax.transAxes, fontsize=8.5,
+                    verticalalignment="top", family="monospace",
+                    bbox=dict(boxstyle="round,pad=0.5", fc="white",
+                              alpha=0.90, ec="steelblue", lw=0.9))
+
+        ax.axhline(0, color="black", linewidth=0.5, alpha=0.30, zorder=0)
+        ax.set_xlabel("E (V vs Ref)")
+        ax.set_ylabel("I (mA)")
+        ax.set_title(f"Hupd ECSA — {self.active_file}  (last cycle)")
+        ax.legend(fontsize=7.5, frameon=True, loc="upper right")
+
+        self._fig.tight_layout(pad=0.7)
+        self._fig.set_layout_engine("none")
+        self._cv.draw_idle()
+
+    # ── Session ──────────────────────────────────────────────────────────────
+    def get_session_state(self, data_store):
+        from .session_manager import df_hash
+        state = {
+            "scan_rate":   self._v_sr.get(),
+            "dl_lo":       self._v_dllo.get(),
+            "dl_hi":       self._v_dlhi.get(),
+            "e1":          self._v_e1.get(),
+            "e2":          self._v_e2.get(),
+            "q_ref":       self._v_qref.get(),
+            "geo_area":    self._v_geo.get(),
+            "scan_dir":    self._v_dir.get(),
+            "active_file": self.active_file,
+            "files":       [],
+        }
+        for short, entry in self.files.items():
+            h = df_hash(entry["df"])
+            data_store[h] = entry["df"]
+            state["files"].append({"short": short, "path": entry["path"], "hash": h})
+        return state
+
+    def restore_session_state(self, state, data_store):
+        self._suppress = True
+        try:
+            self._v_sr.set(state.get("scan_rate", _DEF["scan_rate"]))
+            self._v_dllo.set(state.get("dl_lo",   _DEF["dl_lo"]))
+            self._v_dlhi.set(state.get("dl_hi",   _DEF["dl_hi"]))
+            self._v_e1.set(state.get("e1",         _DEF["e1"]))
+            self._v_e2.set(state.get("e2",         _DEF["e2"]))
+            self._v_qref.set(state.get("q_ref",    _DEF["q_ref"]))
+            self._v_geo.set(state.get("geo_area",  _DEF["geo_area"]))
+            self._v_dir.set(state.get("scan_dir",  _DEF["scan_dir"]))
+
+            self.files.clear()
+            self._keys.clear()
+            self._lb.delete(0, tk.END)
+
+            for rec in state.get("files", []):
+                df = data_store.get(rec["hash"])
+                if df is None:
+                    continue
+                short = rec["short"]
+                df_lc = _last_cycle(df)
+                self.files[short] = {"path": rec["path"], "df": df,
+                                     "df_lc": df_lc, "result": None}
+                self._keys.append(short)
+                self._lb.insert(tk.END, short)
+
+            self.active_file = state.get("active_file")
+            if self.active_file not in self.files:
+                self.active_file = self._keys[0] if self._keys else None
+            if self.active_file:
+                self._lb.selection_set(self._keys.index(self.active_file))
+        finally:
+            self._suppress = False
+        self._compute_all()

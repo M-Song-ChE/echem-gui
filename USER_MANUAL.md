@@ -9,9 +9,10 @@
 6. [ECSA Calc Tab](#6-ecsa-calc-tab)
 7. [Nyquist Plot Tab](#7-nyquist-plot-tab)
 8. [ORR Analysis Tab](#8-orr-analysis-tab)
-9. [Common Controls (All Tabs)](#9-common-controls-all-tabs)
-10. [Tips and Shortcuts](#10-tips-and-shortcuts)
-11. [Session Save & Restore](#11-session-save--restore)
+9. [Hupd Calc Tab](#9-hupd-calc-tab)
+10. [Common Controls (All Tabs)](#10-common-controls-all-tabs)
+11. [Tips and Shortcuts](#11-tips-and-shortcuts)
+12. [Session Save & Restore](#12-session-save--restore)
 
 ---
 
@@ -42,6 +43,7 @@ The app has five tabs at the top:
 | **ECSA Calc** | Extract electrochemical surface area (ECSA) from CV data |
 | **Nyquist Plot** | Plot EIS impedance data as a Nyquist diagram |
 | **ORR Analysis** | Background-subtracted RDE polarization curves (N2/O2, per RPM, per sample) |
+| **Hupd Calc** | Hupd-based ECSA calculation from CV data — Q_H integration, ECSA, and roughness factor |
 
 Each tab is fully **independent** — files loaded in one tab are not shared with others.
 
@@ -280,7 +282,54 @@ All controls in the left panel apply to the **active sample** only. Each sample 
 
 ---
 
-## 9. Common Controls (All Tabs)
+## 9. Hupd Calc Tab
+
+Use this tab to calculate the electrochemically active surface area (ECSA) and roughness factor (RF) from the hydrogen underpotential deposition (Hupd) region of a CV.
+
+### 9.1 Loading Files
+
+Click **Add Files** to load one or more `.mpr` or `.txt` CV files. Each file appears in the file list on the left. Only the **last cycle** of each file is used for analysis.
+
+### 9.2 Parameters
+
+| Parameter | Description |
+|-----------|-------------|
+| **Scan Rate (mV/s)** | Potential sweep rate used during the CV measurement |
+| **DL Region (V)** | Two-field range (Lo / Hi) defining the double-layer region for baseline fitting (e.g. `0.40` – `0.50` V vs. RHE) |
+| **Hupd Range (V)** | Two-field range (E1 / E2) defining the Hupd integration limits (e.g. `0.05` – `0.40` V vs. RHE) |
+| **Scan Direction** | **Anodic** (positive sweep) or **Cathodic** (negative sweep) half-cycle used for integration |
+| **Q_ref (µC/cm²)** | Reference charge density for a hydrogen monolayer — 210 µC/cm² for Pt |
+| **Geo Area (cm²)** | Geometric electrode area used to compute roughness factor (e.g. `0.1963` cm² for 5 mm RDE) |
+
+### 9.3 Computing Results
+
+Click **Compute All** to run the analysis on every file in the list. For each file:
+1. The last CV cycle is extracted and split into anodic and cathodic half-cycles.
+2. A linear baseline is fit in the DL region and extrapolated across the full potential range.
+3. Q_H is calculated by integrating the difference between the measured current and the baseline over the Hupd range:
+
+   Q_H [µC] = (1 / v) × |∫_{E1}^{E2} (I_meas − I_baseline) dE|
+
+4. ECSA = Q_H / Q_ref (cm²)
+5. RF = ECSA / Geo Area
+
+Results appear in the **Results Table** at the bottom left (columns: File, Q_H [µC], ECSA [cm²], RF).
+
+### 9.4 Plot
+
+The right panel shows the selected file's last cycle with:
+- **Gray** — the full last cycle (both half-cycles)
+- **Colored** — the integration half-cycle (anodic or cathodic)
+- **Orange shaded band** — the DL region used for baseline fitting
+- **Dashed vertical lines** — E1 and E2 Hupd integration limits
+- **Black dashed line** — the extrapolated linear baseline
+- **Green shaded area** — the region being integrated (between measured current and baseline)
+
+Click any file in the list to view its plot. The plot updates automatically when parameters change.
+
+---
+
+## 10. Common Controls (All Tabs)
 
 ### Mouse Interactions on the Plot
 | Action | Effect |
@@ -314,7 +363,7 @@ Each file remembers its last zoom/pan state. Switching files and back restores t
 
 ---
 
-## 10. Tips and Shortcuts
+## 11. Tips and Shortcuts
 
 - **Hide without losing settings** — uncheck a file to remove it from the plot. All settings, corrections, and zoom state are preserved. Re-check to restore instantly.
 - **Drag to reorder** — use ⠿ handles in file lists, subplot headers, and the legend editor.
@@ -329,7 +378,7 @@ Each file remembers its last zoom/pan state. Switching files and back restores t
 
 ---
 
-## 11. Session Save & Restore
+## 12. Session Save & Restore
 
 Save and restore the complete state of all five tabs — loaded files, settings, corrections, and plot layout — in a single `.echemsession` file. Raw data is embedded so sessions work without the original data files.
 
