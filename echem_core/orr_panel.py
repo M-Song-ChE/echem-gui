@@ -1710,6 +1710,9 @@ class ORRPanel(ttk.Frame):
                     else self._get_current_reflines())
         draw_reflines(ax, reflines)
 
+        # Re-apply catalyst highlight (legend handles already drawn at alpha=1)
+        self._apply_orr_highlight(sample_name)
+
         canvas.draw_idle()
 
     def _apply_sample_range(self, sample_name, is_active=None):
@@ -2216,7 +2219,7 @@ class ORRPanel(ttk.Frame):
         canvas = sentry["canvas"]
         if event.xdata is None or event.ydata is None:
             return
-        factor = 1.15 if event.button == "up" else (1 / 1.15)
+        factor = (1 / 1.15) if event.button == "up" else 1.15
         cx, cy = event.xdata, event.ydata
         xl = ax.get_xlim(); yl = ax.get_ylim()
         ax.set_xlim(cx + (xl[0] - cx) * factor, cx + (xl[1] - cx) * factor)
@@ -2260,6 +2263,8 @@ class ORRPanel(ttk.Frame):
                         return
                 except Exception:
                     pass
+            sentry["highlighted_cat"] = None
+            self._apply_orr_highlight(sample_name)
             self._clear_ann(sample_name, redraw=True)
             return
         if event.button != 1 or event.xdata is None:
@@ -2399,10 +2404,12 @@ class ORRPanel(ttk.Frame):
                 best_label = label
         if best_x is None or best_dist > 0.04:
             return
-        # Switch catalyst correction display to match the clicked curve
+        # Switch catalyst correction display + highlight all lines for that catalyst
         _cat_m = re.match(r'^\[(\w+)\]', best_label)
+        _clicked_cat = _cat_m.group(1) if _cat_m else ""
+        sentry["highlighted_cat"] = _clicked_cat
+        self._apply_orr_highlight(sample_name)
         if _cat_m:
-            _clicked_cat = _cat_m.group(1)
             _avail = list(self._corr_cat_cb["values"])
             if _clicked_cat in _avail and _clicked_cat != getattr(self, "_active_catalyst", None):
                 self._corr_catalyst_var.set(_clicked_cat)
@@ -2428,6 +2435,30 @@ class ORRPanel(ttk.Frame):
                        label=_ANN_DOT_LABEL, zorder=10)
         sentry["ann"] = ann; sentry["ann_dot"] = dot
         canvas.draw_idle()
+
+    def _apply_orr_highlight(self, sample_name):
+        """Dim all catalyst lines except the highlighted one; bring highlighted to front."""
+        sentry = self.samples.get(sample_name)
+        if sentry is None or "ax" not in sentry:
+            return
+        ax = sentry["ax"]
+        hl_cat = sentry.get("highlighted_cat")  # None = no highlight; str = catalyst name
+        for line in ax.get_lines():
+            lbl = line.get_label()
+            if lbl.startswith("_"):
+                continue  # skip ehalf, annotation dot, glow lines
+            if hl_cat is None:
+                line.set_alpha(1.0)
+                line.set_zorder(2)
+            else:
+                m = re.match(r'^\[(\w+)\]', lbl)
+                line_cat = m.group(1) if m else ""
+                if line_cat == hl_cat:
+                    line.set_alpha(1.0)
+                    line.set_zorder(5)
+                else:
+                    line.set_alpha(0.15)
+                    line.set_zorder(2)
 
     def _clear_ann(self, sample_name, *, redraw=True):
         sentry = self.samples.get(sample_name)
