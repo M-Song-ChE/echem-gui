@@ -273,14 +273,27 @@ All corrections are applied automatically on Enter / focus change.
 ### 8.6 Plot Range, Flip, Grid, Font, Legend, Reflines
 All controls in the left panel apply to the **active sample** only. Each sample stores its own settings independently. Controls work identically to the Multi E.Chem 2 tab.
 
-### 8.7 Multiple Samples
+### 8.7 Plot Interactions
+| Action | Effect |
+|--------|--------|
+| **Scroll up** | Zoom in (centered on cursor) |
+| **Scroll down** | Zoom out |
+| **Left-drag** | Pan |
+| **Left-click on a curve** | Highlight all lines for that catalyst (others dimmed to 15% alpha); highlighted lines moved to front; Catalyst selector switches automatically |
+| **Right-click** | Clear highlight and annotation; all lines restored to full opacity |
+| **Left-drag legend** | Move legend freely |
+| **Right-drag legend** | Resize legend font |
+| **Double-click subplot header** | Zoom sample full-panel; **← Back to Grid** restores |
+| **Double-click X or Y axis label** | Edit label inline (blank → auto label) |
+
+### 8.8 Multiple Samples
 - Each sample gets its own subplot in the grid.
 - Use **Cols** to set the number of columns.
 - **Double-click** a subplot header to zoom it full-panel; click **← Back to Grid** to restore.
 - **Drag the ⠿ header** to reorder samples.
 - **Uncheck** a sample in the list to hide its subplot without deleting it.
 
-### 8.8 Plot Size
+### 8.9 Plot Size
 **W [__] H [__] inches** — figure size for all sample subplots. Scrollbars appear automatically for oversized grids.
 
 ---

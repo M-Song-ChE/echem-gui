@@ -360,10 +360,23 @@ The **RPM Pairs** section lists all matched N2/O2 pairs for the active sample:
 4. Restrict to the overlapping E range and interpolate N2 → O2 grid.
 5. Subtract: `I_net = I_O2 − I_N2_interp`. Divide by area if provided.
 
-### 8.6 Multiple Samples
+### 8.6 Plot Interactions
+| Action | Effect |
+|--------|--------|
+| **Scroll up** | Zoom in (centered on cursor) |
+| **Scroll down** | Zoom out |
+| **Left-drag** | Pan |
+| **Left-click** on a curve | Highlight all lines for that catalyst (others dimmed); bring them to front; switch Catalyst selector to match |
+| **Right-click** | Clear highlight and annotation |
+| **Left-drag legend** | Move legend |
+| **Right-drag legend** | Resize legend font |
+| **Double-click header** | Zoom sample full-panel |
+| **Double-click axis label** | Edit axis label inline |
+
+### 8.7 Multiple Samples
 Each sample has its own subplot. Use **Cols** to control the grid width. Double-click a header strip to zoom; drag to reorder; uncheck to hide.
 
-### 8.7 Plot Size
+### 8.8 Plot Size
 **W [__] H [__] inches** — size for all sample subplots; scrollbars appear automatically.
 
 ---
