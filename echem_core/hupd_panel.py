@@ -171,6 +171,9 @@ class HupdPanel(ttk.Frame):
         self._ann_artist = None          # Text artist reference
         self._leg      = None            # Legend artist reference
         self._leg_pos  = None            # saved legend position (axes-frac tuple)
+        self._leg_resizing        = False
+        self._leg_resize_start_y  = None
+        self._leg_resize_start_sz = None
         self._build()
 
     # ── Construction ─────────────────────────────────────────────────────────
@@ -300,6 +303,21 @@ class HupdPanel(ttk.Frame):
         _entry_row(pf, "qᵣₑf (μC/cm²):", self._v_qref)
         _entry_row(pf, "Geometric area:", self._v_geo, unit="cm²")
 
+        # Legend font size
+        leg_row = ttk.Frame(pf)
+        leg_row.pack(fill=tk.X, padx=6, pady=2)
+        ttk.Label(leg_row, text="Legend size:", width=24, anchor=tk.W).pack(side=tk.LEFT)
+        self._v_leg_size = tk.StringVar(value="7.5")
+        _leg_sp = ttk.Spinbox(leg_row, textvariable=self._v_leg_size,
+                              from_=4.0, to=30.0, increment=0.5, width=6)
+        _leg_sp.pack(side=tk.LEFT)
+        _leg_sp.bind("<<Increment>>", lambda e: self._replot())
+        _leg_sp.bind("<<Decrement>>", lambda e: self._replot())
+        _leg_sp.bind("<Return>",      lambda e: self._replot())
+        _leg_sp.bind("<FocusOut>",    lambda e: self._replot())
+        ttk.Label(leg_row, text="pt  (right-drag legend to resize)",
+                  foreground="gray", font=("", 7)).pack(side=tk.LEFT, padx=(4, 0))
+
         ttk.Button(pf, text="  Compute All  ",
                    command=self._compute_all).pack(padx=6, pady=(6, 8), anchor=tk.W)
 
@@ -353,10 +371,26 @@ class HupdPanel(ttk.Frame):
             return default
 
     def _on_drag_press(self, event):
-        if event.inaxes is not self._ax or event.button != 1 or event.xdata is None:
-            return
         if getattr(self._tb, "mode", "") != "":
             return  # toolbar pan/zoom active — don't interfere
+
+        # Right-button on legend → resize
+        if event.button == 3 and self._leg is not None:
+            try:
+                contains, _ = self._leg.contains(event)
+                if contains:
+                    self._leg_resizing        = True
+                    self._leg_resize_start_y  = event.y
+                    try:
+                        self._leg_resize_start_sz = float(self._v_leg_size.get())
+                    except ValueError:
+                        self._leg_resize_start_sz = 7.5
+                    return
+            except Exception:
+                pass
+
+        if event.inaxes is not self._ax or event.button != 1 or event.xdata is None:
+            return
 
         # Let matplotlib's DraggableLegend handle legend clicks
         if self._leg is not None:
@@ -398,6 +432,19 @@ class HupdPanel(ttk.Frame):
     def _on_drag_motion(self, event):
         widget = self._cv.get_tk_widget()
 
+        # Legend right-drag resize
+        if self._leg_resizing and self._leg is not None:
+            dy     = event.y - self._leg_resize_start_y
+            new_sz = max(4.0, min(30.0, self._leg_resize_start_sz + dy / 5.0))
+            self._v_leg_size.set(f"{new_sz:.1f}")
+            for t in self._leg.get_texts():
+                t.set_fontsize(new_sz)
+            tt = self._leg.get_title()
+            if tt:
+                tt.set_fontsize(new_sz)
+            self._cv.draw_idle()
+            return
+
         # Annotation drag: move artist in-place without a full replot
         if self._dragging_ann:
             if event.x is not None and event.y is not None and self._ann_artist is not None:
@@ -428,8 +475,11 @@ class HupdPanel(ttk.Frame):
             widget.config(cursor="sb_h_double_arrow" if near else "")
 
     def _on_drag_release(self, event):
-        self._dragging_var = None
-        self._dragging_ann = False
+        if self._dragging_var is not None:
+            self._save_params()  # persist dragged boundary value to entry
+        self._dragging_var    = None
+        self._dragging_ann    = False
+        self._leg_resizing    = False
 
     # ── File operations ──────────────────────────────────────────────────────
     def _load(self):
@@ -452,7 +502,14 @@ class HupdPanel(ttk.Frame):
                 self.files[short] = {"path": path, "df": df,
                                      "df_lc": df_lc, "result": None,
                                      "r_sol": 0.0, "e_ref": 0.0,
-                                     "cycles": cycles, "sel_cycle": sel_c}
+                                     "cycles": cycles, "sel_cycle": sel_c,
+                                     "scan_rate": self._v_sr.get(),
+                                     "dl_lo":     self._v_dllo.get(),
+                                     "dl_hi":     self._v_dlhi.get(),
+                                     "e1":        self._v_e1.get(),
+                                     "e2":        self._v_e2.get(),
+                                     "q_ref":     self._v_qref.get(),
+                                     "geo_area":  self._v_geo.get()}
                 self._keys.append(short)
                 self._lb.insert(tk.END, short)
             except Exception as ex:
@@ -492,6 +549,19 @@ class HupdPanel(ttk.Frame):
             entry["e_ref"] = float(self._v_eref.get())
         except ValueError:
             pass
+
+    def _save_params(self):
+        """Persist current UI parameter values to the active file's entry."""
+        if not self.active_file or self.active_file not in self.files:
+            return
+        entry = self.files[self.active_file]
+        entry["scan_rate"] = self._v_sr.get()
+        entry["dl_lo"]     = self._v_dllo.get()
+        entry["dl_hi"]     = self._v_dlhi.get()
+        entry["e1"]        = self._v_e1.get()
+        entry["e2"]        = self._v_e2.get()
+        entry["q_ref"]     = self._v_qref.get()
+        entry["geo_area"]  = self._v_geo.get()
 
     def _on_cycle_change(self, event=None):
         if not self.active_file or self.active_file not in self.files:
@@ -557,12 +627,20 @@ class HupdPanel(ttk.Frame):
         short = self._keys[sel[0]]
         if short != self.active_file:
             self._save_corr()
+            self._save_params()
             self.active_file = short
             entry = self.files[short]
             old = self._suppress
             self._suppress = True
             self._v_rsol.set(str(entry.get("r_sol", 0.0)))
             self._v_eref.set(str(entry.get("e_ref", 0.0)))
+            self._v_sr.set(entry.get("scan_rate", _DEF["scan_rate"]))
+            self._v_dllo.set(entry.get("dl_lo",   _DEF["dl_lo"]))
+            self._v_dlhi.set(entry.get("dl_hi",   _DEF["dl_hi"]))
+            self._v_e1.set(entry.get("e1",         _DEF["e1"]))
+            self._v_e2.set(entry.get("e2",         _DEF["e2"]))
+            self._v_qref.set(entry.get("q_ref",    _DEF["q_ref"]))
+            self._v_geo.set(entry.get("geo_area",  _DEF["geo_area"]))
             # Populate cycle combobox for this file
             cycles = entry.get("cycles", [])
             self._cycle_cb["values"] = [_fmt_cycle(c) for c in cycles]
@@ -576,12 +654,11 @@ class HupdPanel(ttk.Frame):
         if not sel:
             return
         short = self._tv.item(sel[0], "values")[0]
-        if short in self.files:
+        if short in self.files and short != self.active_file:
             idx = self._keys.index(short)
             self._lb.selection_clear(0, tk.END)
             self._lb.selection_set(idx)
-            self.active_file = short
-            self._replot()
+            self._on_lb()  # handles save+restore+replot
 
     # ── Parameter parsing ────────────────────────────────────────────────────
     def _params(self):
@@ -600,13 +677,22 @@ class HupdPanel(ttk.Frame):
 
     # ── Computation ──────────────────────────────────────────────────────────
     def _compute_all(self):
-        p = self._params()
-        if p is None:
-            messagebox.showerror("Hupd", "Invalid parameters — check all fields are numeric.")
-            return
+        self._save_params()  # persist current UI to active file before batch compute
         any_ok = False
         for short in self._keys:
             entry = self.files[short]
+            try:
+                p = dict(
+                    v     = float(entry.get("scan_rate", _DEF["scan_rate"])),
+                    dl_lo = float(entry.get("dl_lo",     _DEF["dl_lo"])),
+                    dl_hi = float(entry.get("dl_hi",     _DEF["dl_hi"])),
+                    e1    = float(entry.get("e1",         _DEF["e1"])),
+                    e2    = float(entry.get("e2",         _DEF["e2"])),
+                    q_ref = float(entry.get("q_ref",     _DEF["q_ref"])),
+                    geo   = float(entry.get("geo_area",  _DEF["geo_area"])),
+                )
+            except (ValueError, TypeError):
+                continue
             res = _compute_result(
                 entry["df_lc"],
                 p["v"], p["dl_lo"], p["dl_hi"],
@@ -753,10 +839,14 @@ class HupdPanel(ttk.Frame):
         entry_title = self.files.get(self.active_file, {})
         cycle_str = _fmt_cycle(entry_title.get("sel_cycle")) if entry_title.get("sel_cycle") is not None else "?"
         ax.set_title(f"Hupd ECSA — {self.active_file}  (cycle {cycle_str})")
+        try:
+            _leg_sz = float(self._v_leg_size.get())
+        except (ValueError, AttributeError):
+            _leg_sz = 7.5
         if self._leg_pos is not None:
-            self._leg = ax.legend(fontsize=7.5, frameon=True, loc=self._leg_pos)
+            self._leg = ax.legend(fontsize=_leg_sz, frameon=True, loc=self._leg_pos)
         else:
-            self._leg = ax.legend(fontsize=7.5, frameon=True, loc="upper right")
+            self._leg = ax.legend(fontsize=_leg_sz, frameon=True, loc="upper right")
         self._leg.set_draggable(True)
 
         self._fig.tight_layout(pad=0.7)
@@ -766,36 +856,36 @@ class HupdPanel(ttk.Frame):
     # ── Session ──────────────────────────────────────────────────────────────
     def get_session_state(self, data_store):
         from .session_manager import df_hash
+        self._save_params()  # ensure active file has latest values
         state = {
-            "scan_rate":   self._v_sr.get(),
-            "dl_lo":       self._v_dllo.get(),
-            "dl_hi":       self._v_dlhi.get(),
-            "e1":          self._v_e1.get(),
-            "e2":          self._v_e2.get(),
-            "q_ref":       self._v_qref.get(),
-            "geo_area":    self._v_geo.get(),
             "active_file": self.active_file,
+            "leg_size":    self._v_leg_size.get(),
             "files":       [],
         }
         for short, entry in self.files.items():
             h = df_hash(entry["df"])
             data_store[h] = entry["df"]
-            state["files"].append({"short": short, "path": entry["path"], "hash": h,
-                                   "r_sol": entry.get("r_sol", 0.0),
-                                   "e_ref": entry.get("e_ref", 0.0),
-                                   "sel_cycle": entry.get("sel_cycle")})
+            state["files"].append({
+                "short":     short,
+                "path":      entry["path"],
+                "hash":      h,
+                "r_sol":     entry.get("r_sol",     0.0),
+                "e_ref":     entry.get("e_ref",     0.0),
+                "sel_cycle": entry.get("sel_cycle"),
+                "scan_rate": entry.get("scan_rate", _DEF["scan_rate"]),
+                "dl_lo":     entry.get("dl_lo",     _DEF["dl_lo"]),
+                "dl_hi":     entry.get("dl_hi",     _DEF["dl_hi"]),
+                "e1":        entry.get("e1",         _DEF["e1"]),
+                "e2":        entry.get("e2",         _DEF["e2"]),
+                "q_ref":     entry.get("q_ref",     _DEF["q_ref"]),
+                "geo_area":  entry.get("geo_area",  _DEF["geo_area"]),
+            })
         return state
 
     def restore_session_state(self, state, data_store):
         self._suppress = True
         try:
-            self._v_sr.set(state.get("scan_rate", _DEF["scan_rate"]))
-            self._v_dllo.set(state.get("dl_lo",   _DEF["dl_lo"]))
-            self._v_dlhi.set(state.get("dl_hi",   _DEF["dl_hi"]))
-            self._v_e1.set(state.get("e1",         _DEF["e1"]))
-            self._v_e2.set(state.get("e2",         _DEF["e2"]))
-            self._v_qref.set(state.get("q_ref",    _DEF["q_ref"]))
-            self._v_geo.set(state.get("geo_area",  _DEF["geo_area"]))
+            self._v_leg_size.set(state.get("leg_size", "7.5"))
 
             self.files.clear()
             self._keys.clear()
@@ -811,11 +901,23 @@ class HupdPanel(ttk.Frame):
                 if sel_c is None and cycles:
                     sel_c = cycles[-1]
                 df_lc = _get_cycle(df, sel_c)
-                self.files[short] = {"path": rec["path"], "df": df,
-                                     "df_lc": df_lc, "result": None,
-                                     "r_sol": rec.get("r_sol", 0.0),
-                                     "e_ref": rec.get("e_ref", 0.0),
-                                     "cycles": cycles, "sel_cycle": sel_c}
+                self.files[short] = {
+                    "path":      rec["path"],
+                    "df":        df,
+                    "df_lc":     df_lc,
+                    "result":    None,
+                    "r_sol":     rec.get("r_sol",     0.0),
+                    "e_ref":     rec.get("e_ref",     0.0),
+                    "cycles":    cycles,
+                    "sel_cycle": sel_c,
+                    "scan_rate": rec.get("scan_rate", _DEF["scan_rate"]),
+                    "dl_lo":     rec.get("dl_lo",     _DEF["dl_lo"]),
+                    "dl_hi":     rec.get("dl_hi",     _DEF["dl_hi"]),
+                    "e1":        rec.get("e1",         _DEF["e1"]),
+                    "e2":        rec.get("e2",         _DEF["e2"]),
+                    "q_ref":     rec.get("q_ref",     _DEF["q_ref"]),
+                    "geo_area":  rec.get("geo_area",  _DEF["geo_area"]),
+                }
                 self._keys.append(short)
                 self._lb.insert(tk.END, short)
 
@@ -827,6 +929,13 @@ class HupdPanel(ttk.Frame):
                 entry = self.files[self.active_file]
                 self._v_rsol.set(str(entry.get("r_sol", 0.0)))
                 self._v_eref.set(str(entry.get("e_ref", 0.0)))
+                self._v_sr.set(entry.get("scan_rate", _DEF["scan_rate"]))
+                self._v_dllo.set(entry.get("dl_lo",   _DEF["dl_lo"]))
+                self._v_dlhi.set(entry.get("dl_hi",   _DEF["dl_hi"]))
+                self._v_e1.set(entry.get("e1",         _DEF["e1"]))
+                self._v_e2.set(entry.get("e2",         _DEF["e2"]))
+                self._v_qref.set(entry.get("q_ref",    _DEF["q_ref"]))
+                self._v_geo.set(entry.get("geo_area",  _DEF["geo_area"]))
                 cycles = entry.get("cycles", [])
                 self._cycle_cb["values"] = [_fmt_cycle(c) for c in cycles]
                 sel_c = entry.get("sel_cycle")
