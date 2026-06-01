@@ -503,13 +503,13 @@ class HupdPanel(ttk.Frame):
                                      "df_lc": df_lc, "result": None,
                                      "r_sol": 0.0, "e_ref": 0.0,
                                      "cycles": cycles, "sel_cycle": sel_c,
-                                     "scan_rate": self._v_sr.get(),
-                                     "dl_lo":     self._v_dllo.get(),
-                                     "dl_hi":     self._v_dlhi.get(),
-                                     "e1":        self._v_e1.get(),
-                                     "e2":        self._v_e2.get(),
-                                     "q_ref":     self._v_qref.get(),
-                                     "geo_area":  self._v_geo.get()}
+                                     "scan_rate": _DEF["scan_rate"],
+                                     "dl_lo":     _DEF["dl_lo"],
+                                     "dl_hi":     _DEF["dl_hi"],
+                                     "e1":        _DEF["e1"],
+                                     "e2":        _DEF["e2"],
+                                     "q_ref":     _DEF["q_ref"],
+                                     "geo_area":  _DEF["geo_area"]}
                 self._keys.append(short)
                 self._lb.insert(tk.END, short)
             except Exception as ex:
