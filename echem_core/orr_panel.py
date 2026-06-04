@@ -271,14 +271,19 @@ class ORRPanel(ttk.Frame):
 
         _lf = ttk.Frame(left)
         _lf.pack(fill=tk.X, padx=4, pady=2)
-        self.loaded_lb = tk.Listbox(_lf, height=5, selectmode=tk.EXTENDED,
-                                    exportselection=False, font=("Courier", 8))
-        _lf_sb = ttk.Scrollbar(_lf, orient=tk.VERTICAL, command=self.loaded_lb.yview)
-        self.loaded_lb.configure(yscrollcommand=_lf_sb.set)
+        self.loaded_tv = ttk.Treeview(_lf, height=5, selectmode="extended", show="tree")
+        self.loaded_tv.column("#0", minwidth=50, stretch=True)
+        self.loaded_tv.tag_configure("n2",  background="#dbeafe", foreground="#1e40af")
+        self.loaded_tv.tag_configure("o2",  background="#ffedd5", foreground="#9a3412")
+        self.loaded_tv.tag_configure("unk", background="white")
+        self.loaded_tv.tag_configure("hdr", background="#e8e8e8", foreground="#333333",
+                                     font=("", 8, "bold"))
+        _lf_sb = ttk.Scrollbar(_lf, orient=tk.VERTICAL, command=self.loaded_tv.yview)
+        self.loaded_tv.configure(yscrollcommand=_lf_sb.set)
         _lf_sb.pack(side=tk.RIGHT, fill=tk.Y)
-        self.loaded_lb.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.loaded_tv.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        # Drag handle to resize the loaded-files listbox
+        # Drag handle to resize the loaded-files treeview
         _lf_handle = tk.Frame(left, height=5, bg="#c8c8c8", cursor="sb_v_double_arrow")
         _lf_handle.pack(fill=tk.X, padx=4)
         _lf_handle.bind("<ButtonPress-1>", self._on_loaded_resize_start)
@@ -818,12 +823,17 @@ class ORRPanel(ttk.Frame):
                 "path": path, "gas": gas, "rpm_id": rpm_id,
                 "catalyst": catalyst, "df": df}
             self._loaded_keys.append(short)
+            cat_key   = catalyst if catalyst else ""
+            cat_iid   = f"_cat_:{cat_key}"
+            cat_label = catalyst if catalyst else "(no catalyst)"
+            if not self.loaded_tv.exists(cat_iid):
+                self.loaded_tv.insert("", tk.END, iid=cat_iid,
+                                      text=f"  ▸ {cat_label}",
+                                      tags=("hdr",), open=True)
             gas_tag = gas.upper() if gas else "??"
-            cat_tag = f"|{catalyst}" if catalyst else ""
-            display = f"({gas_tag}{cat_tag}) {short}"
-            self.loaded_lb.insert(tk.END, display)
-            _gas_bg = {"n2": "#dbeafe", "o2": "#ffedd5"}
-            self.loaded_lb.itemconfig(tk.END, background=_gas_bg.get(gas, "white"))
+            self.loaded_tv.insert(cat_iid, tk.END, iid=short,
+                                  text=f"    ({gas_tag})  {short}",
+                                  tags=(gas or "unk",))
             added.append(short)
 
         if errors:
@@ -832,26 +842,30 @@ class ORRPanel(ttk.Frame):
             self._log(f"Loaded {len(added)} file(s).")
 
     def _remove_loaded_file(self):
-        sel = self.loaded_lb.curselection()
+        sel = [iid for iid in self.loaded_tv.selection()
+               if not iid.startswith("_cat_:")]
         if not sel:
             return
-        for i in sorted(sel, reverse=True):
-            if i < len(self._loaded_keys):
-                short = self._loaded_keys.pop(i)
-                self.loaded_files.pop(short, None)
-                self.loaded_lb.delete(i)
+        for short in sel:
+            if short not in self.loaded_files:
+                continue
+            parent = self.loaded_tv.parent(short)
+            self.loaded_tv.delete(short)
+            self.loaded_files.pop(short, None)
+            if short in self._loaded_keys:
+                self._loaded_keys.remove(short)
+            if parent and not self.loaded_tv.get_children(parent):
+                self.loaded_tv.delete(parent)
 
     def _select_n2(self):
-        self.loaded_lb.selection_clear(0, tk.END)
-        for i, k in enumerate(self._loaded_keys):
-            if self.loaded_files.get(k, {}).get("gas") == "n2":
-                self.loaded_lb.selection_set(i)
+        shorts = [k for k in self._loaded_keys
+                  if self.loaded_files.get(k, {}).get("gas") == "n2"]
+        self.loaded_tv.selection_set(shorts)
 
     def _select_o2(self):
-        self.loaded_lb.selection_clear(0, tk.END)
-        for i, k in enumerate(self._loaded_keys):
-            if self.loaded_files.get(k, {}).get("gas") == "o2":
-                self.loaded_lb.selection_set(i)
+        shorts = [k for k in self._loaded_keys
+                  if self.loaded_files.get(k, {}).get("gas") == "o2"]
+        self.loaded_tv.selection_set(shorts)
 
     # ════════════════════════════════════════════════════════════════
     # Sample management
@@ -964,13 +978,13 @@ class ORRPanel(ttk.Frame):
         if not self.active_sample:
             messagebox.showwarning("ORR", "Create or select a sample first.")
             return
-        sel = list(self.loaded_lb.curselection())
-        if not sel:
+        sel_iids = self.loaded_tv.selection()
+        if not sel_iids:
             return
         sentry = self.samples[self.active_sample]
 
-        selected_shorts = [self._loaded_keys[i] for i in sel
-                           if i < len(self._loaded_keys)]
+        selected_shorts = [iid for iid in sel_iids
+                           if not iid.startswith("_cat_:") and iid in self.loaded_files]
 
         unknown = []
         file_entries = []
@@ -2171,7 +2185,7 @@ class ORRPanel(ttk.Frame):
     def _on_loaded_resize_start(self, event):
         self._loaded_drag = {
             "y0": event.y_root,
-            "h0": int(self.loaded_lb.cget("height")),
+            "h0": int(self.loaded_tv.cget("height")),
         }
 
     def _on_loaded_resize_drag(self, event):
@@ -2180,7 +2194,7 @@ class ORRPanel(ttk.Frame):
             return
         dy = event.y_root - d["y0"]
         new_rows = max(2, int(d["h0"] + dy / 20))
-        self.loaded_lb.config(height=new_rows)
+        self.loaded_tv.config(height=new_rows)
 
     def _on_sample_resize_start(self, event):
         h = self.sample_lb._canvas.winfo_height()
@@ -2964,7 +2978,9 @@ class ORRPanel(ttk.Frame):
         # Clear loaded files
         self.loaded_files.clear()
         self._loaded_keys.clear()
-        self.loaded_lb.delete(0, tk.END)
+        children = self.loaded_tv.get_children()
+        if children:
+            self.loaded_tv.delete(*children)
 
         # Panel-level vars
         try:
