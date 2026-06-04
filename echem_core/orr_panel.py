@@ -1065,8 +1065,13 @@ class ORRPanel(ttk.Frame):
             return
         sentry = self.samples[self.active_sample]
 
-        selected_shorts = [iid for iid in sel_iids
-                           if not iid.startswith("_cat_:") and iid in self.loaded_files]
+        expanded = []
+        for iid in sel_iids:
+            if iid.startswith("_cat_:"):
+                expanded.extend(self.loaded_tv.get_children(iid))
+            else:
+                expanded.append(iid)
+        selected_shorts = [iid for iid in expanded if iid in self.loaded_files]
 
         unknown = []
         file_entries = []
