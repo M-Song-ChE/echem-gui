@@ -267,9 +267,7 @@ class ORRPanel(ttk.Frame):
         ttk.Button(_gb, text="Sel N2", width=7,
                    command=self._select_n2).pack(side=tk.LEFT, padx=(0, 4))
         ttk.Button(_gb, text="Sel O2", width=7,
-                   command=self._select_o2).pack(side=tk.LEFT, padx=(0, 4))
-        ttk.Button(_gb, text="Set Catalyst",
-                   command=self._set_catalyst_name).pack(side=tk.LEFT)
+                   command=self._select_o2).pack(side=tk.LEFT)
 
         _lf = ttk.Frame(left)
         _lf.pack(fill=tk.X, padx=4, pady=2)
@@ -280,6 +278,7 @@ class ORRPanel(ttk.Frame):
         self.loaded_tv.tag_configure("unk", background="white")
         self.loaded_tv.tag_configure("hdr", background="#e8e8e8", foreground="#333333",
                                      font=("", 8, "bold"))
+        self.loaded_tv.bind("<Double-1>", self._on_loaded_tv_dblclick)
         _lf_sb = ttk.Scrollbar(_lf, orient=tk.VERTICAL, command=self.loaded_tv.yview)
         self.loaded_tv.configure(yscrollcommand=_lf_sb.set)
         _lf_sb.pack(side=tk.RIGHT, fill=tk.Y)
@@ -859,15 +858,24 @@ class ORRPanel(ttk.Frame):
             if parent and not self.loaded_tv.get_children(parent):
                 self.loaded_tv.delete(parent)
 
-    def _set_catalyst_name(self):
-        """Rename the catalyst group for the selected file(s) and propagate to pairs."""
-        sel = self.loaded_tv.selection()
-        if not sel:
-            messagebox.showwarning("ORR", "Select a file or catalyst group header first.")
+    def _on_loaded_tv_dblclick(self, event):
+        """Double-click on a catalyst header → rename it."""
+        iid = self.loaded_tv.identify_row(event.y)
+        if iid and iid.startswith("_cat_:"):
+            self._set_catalyst_name(iid)
+
+    def _set_catalyst_name(self, cat_iid=None):
+        """Rename the catalyst group and propagate to pairs."""
+        if cat_iid is None:
+            sel = self.loaded_tv.selection()
+            if not sel:
+                return
+            iid = sel[0]
+            cat_iid = iid if iid.startswith("_cat_:") else self.loaded_tv.parent(iid)
+        if not cat_iid or not cat_iid.startswith("_cat_:"):
             return
 
-        iid = sel[0]
-        cat_iid = iid if iid.startswith("_cat_:") else self.loaded_tv.parent(iid)
+        old_cat = cat_iid[len("_cat_:"):]
         if not cat_iid or not cat_iid.startswith("_cat_:"):
             messagebox.showwarning("ORR", "Could not determine catalyst group.")
             return
@@ -876,8 +884,8 @@ class ORRPanel(ttk.Frame):
 
         from tkinter.simpledialog import askstring
         new_cat = askstring(
-            "Set Catalyst Name",
-            "Catalyst name for this group:",
+            "Rename Catalyst",
+            "Catalyst name:",
             initialvalue=old_cat,
             parent=self,
         )
@@ -925,6 +933,8 @@ class ORRPanel(ttk.Frame):
                     if old_id in cs:
                         cs[new_id] = cs.pop(old_id)
 
+        for sname in affected_samples:
+            self._plot_sample(sname)
         if self.active_sample in affected_samples:
             self._rebuild_pair_table(self.active_sample)
             self._update_catalyst_selector(self.active_sample)
