@@ -267,7 +267,9 @@ class ORRPanel(ttk.Frame):
         ttk.Button(_gb, text="Sel N2", width=7,
                    command=self._select_n2).pack(side=tk.LEFT, padx=(0, 4))
         ttk.Button(_gb, text="Sel O2", width=7,
-                   command=self._select_o2).pack(side=tk.LEFT)
+                   command=self._select_o2).pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Button(_gb, text="Set Catalyst",
+                   command=self._set_catalyst_name).pack(side=tk.LEFT)
 
         _lf = ttk.Frame(left)
         _lf.pack(fill=tk.X, padx=4, pady=2)
@@ -856,6 +858,76 @@ class ORRPanel(ttk.Frame):
                 self._loaded_keys.remove(short)
             if parent and not self.loaded_tv.get_children(parent):
                 self.loaded_tv.delete(parent)
+
+    def _set_catalyst_name(self):
+        """Rename the catalyst group for the selected file(s) and propagate to pairs."""
+        sel = self.loaded_tv.selection()
+        if not sel:
+            messagebox.showwarning("ORR", "Select a file or catalyst group header first.")
+            return
+
+        iid = sel[0]
+        cat_iid = iid if iid.startswith("_cat_:") else self.loaded_tv.parent(iid)
+        if not cat_iid or not cat_iid.startswith("_cat_:"):
+            messagebox.showwarning("ORR", "Could not determine catalyst group.")
+            return
+
+        old_cat = cat_iid[len("_cat_:"):]
+
+        from tkinter.simpledialog import askstring
+        new_cat = askstring(
+            "Set Catalyst Name",
+            "Catalyst name for this group:",
+            initialvalue=old_cat,
+            parent=self,
+        )
+        if new_cat is None:
+            return
+        new_cat = new_cat.strip()
+        if new_cat == old_cat:
+            return
+
+        file_shorts = set(self.loaded_tv.get_children(cat_iid))
+
+        # Update loaded_files
+        for short in file_shorts:
+            if short in self.loaded_files:
+                self.loaded_files[short]["catalyst"] = new_cat
+
+        # Update treeview header text
+        self.loaded_tv.item(cat_iid,
+                            text=f"  ▸ {new_cat if new_cat else '(no catalyst)'}")
+
+        # Propagate to all sample pairs that reference these files
+        affected_samples = set()
+        for sname, sentry in self.samples.items():
+            cc = sentry.setdefault("catalyst_corrections", {})
+            cs = sentry.setdefault("catalyst_styles", {})
+            renamed: dict = {}  # old_id → new_id
+
+            for pair in sentry["pairs"]:
+                if (pair.get("n2_short") not in file_shorts
+                        and pair.get("o2_short") not in file_shorts):
+                    continue
+                old_base = pair.get("catalyst_base", "")
+                old_id   = pair.get("catalyst_id",   "")
+                suffix   = old_id[len(old_base):] if old_id.startswith(old_base) else ""
+                new_id   = new_cat + suffix
+                renamed[old_id] = new_id
+                pair["catalyst_base"] = new_cat
+                pair["catalyst_id"]   = new_id
+                affected_samples.add(sname)
+
+            for old_id, new_id in renamed.items():
+                if old_id != new_id:
+                    if old_id in cc:
+                        cc[new_id] = cc.pop(old_id)
+                    if old_id in cs:
+                        cs[new_id] = cs.pop(old_id)
+
+        if self.active_sample in affected_samples:
+            self._rebuild_pair_table(self.active_sample)
+            self._update_catalyst_selector(self.active_sample)
 
     def _select_n2(self):
         shorts = [k for k in self._loaded_keys
