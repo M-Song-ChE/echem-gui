@@ -209,9 +209,11 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         ttk.Button(left, text="⇄  Swap X↔Y", command=_swap_xy).pack(
             anchor=tk.W, padx=4, pady=(0, 4))
 
-        # CV plot range (min / max per axis)
-        ttk.Label(left, text="CV Plot Range:", font=("", 8)).pack(anchor=tk.W, padx=4, pady=(6, 0))
-        xr_f = ttk.Frame(left)
+        # CV plot range — hidden (code preserved)
+        _cv_range_frame = ttk.Frame(left)
+        _cv_range_frame.pack(fill=tk.X)
+        ttk.Label(_cv_range_frame, text="CV Plot Range:", font=("", 8)).pack(anchor=tk.W, padx=4, pady=(6, 0))
+        xr_f = ttk.Frame(_cv_range_frame)
         xr_f.pack(fill=tk.X, padx=4, pady=(1, 0))
         ttk.Label(xr_f, text="X min:").pack(side=tk.LEFT)
         self.x_min_var = tk.StringVar()
@@ -227,7 +229,7 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         _cvxgi.pack(side=tk.LEFT, padx=(2, 0))
         _cvxgi.bind("<Return>",   lambda e: self._auto_replot())
         _cvxgi.bind("<FocusOut>", lambda e: self._auto_replot())
-        yr_f = ttk.Frame(left)
+        yr_f = ttk.Frame(_cv_range_frame)
         yr_f.pack(fill=tk.X, padx=4, pady=(1, 0))
         ttk.Label(yr_f, text="Y min:").pack(side=tk.LEFT)
         self.y_min_var = tk.StringVar()
@@ -243,13 +245,13 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         _cvygi.pack(side=tk.LEFT, padx=(2, 0))
         _cvygi.bind("<Return>",   lambda e: self._auto_replot())
         _cvygi.bind("<FocusOut>", lambda e: self._auto_replot())
-        ttk.Label(left, text="(blank = auto)", foreground="gray",
+        ttk.Label(_cv_range_frame, text="(blank = auto)", foreground="gray",
                   font=("", 8)).pack(anchor=tk.W, padx=4)
         for _re in (_xmin, _xmax, _ymin, _ymax):
             _re.bind("<Return>",   lambda e: self._plot_cv())
             _re.bind("<FocusOut>", lambda e: self._plot_cv())
 
-        flip_row = ttk.Frame(left)
+        flip_row = ttk.Frame(_cv_range_frame)
         flip_row.pack(fill=tk.X, padx=4, pady=(0, 2))
         self.x_flip_var = tk.BooleanVar(value=False)
         self.y_flip_var = tk.BooleanVar(value=False)
@@ -257,6 +259,7 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
                         command=self._plot_cv).pack(side=tk.LEFT, padx=(0, 8))
         ttk.Checkbutton(flip_row, text="Flip Y", variable=self.y_flip_var,
                         command=self._plot_cv).pack(side=tk.LEFT)
+        _cv_range_frame.pack_forget()
 
         # Reference electrode
         ttk.Label(left, text="Reference Electrode:").pack(anchor=tk.W, padx=4, pady=(4, 0))
@@ -416,10 +419,12 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
             command=self._toggle_cdl_legend_frame,
         ).pack(side=tk.LEFT, padx=(8, 0))
 
-        # CV Grid
-        ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=4)
-        ttk.Label(left, text="CV Grid", font=("", 8, "bold")).pack(anchor=tk.W, padx=4)
-        cv_grid_row = ttk.Frame(left)
+        # CV Grid — hidden (code preserved)
+        _cv_grid_frame = ttk.Frame(left)
+        _cv_grid_frame.pack(fill=tk.X)
+        ttk.Separator(_cv_grid_frame, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=4)
+        ttk.Label(_cv_grid_frame, text="CV Grid", font=("", 8, "bold")).pack(anchor=tk.W, padx=4)
+        cv_grid_row = ttk.Frame(_cv_grid_frame)
         cv_grid_row.pack(fill=tk.X, padx=4, pady=(2, 0))
         self.cv_x_grid_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(cv_grid_row, text="X", variable=self.cv_x_grid_var,
@@ -427,7 +432,7 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         self.cv_y_grid_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(cv_grid_row, text="Y", variable=self.cv_y_grid_var,
                         command=self._auto_replot).pack(side=tk.LEFT, padx=(8, 0))
-        cv_grid_style_row = ttk.Frame(left)
+        cv_grid_style_row = ttk.Frame(_cv_grid_frame)
         cv_grid_style_row.pack(fill=tk.X, padx=4, pady=(0, 2))
         ttk.Label(cv_grid_style_row, text="Style:").pack(side=tk.LEFT)
         self.cv_grid_style_var = tk.StringVar(value="dashed")
@@ -451,10 +456,13 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         _cvglw.pack(side=tk.LEFT, padx=(2, 0))
         _cvglw.bind("<Return>",   lambda e: self._auto_replot())
         _cvglw.bind("<FocusOut>", lambda e: self._auto_replot())
+        _cv_grid_frame.pack_forget()
 
-        # CV Reference Lines
-        ttk.Label(left, text="CV Ref Lines", font=("", 8, "bold")).pack(anchor=tk.W, padx=4)
-        cv_ref_add_row = ttk.Frame(left)
+        # CV Reference Lines — hidden (code preserved)
+        _cv_reflines_frame = ttk.Frame(left)
+        _cv_reflines_frame.pack(fill=tk.X)
+        ttk.Label(_cv_reflines_frame, text="CV Ref Lines", font=("", 8, "bold")).pack(anchor=tk.W, padx=4)
+        cv_ref_add_row = ttk.Frame(_cv_reflines_frame)
         cv_ref_add_row.pack(fill=tk.X, padx=4, pady=(2, 0))
         ttk.Label(cv_ref_add_row, text="X:").pack(side=tk.LEFT)
         self._cv_ref_x_var = tk.StringVar()
@@ -470,7 +478,7 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
                    command=self._add_cv_yrefline).pack(side=tk.LEFT, padx=2)
         _cvref_x_e.bind("<Return>", lambda e: self._add_cv_xrefline())
         _cvref_y_e.bind("<Return>", lambda e: self._add_cv_yrefline())
-        cv_ref_list_row = ttk.Frame(left)
+        cv_ref_list_row = ttk.Frame(_cv_reflines_frame)
         cv_ref_list_row.pack(fill=tk.X, padx=4, pady=(0, 2))
         self._cv_reflines_lb = tk.Listbox(cv_ref_list_row, height=3,
                                            selectmode=tk.SINGLE, exportselection=False)
@@ -478,7 +486,7 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         self._cv_reflines_lb.bind("<<ListboxSelect>>", lambda e: self._on_cv_refline_select())
         ttk.Button(cv_ref_list_row, text="Remove",
                    command=self._remove_cv_refline).pack(side=tk.RIGHT, padx=(4, 0))
-        cv_ref_opt_row = ttk.Frame(left)
+        cv_ref_opt_row = ttk.Frame(_cv_reflines_frame)
         cv_ref_opt_row.pack(fill=tk.X, padx=4, pady=(0, 2))
         ttk.Label(cv_ref_opt_row, text="Style:").pack(side=tk.LEFT)
         self._cv_refline_style_var = tk.StringVar(value="dashed")
@@ -502,10 +510,13 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         _cvrl_color_cb.bind("<<ComboboxSelected>>", lambda e: self._on_cv_refline_style_color_change())
         _cvrl_lw.bind("<Return>",   lambda e: self._on_cv_refline_style_color_change())
         _cvrl_lw.bind("<FocusOut>", lambda e: self._on_cv_refline_style_color_change())
+        _cv_reflines_frame.pack_forget()
 
-        # Cdl Grid
-        ttk.Label(left, text="Cdl Grid", font=("", 8, "bold")).pack(anchor=tk.W, padx=4)
-        cdl_grid_row = ttk.Frame(left)
+        # Cdl Grid — hidden (code preserved)
+        _cdl_grid_frame = ttk.Frame(left)
+        _cdl_grid_frame.pack(fill=tk.X)
+        ttk.Label(_cdl_grid_frame, text="Cdl Grid", font=("", 8, "bold")).pack(anchor=tk.W, padx=4)
+        cdl_grid_row = ttk.Frame(_cdl_grid_frame)
         cdl_grid_row.pack(fill=tk.X, padx=4, pady=(2, 0))
         self.cdl_x_grid_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(cdl_grid_row, text="X", variable=self.cdl_x_grid_var,
@@ -524,7 +535,7 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         for _gi in (_cdlxgi, _cdlygi):
             _gi.bind("<Return>",   lambda e: self._replot_active_cdl())
             _gi.bind("<FocusOut>", lambda e: self._replot_active_cdl())
-        cdl_grid_style_row = ttk.Frame(left)
+        cdl_grid_style_row = ttk.Frame(_cdl_grid_frame)
         cdl_grid_style_row.pack(fill=tk.X, padx=4, pady=(0, 4))
         ttk.Label(cdl_grid_style_row, text="Style:").pack(side=tk.LEFT)
         self.cdl_grid_style_var = tk.StringVar(value="dashed")
@@ -548,10 +559,13 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         _cdlglw.pack(side=tk.LEFT, padx=(2, 0))
         _cdlglw.bind("<Return>",   lambda e: self._replot_active_cdl())
         _cdlglw.bind("<FocusOut>", lambda e: self._replot_active_cdl())
+        _cdl_grid_frame.pack_forget()
 
-        # Cdl Reference Lines
-        ttk.Label(left, text="Cdl Ref Lines", font=("", 8, "bold")).pack(anchor=tk.W, padx=4)
-        cdl_ref_add_row = ttk.Frame(left)
+        # Cdl Reference Lines — hidden (code preserved)
+        _cdl_reflines_frame = ttk.Frame(left)
+        _cdl_reflines_frame.pack(fill=tk.X)
+        ttk.Label(_cdl_reflines_frame, text="Cdl Ref Lines", font=("", 8, "bold")).pack(anchor=tk.W, padx=4)
+        cdl_ref_add_row = ttk.Frame(_cdl_reflines_frame)
         cdl_ref_add_row.pack(fill=tk.X, padx=4, pady=(2, 0))
         ttk.Label(cdl_ref_add_row, text="X:").pack(side=tk.LEFT)
         self._cdl_ref_x_var = tk.StringVar()
@@ -567,7 +581,7 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
                    command=self._add_cdl_yrefline).pack(side=tk.LEFT, padx=2)
         _cdlref_x_e.bind("<Return>", lambda e: self._add_cdl_xrefline())
         _cdlref_y_e.bind("<Return>", lambda e: self._add_cdl_yrefline())
-        cdl_ref_list_row = ttk.Frame(left)
+        cdl_ref_list_row = ttk.Frame(_cdl_reflines_frame)
         cdl_ref_list_row.pack(fill=tk.X, padx=4, pady=(0, 2))
         self._cdl_reflines_lb = tk.Listbox(cdl_ref_list_row, height=3,
                                             selectmode=tk.SINGLE, exportselection=False)
@@ -575,7 +589,7 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         self._cdl_reflines_lb.bind("<<ListboxSelect>>", lambda e: self._on_cdl_refline_select())
         ttk.Button(cdl_ref_list_row, text="Remove",
                    command=self._remove_cdl_refline).pack(side=tk.RIGHT, padx=(4, 0))
-        cdl_ref_opt_row = ttk.Frame(left)
+        cdl_ref_opt_row = ttk.Frame(_cdl_reflines_frame)
         cdl_ref_opt_row.pack(fill=tk.X, padx=4, pady=(0, 2))
         ttk.Label(cdl_ref_opt_row, text="Style:").pack(side=tk.LEFT)
         self._cdl_refline_style_var = tk.StringVar(value="dashed")
@@ -599,17 +613,20 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         _cdlrl_color_cb.bind("<<ComboboxSelected>>", lambda e: self._on_cdl_refline_style_color_change())
         _cdlrl_lw.bind("<Return>",   lambda e: self._on_cdl_refline_style_color_change())
         _cdlrl_lw.bind("<FocusOut>", lambda e: self._on_cdl_refline_style_color_change())
+        _cdl_reflines_frame.pack_forget()
 
-        # Font
-        ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=4)
-        ttk.Label(left, text="Font", font=("", 9, "bold")).pack(anchor=tk.W, padx=4)
+        # Font — hidden (code preserved)
+        _font_frame = ttk.Frame(left)
+        _font_frame.pack(fill=tk.X)
+        ttk.Separator(_font_frame, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=4)
+        ttk.Label(_font_frame, text="Font", font=("", 9, "bold")).pack(anchor=tk.W, padx=4)
         self.font_title_size_var = tk.StringVar(value="10")
         self.font_title_bold_var = tk.BooleanVar(value=False)
         self.font_label_size_var = tk.StringVar(value="10")
         self.font_label_bold_var = tk.BooleanVar(value=False)
         self.font_tick_size_var  = tk.StringVar(value="8")
         self.font_tick_bold_var  = tk.BooleanVar(value=False)
-        _font_title_row = ttk.Frame(left)
+        _font_title_row = ttk.Frame(_font_frame)
         _font_title_row.pack(fill=tk.X, padx=4, pady=(2, 0))
         ttk.Label(_font_title_row, text="Title:      Size").pack(side=tk.LEFT)
         _fts_e = ttk.Entry(_font_title_row, textvariable=self.font_title_size_var, width=4)
@@ -618,7 +635,7 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         _fts_e.bind("<FocusOut>", lambda e: self._auto_replot())
         ttk.Checkbutton(_font_title_row, text="Bold", variable=self.font_title_bold_var,
                         command=self._auto_replot).pack(side=tk.LEFT)
-        _font_label_row = ttk.Frame(left)
+        _font_label_row = ttk.Frame(_font_frame)
         _font_label_row.pack(fill=tk.X, padx=4, pady=(2, 0))
         ttk.Label(_font_label_row, text="Axis Lbl: Size").pack(side=tk.LEFT)
         _fls_e = ttk.Entry(_font_label_row, textvariable=self.font_label_size_var, width=4)
@@ -627,7 +644,7 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         _fls_e.bind("<FocusOut>", lambda e: self._auto_replot())
         ttk.Checkbutton(_font_label_row, text="Bold", variable=self.font_label_bold_var,
                         command=self._auto_replot).pack(side=tk.LEFT)
-        _font_tick_row = ttk.Frame(left)
+        _font_tick_row = ttk.Frame(_font_frame)
         _font_tick_row.pack(fill=tk.X, padx=4, pady=(2, 0))
         ttk.Label(_font_tick_row, text="Tick Nos: Size").pack(side=tk.LEFT)
         _fks_e = ttk.Entry(_font_tick_row, textvariable=self.font_tick_size_var, width=4)
@@ -636,7 +653,7 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         _fks_e.bind("<FocusOut>", lambda e: self._auto_replot())
         ttk.Checkbutton(_font_tick_row, text="Bold", variable=self.font_tick_bold_var,
                         command=self._auto_replot).pack(side=tk.LEFT)
-        _spacing_row = ttk.Frame(left)
+        _spacing_row = ttk.Frame(_font_frame)
         _spacing_row.pack(fill=tk.X, padx=4, pady=(2, 0))
         ttk.Label(_spacing_row, text="Spacing (pt): Title").pack(side=tk.LEFT)
         self.title_pad_var = tk.StringVar(value="6")
@@ -650,9 +667,29 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         _lpad_e.pack(side=tk.LEFT, padx=(2, 0))
         _lpad_e.bind("<Return>",   lambda e: self._auto_replot())
         _lpad_e.bind("<FocusOut>", lambda e: self._auto_replot())
+        _font_frame.pack_forget()
 
+        # result_label kept for internal use (not displayed; replaced by _results_tv below)
         self.result_label = ttk.Label(left, text="", wraplength=290, justify=tk.LEFT)
-        self.result_label.pack(anchor=tk.W, padx=4, pady=2)
+
+        # ── Results table (accumulated per-file) ──────────────────
+        _rtv_lf = ttk.LabelFrame(left, text="Results (Cdl Extraction)")
+        _rtv_lf.pack(fill=tk.BOTH, padx=4, pady=4, expand=False)
+        _rtv_cols = ("file", "cdl_mF", "ecsa", "r_sq")
+        self._results_tv = ttk.Treeview(_rtv_lf, columns=_rtv_cols, show="headings",
+                                         height=5, selectmode="browse")
+        self._results_tv.heading("file",   text="File")
+        self._results_tv.heading("cdl_mF", text="Cdl (mF)")
+        self._results_tv.heading("ecsa",   text="ECSA (cm²)")
+        self._results_tv.heading("r_sq",   text="R²")
+        self._results_tv.column("file",   width=130, anchor=tk.W,      stretch=True)
+        self._results_tv.column("cdl_mF", width=70,  anchor=tk.CENTER, stretch=False)
+        self._results_tv.column("ecsa",   width=80,  anchor=tk.CENTER, stretch=False)
+        self._results_tv.column("r_sq",   width=55,  anchor=tk.CENTER, stretch=False)
+        _rtv_sb = ttk.Scrollbar(_rtv_lf, orient=tk.VERTICAL, command=self._results_tv.yview)
+        self._results_tv.configure(yscrollcommand=_rtv_sb.set)
+        _rtv_sb.pack(side=tk.RIGHT, fill=tk.Y)
+        self._results_tv.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
 
         # ── Log ───────────────────────────────────────────────────
         ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
@@ -1083,6 +1120,7 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         self.canvas_cv.draw()
         self.canvas_cdl.draw()
         self.result_label.config(text="")
+        self._rebuild_results_tv()
 
     def _on_file_color_change(self, event=None):
         if not self.active_file:
@@ -1414,6 +1452,7 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
         self.lightness_step_var.set(entry.get("lightness_step", "0.15"))
         self.linewidth_var.set(entry.get("linewidth", "1.5"))
         self.plot_style_var.set(entry.get("plot_style", "Line"))
+        self._rebuild_results_tv()
 
     def _auto_replot(self):
         if self._suppress_replot:
@@ -1978,6 +2017,7 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
                 f"ECSA = {ecsa:.2f} cm²\n"
                 f"(Cs = {cs} mF/cm²,  R² = {r_sq:.4f})"
             )
+        self._rebuild_results_tv()
 
     # ════════════════════════════════════════════════════════════════
     # Reference line helpers (CV)
@@ -2130,6 +2170,25 @@ class ECSAPanel(FileManagerMixin, CorrectionMixin, ttk.Frame):
                          self._cdl_refline_color_var.get(),
                          self._cdl_refline_linewidth_var.get())
         self._replot_active_cdl()
+
+    # ════════════════════════════════════════════════════════════════
+    # Results table helper
+    # ════════════════════════════════════════════════════════════════
+    def _rebuild_results_tv(self):
+        """Rebuild the accumulated results Treeview from all loaded files."""
+        for item in self._results_tv.get_children():
+            self._results_tv.delete(item)
+        for fname, entry in self.files.items():
+            cdl_data = entry.get("cdl_data")
+            if cdl_data is not None:
+                ecsa_val = cdl_data.get("ecsa")
+                vals = (fname,
+                        f"{cdl_data['cdl_mF']:.4f}",
+                        f"{ecsa_val:.4f}" if ecsa_val is not None else "—",
+                        f"{cdl_data['r_sq']:.4f}")
+            else:
+                vals = (fname, "—", "—", "—")
+            self._results_tv.insert("", tk.END, values=vals)
 
     # ════════════════════════════════════════════════════════════════
     # Log helper

@@ -23,6 +23,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolb
 
 from .file_manager import _read_mpr
 from .plotting import copy_figure_to_clipboard
+from .checklist import CheckableListbox
 
 # ── defaults ────────────────────────────────────────────────────────────────
 _DEF = dict(
@@ -165,7 +166,6 @@ class HupdPanel(ttk.Frame):
         self._suppress    = False
         self._dragging_var = None        # StringVar currently being dragged
         self._dragging_ann = False       # True when dragging the annotation box
-        self._lb_drag_src  = None        # listbox drag: source row index
         self._ann_drag_offset = [0.0, 0.0]
         self._ann_pos  = [0.02, 0.97]   # annotation position in axes fraction
         self._ann_artist = None          # Text artist reference
@@ -205,16 +205,10 @@ class HupdPanel(ttk.Frame):
         ttk.Button(bf, text="Load Files", command=self._load).pack(side=tk.LEFT)
         ttk.Button(bf, text="Remove",     command=self._remove).pack(side=tk.LEFT, padx=4)
 
-        self._lb = tk.Listbox(ff, height=5, selectmode=tk.SINGLE,
-                              exportselection=False, font=("", 8))
-        lbs = ttk.Scrollbar(ff, orient=tk.VERTICAL, command=self._lb.yview)
-        self._lb.configure(yscrollcommand=lbs.set)
-        lbs.pack(side=tk.RIGHT, fill=tk.Y, padx=(0, 4))
+        self._lb = CheckableListbox(ff, height=5, show_checkboxes=False,
+                                    on_reorder=self._on_hupd_lb_reorder)
         self._lb.pack(fill=tk.X, padx=4, pady=(0, 2))
-        self._lb.bind("<<ListboxSelect>>",  self._on_lb)
-        self._lb.bind("<ButtonPress-1>",    self._on_lb_press)
-        self._lb.bind("<B1-Motion>",        self._on_lb_drag_motion)
-        self._lb.bind("<ButtonRelease-1>",  self._on_lb_drop)
+        self._lb.bind("<<ListboxSelect>>", self._on_lb)
 
         # Cycle selector
         cr = ttk.Frame(ff)
@@ -583,41 +577,9 @@ class HupdPanel(ttk.Frame):
         self._replot()
 
     # ── Listbox drag-to-reorder ──────────────────────────────────────────────
-    def _on_lb_press(self, event):
-        idx = self._lb.nearest(event.y)
-        self._lb_drag_src = idx if 0 <= idx < len(self._keys) else None
-
-    def _on_lb_drag_motion(self, event):
-        if self._lb_drag_src is None:
-            return
-        self._lb.config(cursor="fleur")
-        dst = max(0, min(len(self._keys) - 1, self._lb.nearest(event.y)))
-        self._lb.selection_clear(0, tk.END)
-        self._lb.selection_set(dst)
-
-    def _on_lb_drop(self, event):
-        self._lb.config(cursor="")
-        src = self._lb_drag_src
-        self._lb_drag_src = None
-        if src is None:
-            return
-        dst = max(0, min(len(self._keys) - 1, self._lb.nearest(event.y)))
-        if src == dst:
-            return  # Plain click — <<ListboxSelect>> already handled it
-        keys = list(self._keys)
-        key  = keys.pop(src)
-        keys.insert(dst, key)
-        self._keys = keys
-        self.files = OrderedDict((k, self.files[k]) for k in keys)
-        old = self._suppress
-        self._suppress = True
-        self._lb.delete(0, tk.END)
-        for k in self._keys:
-            self._lb.insert(tk.END, k)
-        self._suppress = old
-        self.active_file = self._keys[dst]
-        self._lb.selection_clear(0, tk.END)
-        self._lb.selection_set(dst)
+    def _on_hupd_lb_reorder(self, new_order):
+        self._keys = list(new_order)
+        self.files = OrderedDict((k, self.files[k]) for k in new_order)
         self._replot()
 
     def _on_lb(self, event=None):
@@ -889,7 +851,7 @@ class HupdPanel(ttk.Frame):
 
             self.files.clear()
             self._keys.clear()
-            self._lb.delete(0, tk.END)
+            self._lb.clear()
 
             for rec in state.get("files", []):
                 df = data_store.get(rec["hash"])
