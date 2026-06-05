@@ -2597,18 +2597,22 @@ class ORRPanel(ttk.Frame):
             leg = sentry.get("legend")
             if leg is not None and event.y is not None:
                 dy = event.y - sentry["leg_resize_start_y"]
-                new_sz = sentry["leg_resize_start_sz"] + dy / 5.0
-                new_sz = max(4.0, min(30.0, new_sz))
-                prev_sz = sentry.get("leg_size_live", sentry.get("leg_size", 8.0))
+                new_sz = max(4.0, min(30.0,
+                             sentry["leg_resize_start_sz"] + dy / 5.0))
                 sentry["leg_size_live"] = new_sz
-                if prev_sz > 0:
-                    _scale_legend_spacing(leg, new_sz / prev_sz)
+                prev_sz = sentry.get("_leg_prev_sz", sentry.get("leg_size", 8.0))
+                sentry["_leg_prev_sz"] = new_sz
+                try:
+                    if prev_sz > 0:
+                        _scale_legend_spacing(leg, new_sz / prev_sz)
+                except Exception:
+                    pass
                 for txt in leg.get_texts():
                     txt.set_fontsize(new_sz)
                 ttl = leg.get_title()
                 if ttl:
                     ttl.set_fontsize(new_sz)
-                sentry["canvas"].draw()
+                sentry["canvas"].draw_idle()
             return
 
         if not sentry.get("panning"):
