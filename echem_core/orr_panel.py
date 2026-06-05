@@ -222,8 +222,9 @@ class ORRPanel(ttk.Frame):
         self.active_sample  = None
         self._suppress_replot = False
         self._loading        = False
-        self._drag           = None
-        self._zoom_sample    = None
+        self._drag                = None
+        self._zoom_sample         = None
+        self._copied_sample_fmt   = None  # clipboard for Copy/Paste format
         self._build_panel()
         self.after(500, self._auto_set_initial_size)
 
@@ -321,6 +322,15 @@ class ORRPanel(ttk.Frame):
 
         ttk.Button(left, text="↓ Add Selected Files to Sample",
                    command=self._add_files_to_sample).pack(fill=tk.X, padx=4, pady=(2, 0))
+
+        _cp_row = ttk.Frame(left)
+        _cp_row.pack(fill=tk.X, padx=4, pady=(2, 0))
+        ttk.Button(_cp_row, text="Copy Format",
+                   command=self._copy_sample_format).pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Button(_cp_row, text="Paste Format",
+                   command=self._paste_sample_format).pack(side=tk.LEFT)
+        ttk.Label(_cp_row, text="(grid/font/legend/reflines)",
+                  foreground="gray", font=("", 7)).pack(side=tk.LEFT, padx=(6, 0))
 
         # ══ PAIR TABLE ══════════════════════════════════════════════
         ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=4)
@@ -1350,6 +1360,44 @@ class ORRPanel(ttk.Frame):
                      relief=tk.GROOVE).pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(0, 1))
             tk.Label(row, text=n2_s, bg=n2_bg, font=("", 7), anchor=tk.W,
                      relief=tk.GROOVE).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 1))
+
+    # ════════════════════════════════════════════════════════════════
+    # Copy / Paste sample display format
+    # ════════════════════════════════════════════════════════════════
+    _FMT_KEYS = (
+        "x_grid", "y_grid", "x_grid_int", "y_grid_int",
+        "grid_style", "grid_color", "grid_linewidth",
+        "x_flip", "y_flip",
+        "legend_show", "legend_frame", "leg_size", "legend_loc",
+        "font_title_size", "font_title_bold",
+        "font_label_size", "font_label_bold",
+        "font_tick_size",  "font_tick_bold",
+        "title_pad", "label_pad",
+        "ref_electrode",
+    )
+
+    def _copy_sample_format(self):
+        if not self.active_sample or self.active_sample not in self.samples:
+            return
+        self._save_active_sample_state()
+        g = self.samples[self.active_sample]
+        self._copied_sample_fmt = {k: g.get(k) for k in self._FMT_KEYS}
+        self._copied_sample_fmt["reflines"] = list(g.get("reflines", []))
+
+    def _paste_sample_format(self):
+        if not self._copied_sample_fmt:
+            return
+        if not self.active_sample or self.active_sample not in self.samples:
+            return
+        g = self.samples[self.active_sample]
+        p = self._copied_sample_fmt
+        for k in self._FMT_KEYS:
+            if k in p and p[k] is not None:
+                g[k] = p[k]
+        if "reflines" in p:
+            g["reflines"] = list(p["reflines"])
+        self._switch_active_sample(self.active_sample)
+        self._plot_sample(self.active_sample)
 
     # ════════════════════════════════════════════════════════════════
     # Active sample state save / restore
