@@ -2508,6 +2508,7 @@ class ORRPanel(ttk.Frame):
         sentry = self.samples.get(sample_name)
         if sentry is None:
             return
+        self._activate_sample(sample_name)
         sentry["pan_moved"] = False
 
         # Double-click on axis labels → inline edit
