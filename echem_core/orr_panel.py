@@ -102,6 +102,25 @@ def _detect_catalyst(stem: str) -> str:
     return m.group(1) + (m.group(2) or "")
 
 
+_GROUP_KEY_PAT = re.compile(r'[-_](\d+)\((\w+)\)(_\d+)?')
+
+def _detect_group_key(stem: str) -> str:
+    """Return a treeview grouping key that includes the experiment number.
+
+    'LTS-BDRDE_22(Pt) vs …'   → 'Pt_22'
+    'LTS-BDRDE_26(Pt) vs …'   → 'Pt_26'
+    'LTS-BDRDE_22(Pt)_2 vs …' → 'Pt_22_2'
+    Falls back to _detect_catalyst if no number prefix is found.
+    """
+    m = _GROUP_KEY_PAT.search(stem)
+    if m:
+        num    = m.group(1)
+        cat    = m.group(2)
+        suffix = m.group(3) or ""
+        return f"{cat}_{num}{suffix}"
+    return _detect_catalyst(stem)
+
+
 def _extract_anodic(E: np.ndarray, I: np.ndarray):
     """Return (E_sorted, I_sorted) for the anodic (E-increasing) half of the CV.
 
@@ -839,9 +858,9 @@ class ORRPanel(ttk.Frame):
                 "path": path, "gas": gas, "rpm_id": rpm_id,
                 "catalyst": catalyst, "df": df}
             self._loaded_keys.append(short)
-            cat_key   = catalyst if catalyst else ""
-            cat_iid   = f"_cat_:{cat_key}"
-            cat_label = catalyst if catalyst else "(no catalyst)"
+            group_key = _detect_group_key(stem)
+            cat_iid   = f"_cat_:{group_key}"
+            cat_label = group_key if group_key else "(no catalyst)"
             if not self.loaded_tv.exists(cat_iid):
                 self.loaded_tv.insert("", tk.END, iid=cat_iid,
                                       text=f"  ▸ {cat_label}",
