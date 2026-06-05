@@ -225,6 +225,9 @@ class ORRPanel(ttk.Frame):
         self._drag                = None
         self._zoom_sample         = None
         self._copied_sample_fmt   = None  # clipboard for Copy/Paste format
+        self._pair_sep_drag       = None  # catalyst-group drag-to-reorder state
+        self._pair_sep_frames     = []    # [(sep_frame, cat_name)] for hit-testing
+        self._pair_drop_line      = None  # blue drop indicator
         self._build_panel()
         self.after(500, self._auto_set_initial_size)
 
@@ -1274,6 +1277,7 @@ class ORRPanel(ttk.Frame):
         tk.Label(hdr, text="N2 file", bg="#f5f5f5",
                  font=("", 8, "bold"), anchor=tk.W).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(2, 0))
 
+        self._pair_sep_frames = []
         prev_cat = None
         row_idx  = 0
         for pair in pairs:
@@ -1282,8 +1286,19 @@ class ORRPanel(ttk.Frame):
                 _sep_bg = "#e8d5f5"
                 _sep = tk.Frame(self._pair_tbl_inner, bg=_sep_bg)
                 _sep.pack(fill=tk.X, padx=2, pady=(6 if prev_cat is not None else 2, 0))
+                _sh = tk.Label(_sep, text="⠿", bg=_sep_bg, cursor="fleur", font=("", 10))
+                _sh.pack(side=tk.LEFT, padx=(4, 0))
                 tk.Label(_sep, text=f"── {cat} ──", bg=_sep_bg,
-                         font=("", 8, "bold"), anchor=tk.W, padx=6).pack(fill=tk.X)
+                         font=("", 8, "bold"), anchor=tk.W, padx=4).pack(
+                    side=tk.LEFT, fill=tk.X, expand=True)
+                _c = cat
+                _sh.bind("<ButtonPress-1>",
+                         lambda e, c=_c, sn=sample_name: self._on_pair_sep_press(e, c, sn))
+                _sh.bind("<B1-Motion>",
+                         lambda e: self._on_pair_sep_drag(e))
+                _sh.bind("<ButtonRelease-1>",
+                         lambda e, sn=sample_name: self._on_pair_sep_release(e, sn))
+                self._pair_sep_frames.append((_sep, cat))
                 prev_cat = cat
                 row_idx  = 0
 
@@ -1360,6 +1375,82 @@ class ORRPanel(ttk.Frame):
                      relief=tk.GROOVE).pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(0, 1))
             tk.Label(row, text=n2_s, bg=n2_bg, font=("", 7), anchor=tk.W,
                      relief=tk.GROOVE).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 1))
+
+    # ════════════════════════════════════════════════════════════════
+    # Pair catalyst-group drag-to-reorder
+    # ════════════════════════════════════════════════════════════════
+    def _on_pair_sep_press(self, event, cat, sample_name):
+        self._pair_sep_drag = {"from_cat": cat, "sample_name": sample_name,
+                               "target_cat": None}
+
+    def _on_pair_sep_drag(self, event):
+        d = self._pair_sep_drag
+        if d is None:
+            return
+        y_root = event.y_root
+        target_cat = None
+        for frame, c in self._pair_sep_frames:
+            try:
+                fy = frame.winfo_rooty()
+                fh = max(frame.winfo_height(), 1)
+                if y_root < fy + fh / 2:
+                    target_cat = c
+                    break
+                target_cat = c
+            except Exception:
+                pass
+        d["target_cat"] = target_cat
+        # Drop indicator
+        if self._pair_drop_line is None:
+            self._pair_drop_line = tk.Frame(self._pair_tbl_inner,
+                                            bg="#1a73e8", height=2)
+        for frame, c in self._pair_sep_frames:
+            if c == target_cat:
+                try:
+                    self._pair_drop_line.place(
+                        x=0, y=frame.winfo_y(), relwidth=1.0, height=2)
+                    self._pair_drop_line.lift()
+                except Exception:
+                    pass
+                return
+        self._pair_drop_line.place_forget()
+
+    def _on_pair_sep_release(self, event, sample_name):
+        if self._pair_drop_line is not None:
+            try:
+                self._pair_drop_line.place_forget()
+            except Exception:
+                pass
+        d = self._pair_sep_drag
+        self._pair_sep_drag = None
+        if d is None:
+            return
+        from_cat   = d["from_cat"]
+        target_cat = d.get("target_cat")
+        if target_cat is None or target_cat == from_cat:
+            return
+        sentry = self.samples.get(sample_name)
+        if sentry is None:
+            return
+        pairs = sentry["pairs"]
+        # Determine current catalyst order
+        cats_ordered = []
+        for p in pairs:
+            c = p.get("catalyst_id", "")
+            if c not in cats_ordered:
+                cats_ordered.append(c)
+        if from_cat not in cats_ordered or target_cat not in cats_ordered:
+            return
+        cats_ordered.remove(from_cat)
+        to_idx = cats_ordered.index(target_cat)
+        cats_ordered.insert(to_idx, from_cat)
+        # Rebuild pairs in new catalyst order
+        new_pairs = []
+        for c in cats_ordered:
+            new_pairs.extend(p for p in pairs if p.get("catalyst_id", "") == c)
+        sentry["pairs"] = new_pairs
+        self._rebuild_pair_table(sample_name)
+        self._plot_sample(sample_name)
 
     # ════════════════════════════════════════════════════════════════
     # Copy / Paste sample display format
