@@ -245,6 +245,8 @@ class ORRPanel(ttk.Frame):
         _lc.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         left = tk.Frame(_lc)
+        self._left_lc    = _lc    # outer scrollable canvas
+        self._left_inner = left   # inner content frame
         _lwin = _lc.create_window((0, 0), window=left, anchor=tk.NW)
         left.bind("<Configure>", lambda e: _lc.configure(scrollregion=_lc.bbox("all")))
         _lc.bind("<Configure>", lambda e: _lc.itemconfig(_lwin, width=e.width))
@@ -2057,9 +2059,26 @@ class ORRPanel(ttk.Frame):
             idx = items.index(sample_name)
             self.sample_lb.selection_clear(0, tk.END)
             self.sample_lb.selection_set(idx)
+            self.sample_lb.see(idx)
+            self._scroll_left_to_widget(self.sample_lb)
         if sample_name != self.active_sample:
             self._save_active_sample_state()
             self._switch_active_sample(sample_name)
+
+    def _scroll_left_to_widget(self, widget):
+        """Scroll the left panel so that widget is visible."""
+        try:
+            self.update_idletasks()
+            y = 0
+            w = widget
+            while w is not None and w is not self._left_inner:
+                y += w.winfo_y()
+                w = w.master
+            inner_h = self._left_inner.winfo_reqheight()
+            if inner_h > 0:
+                self._left_lc.yview_moveto(max(0.0, (y - 10) / inner_h))
+        except Exception:
+            pass
 
     def _highlight_active_headers(self):
         for sn, sentry in self.samples.items():
