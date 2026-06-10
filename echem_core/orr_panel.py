@@ -743,7 +743,13 @@ class ORRPanel(ttk.Frame):
         ttk.Button(_an_row, text="Tafel Analysis",
                    command=self._open_tafel_window).pack(side=tk.LEFT, padx=(0, 4))
         ttk.Button(_an_row, text="KL Analysis",
-                   command=self._open_kl_window).pack(side=tk.LEFT)
+                   command=self._open_kl_window).pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Button(_an_row, text="SA Analysis",
+                   command=self._open_sa_window).pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Button(_an_row, text="Levich Plot",
+                   command=self._open_levich_window).pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Button(_an_row, text="Sample Comparison",
+                   command=self._open_comparison_window).pack(side=tk.LEFT)
 
         # ══ EXPORT ══════════════════════════════════════════════════
         ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
@@ -2789,11 +2795,11 @@ class ORRPanel(ttk.Frame):
     # ════════════════════════════════════════════════════════════════
     # Analysis windows
     # ════════════════════════════════════════════════════════════════
-    def _get_active_curves(self):
-        """Return list of (E_arr, J_arr, rpm_float, label, color) for the active sample."""
-        if not self.active_sample or self.active_sample not in self.samples:
+    def _get_curves_for_sample(self, sname):
+        """Return list of (E_arr, J_arr, rpm_float, label, color) for a named sample."""
+        sentry = self.samples.get(sname)
+        if sentry is None:
             return []
-        sentry = self.samples[self.active_sample]
         cat_corrections = sentry.get("catalyst_corrections", {})
         curves = []
         for i, pair in enumerate(sentry.get("pairs", [])):
@@ -2818,133 +2824,208 @@ class ORRPanel(ttk.Frame):
                 rpm = float(pair.get("rpm_val") or pair.get("rpm_id") or 0)
             except (ValueError, TypeError):
                 rpm = 0.0
-            cat = pair.get("catalyst_id", "")
             prefix = f"[{cat}] " if cat else ""
             rpm_v = pair.get('rpm_val') or pair.get('rpm_id') or f'#{i+1}'
             label = f"{prefix}{rpm_v} rpm"
-            _cat_st = sentry.get("catalyst_styles", {}).get(cat, {})
             _auto_col = _PALETTE[i % len(_PALETTE)]
-            color = _cat_st.get("color", "").strip() or _auto_col
+            color = sentry.get("catalyst_styles", {}).get(cat, {}).get("color", "").strip() or _auto_col
             curves.append((E_arr, J_arr, rpm, label, color))
         return curves
 
+    def _get_active_curves(self):
+        """Return list of (E_arr, J_arr, rpm_float, label, color) for the active sample."""
+        if not self.active_sample:
+            return []
+        return self._get_curves_for_sample(self.active_sample)
+
     def _open_tafel_window(self):
-        curves = self._get_active_curves()
-        if not curves:
-            messagebox.showwarning("Tafel", "No processed curves for active sample.")
+        # Gather from ALL loaded samples
+        all_curves = []  # (E_arr, J_arr, rpm, label, color, sname)
+        for sn in self.samples:
+            for E, J, rpm, lbl, col in self._get_curves_for_sample(sn):
+                all_curves.append((E, J, rpm, lbl, col, sn))
+        if not all_curves:
+            messagebox.showwarning("Tafel", "No processed curves in any sample.")
             return
         ref = self.ref_electrode_var.get()
-        sname = self.active_sample
 
         win = tk.Toplevel(self)
-        win.title(f"Tafel Analysis — {sname}")
-        win.geometry("760x660")
+        win.title("Tafel Analysis")
+        win.geometry("820x720")
+
+        # Debounce
+        _recompute_id = [None]
+        def _schedule(*_):
+            if _recompute_id[0]:
+                try: win.after_cancel(_recompute_id[0])
+                except Exception: pass
+            _recompute_id[0] = win.after(350, _compute)
 
         # ── Theory ──────────────────────────────────────────────────────
         _th = ttk.LabelFrame(win, text="Tafel Theory")
         _th.pack(fill=tk.X, padx=8, pady=(6, 0))
-        _th_txt = (
-            "  Tafel equation:   E = a + b · log₁₀|J|   (b = Tafel slope, mV/dec)\n"
-            "  Kinetic region: low overpotential (far from diffusion plateau)\n"
-            "  Diffusion correction:  Jᵏ = J · J_lim / (J_lim − J)   (Koutecky)\n"
-            "  Fit:  linear regression of E vs log₁₀|J| → slope = b [V/dec] × 1000 [mV/dec]"
-        )
-        ttk.Label(_th, text=_th_txt, justify=tk.LEFT,
-                  font=("Courier", 8)).pack(anchor=tk.W, padx=6, pady=3)
+        _th_g = ttk.Frame(_th); _th_g.pack(fill=tk.X, padx=6, pady=3)
+        for _r, (_hd, _bd) in enumerate([
+            ("Tafel equation:",       "E = a + b · log₁₀|J|   (b = Tafel slope, mV/dec)"),
+            ("Diffusion correction:", "Jᵏ = J · J_lim / (J_lim − J)   (Koutecky, optional)")
+        ]):
+            ttk.Label(_th_g, text=_hd, font=("TkDefaultFont", 9, "bold"),
+                      anchor=tk.W).grid(row=_r, column=0, sticky=tk.W, pady=2)
+            ttk.Label(_th_g, text=f"  {_bd}", font=("TkDefaultFont", 9),
+                      anchor=tk.W).grid(row=_r, column=1, sticky=tk.W, padx=(4,0), pady=2)
 
-        # Curve selector
-        _csel_fr = ttk.LabelFrame(win, text="Select curves to analyse")
-        _csel_fr.pack(fill=tk.X, padx=8, pady=(4, 0))
-        _csel_vars = []
-        _csel_inner = ttk.Frame(_csel_fr)
-        _csel_inner.pack(fill=tk.X, padx=4, pady=2)
-        for _cv_idx, (_cv_E, _cv_J, _cv_rpm, _cv_lbl, _cv_col) in enumerate(curves):
-            _bv = tk.BooleanVar(value=True)
-            _csel_vars.append(_bv)
-            ttk.Checkbutton(_csel_inner, text=_cv_lbl, variable=_bv).pack(
-                side=tk.LEFT, padx=4)
+        # ── Notation — 2-column grid ──────────────────────────────────
+        _sym = ttk.LabelFrame(win, text="Notation")
+        _sym.pack(fill=tk.X, padx=8, pady=(0, 2))
+        _sym_g = ttk.Frame(_sym); _sym_g.pack(fill=tk.X, padx=4, pady=3)
+        for _i, (_s, _d) in enumerate([
+            ("J",     "current density (mA cm⁻²)"),
+            ("Jᵏ",    "kinetic J = J · J_lim / (J_lim − J)"),
+            ("J_lim", "diffusion plateau (most negative J)"),
+            ("b",     "Tafel slope (mV/decade)"),
+            ("E",     "electrode potential vs reference"),
+        ]):
+            _r, _c = _i // 2, (_i % 2) * 2
+            ttk.Label(_sym_g, text=_s, font=("TkDefaultFont", 9, "bold"),
+                      width=7, anchor=tk.E).grid(row=_r, column=_c, sticky=tk.E, padx=(8,2), pady=2)
+            ttk.Label(_sym_g, text=f"= {_d}", font=("TkDefaultFont", 9),
+                      anchor=tk.W).grid(row=_r, column=_c+1, sticky=tk.W, padx=(0,16), pady=2)
 
-        # Controls
-        ctrl = ttk.Frame(win)
-        ctrl.pack(side=tk.TOP, fill=tk.X, padx=8, pady=4)
+        # ── Curve selector — Group label (not interactive) → Sample [cat] checkbox → RPM ──
+        _ksel_fr = ttk.LabelFrame(
+            win, text="Select curves  (☑ [Cat] = one sample = one catalyst at multiple RPMs)")
+        _ksel_fr.pack(fill=tk.X, padx=8, pady=(4, 0))
+        _sel_cv = tk.Canvas(_ksel_fr, height=80, bd=0, highlightthickness=0)
+        _sel_sb = ttk.Scrollbar(_ksel_fr, orient=tk.VERTICAL, command=_sel_cv.yview)
+        _sel_inner = tk.Frame(_sel_cv)
+        _sel_inner.bind("<Configure>",
+                        lambda e: _sel_cv.configure(scrollregion=_sel_cv.bbox("all")))
+        _sel_cv.create_window((0, 0), window=_sel_inner, anchor="nw")
+        _sel_cv.configure(yscrollcommand=_sel_sb.set)
+        _sel_sb.pack(side=tk.RIGHT, fill=tk.Y)
+        _sel_cv.pack(fill=tk.BOTH, expand=True, padx=4, pady=2)
+        _sel_cv.bind("<MouseWheel>",
+                     lambda e: _sel_cv.yview_scroll(-1*(e.delta//120), "units"))
+
+        _by_samp = {}; _samp_order = []
+        for idx, (E_a, J_a, rpm, lbl, col, sn) in enumerate(all_curves):
+            if sn not in _by_samp:
+                _by_samp[sn] = []; _samp_order.append(sn)
+            m = re.match(r'^\[(\w+)\]', lbl)
+            cat = m.group(1) if m else ""
+            _by_samp[sn].append((idx, E_a, J_a, rpm, lbl, col, cat))
+
+        _tsel_vars = {}  # idx → BooleanVar
+
+        for sn in _samp_order:
+            # Group label — informational, not a sample in user's model
+            tk.Label(_sel_inner, text=f"  ▸ Group: {sn}",
+                     font=("TkDefaultFont", 8, "italic"), fg="#555555",
+                     anchor=tk.W).pack(fill=tk.X, anchor=tk.W, pady=(4, 0))
+            _by_cat = {}; _cat_ord = []
+            for idx, E_a, J_a, rpm, lbl, col, cat in _by_samp[sn]:
+                if cat not in _by_cat:
+                    _by_cat[cat] = []; _cat_ord.append(cat)
+                _by_cat[cat].append((idx, rpm, lbl, col))
+            for cat in _cat_ord:
+                cat_idxs = [it[0] for it in _by_cat[cat]]
+                cat_bv = tk.BooleanVar(value=True)
+                cat_row = tk.Frame(_sel_inner)
+                cat_row.pack(fill=tk.X, anchor=tk.W, padx=(18, 0), pady=1)
+                # Sample-level checkbox = one catalyst = one sample (user's definition)
+                tk.Checkbutton(
+                    cat_row,
+                    text=f"[{cat}]" if cat else "(no cat)",
+                    variable=cat_bv,
+                    command=lambda idxs=cat_idxs, bv=cat_bv:
+                        [_tsel_vars[i].set(bv.get()) for i in idxs],
+                    font=("TkDefaultFont", 8, "bold")
+                ).pack(side=tk.LEFT, padx=(0, 8))
+                for idx, rpm, lbl, col in _by_cat[cat]:
+                    bv = tk.BooleanVar(value=True)
+                    _tsel_vars[idx] = bv
+                    display = re.sub(r'^\[\w+\]\s*', '', lbl)
+                    tk.Checkbutton(cat_row, text=display, variable=bv).pack(
+                        side=tk.LEFT, padx=3)
+                    bv.trace_add("write", _schedule)
+
+        # ── Controls ──────────────────────────────────────────────────
+        ctrl = ttk.Frame(win); ctrl.pack(fill=tk.X, padx=8, pady=(4, 0))
         ttk.Label(ctrl, text="Kinetic E range (V):").pack(side=tk.LEFT)
-        e_lo_var = tk.StringVar(value="0.85")
-        e_hi_var = tk.StringVar(value="0.95")
+        e_lo_var = tk.StringVar(value="0.85"); e_hi_var = tk.StringVar(value="0.95")
         ttk.Entry(ctrl, textvariable=e_lo_var, width=6).pack(side=tk.LEFT, padx=(2, 0))
         ttk.Label(ctrl, text="to").pack(side=tk.LEFT, padx=3)
         ttk.Entry(ctrl, textvariable=e_hi_var, width=6).pack(side=tk.LEFT, padx=(0, 10))
         use_jk_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(ctrl, text="Diffusion-correct J → Jᵏ",
                         variable=use_jk_var).pack(side=tk.LEFT, padx=(0, 10))
-        compute_btn = ttk.Button(ctrl, text="Compute", command=lambda: _compute())
-        compute_btn.pack(side=tk.LEFT)
+        e_lo_var.trace_add("write", _schedule)
+        e_hi_var.trace_add("write", _schedule)
+        use_jk_var.trace_add("write", _schedule)
 
-        # Figure
-        fig = Figure(figsize=(7.0, 4.2), dpi=100)
+        # ── Figure — pack bottom items first ──────────────────────────
+        fig = Figure(figsize=(7.0, 4.0), dpi=100)
         ax  = fig.add_subplot(111)
         cv  = FigureCanvasTkAgg(fig, master=win)
-        cv.get_tk_widget().pack(fill=tk.BOTH, expand=True, padx=8)
         tb  = NavigationToolbar2Tk(cv, win, pack_toolbar=False)
+        res = tk.Text(win, height=5, state=tk.DISABLED, font=("Courier", 9), wrap=tk.WORD)
+        _tres_handle = tk.Frame(win, height=6, bg="#888888", cursor="sb_v_double_arrow")
         tb.pack(side=tk.BOTTOM, fill=tk.X, padx=8)
-
-        # Results
-        res = tk.Text(win, height=5, state=tk.DISABLED, font=("Courier", 8),
-                      wrap=tk.WORD)
-        res.pack(fill=tk.X, padx=8, pady=(0, 4))
+        res.pack(side=tk.BOTTOM, fill=tk.X, padx=8)
+        _tres_handle.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=(1, 1))
+        cv.get_tk_widget().pack(fill=tk.BOTH, expand=True, padx=8)
+        _tres_y0 = [0]; _tres_h0 = [5]
+        def _tres_start(e): _tres_y0[0] = e.y_root; _tres_h0[0] = int(res.cget("height"))
+        def _tres_drag(e):
+            # handle is above text: drag down = larger text area
+            res.configure(height=max(2, _tres_h0[0] + int((e.y_root - _tres_y0[0]) / 16)))
+        _tres_handle.bind("<ButtonPress-1>", _tres_start)
+        _tres_handle.bind("<B1-Motion>", _tres_drag)
 
         def _compute():
             try:
-                e_lo = float(e_lo_var.get())
-                e_hi = float(e_hi_var.get())
+                e_lo = float(e_lo_var.get()); e_hi = float(e_hi_var.get())
             except ValueError:
-                messagebox.showerror("Tafel", "Invalid E range.", parent=win)
                 return
             if e_lo >= e_hi:
-                messagebox.showerror("Tafel", "E_lo must be < E_hi.", parent=win)
                 return
-            ax.clear()
-            lines = []
-            selected = [(E, J, r, l, c) for (E, J, r, l, c), bv
-                        in zip(curves, _csel_vars) if bv.get()]
-            for E_arr, J_arr, rpm, label, color in selected:
+            ax.clear(); lines = []
+            for idx, (E_arr, J_arr, rpm, label, color, sn) in enumerate(all_curves):
+                if not _tsel_vars.get(idx, tk.BooleanVar(value=True)).get():
+                    continue
                 j_lim = float(np.min(J_arr))
                 mask = (E_arr >= e_lo) & (E_arr <= e_hi)
                 if mask.sum() < 3:
-                    lines.append(f"{label}: < 3 points in [{e_lo},{e_hi}] V — skipped")
+                    lines.append(f"{label}: < 3 pts in [{e_lo},{e_hi}] V — skipped")
                     continue
-                E_k = E_arr[mask]
-                J_k = J_arr[mask]
+                E_k = E_arr[mask]; J_k = J_arr[mask]
                 if use_jk_var.get() and j_lim < 0:
                     with np.errstate(divide="ignore", invalid="ignore"):
                         jk = J_k * j_lim / (j_lim - J_k)
                     good = np.isfinite(jk) & (jk < 0)
                     if good.sum() < 3:
-                        lines.append(f"{label}: Jᵏ correction yielded < 3 valid pts — skipped")
+                        lines.append(f"{label}: Jᵏ < 3 pts — skipped")
                         continue
                     E_k, J_k = E_k[good], jk[good]
                 with np.errstate(divide="ignore", invalid="ignore"):
                     log_j = np.log10(np.abs(J_k))
                 good = np.isfinite(log_j)
                 if good.sum() < 3:
-                    lines.append(f"{label}: log|J| not finite — skipped")
                     continue
                 E_f, log_j_f = E_k[good], log_j[good]
-                # E vs log|J|: slope in V/dec → convert to mV/dec
                 coeffs = np.polyfit(log_j_f, E_f, 1)
                 b_mV = coeffs[0] * 1000.0
                 ax.plot(log_j_f, E_f, color=color, linewidth=1.5, label=label)
                 xfit = np.linspace(log_j_f.min(), log_j_f.max(), 60)
                 ax.plot(xfit, np.polyval(coeffs, xfit), color=color,
                         linestyle="--", linewidth=0.8, label="_fit")
-                lines.append(f"{label:20s}  b = {b_mV:+.1f} mV/dec")
+                lines.append(f"{label:32s}  b = {b_mV:+.1f} mV/dec")
             j_lbl = "Jᵏ" if use_jk_var.get() else "J"
             ax.set_xlabel(f"log₁₀|{j_lbl}|  (mA cm⁻² or mA)")
             ax.set_ylabel(f"E  (V vs {ref})")
-            ax.set_title(f"Tafel Analysis — {sname}")
-            ax.legend(fontsize=8, frameon=True)
-            fig.tight_layout(pad=0.5)
-            fig.set_layout_engine("none")
-            cv.draw()
+            ax.set_title("Tafel Analysis")
+            ax.legend(fontsize=7, frameon=True)
+            fig.tight_layout(pad=0.5); fig.set_layout_engine("none"); cv.draw()
             res.configure(state=tk.NORMAL)
             res.delete("1.0", tk.END)
             res.insert(tk.END, "\n".join(lines))
@@ -2953,143 +3034,272 @@ class ORRPanel(ttk.Frame):
         _compute()
 
     def _open_kl_window(self):
-        curves = self._get_active_curves()
-        valid = [(E, J, rpm, lbl, col) for E, J, rpm, lbl, col in curves if rpm > 0]
-        if len(valid) < 2:
+        # Gather curves from ALL loaded samples (not just active)
+        all_valid = []  # (E_arr, J_arr, rpm, label, color, sname)
+        for sn in self.samples:
+            for E, J, rpm, lbl, col in self._get_curves_for_sample(sn):
+                if rpm > 0:
+                    all_valid.append((E, J, rpm, lbl, col, sn))
+
+        if len(all_valid) < 2:
             messagebox.showwarning(
                 "KL Analysis",
-                "Need at least 2 RPM pairs with numeric RPM values.")
+                "Need at least 2 RPM curves with numeric RPM values.")
             return
+
         ref   = self.ref_electrode_var.get()
-        sname = self.active_sample
+        sname = self.active_sample or "ORR"
 
         win = tk.Toplevel(self)
         win.title(f"Koutecky-Levich Analysis — {sname}")
-        win.geometry("800x720")
+        win.geometry("860x760")
 
-        # Curve selector
-        _ksel_fr = ttk.LabelFrame(win, text="Select curves to analyse")
+        # ── Debounced auto-recompute ─────────────────────────────────
+        _recompute_id = [None]
+        def _schedule(*_):
+            if _recompute_id[0]:
+                try: win.after_cancel(_recompute_id[0])
+                except Exception: pass
+            _recompute_id[0] = win.after(350, _compute)
+
+        # ── Curve selector — Group label → Sample [cat] checkbox → RPM ──
+        _ksel_fr = ttk.LabelFrame(
+            win, text="Select curves  (☑ [Cat] = one sample = one catalyst at multiple RPMs)")
         _ksel_fr.pack(fill=tk.X, padx=8, pady=(6, 0))
-        _ksel_vars = {}
-        _ksel_inner = ttk.Frame(_ksel_fr)
-        _ksel_inner.pack(fill=tk.X, padx=4, pady=2)
-        for (_kE, _kJ, _krpm, _klbl, _kcol) in valid:
-            _bv = tk.BooleanVar(value=True)
-            _ksel_vars[_krpm] = _bv
-            ttk.Checkbutton(_ksel_inner, text=_klbl, variable=_bv).pack(
-                side=tk.LEFT, padx=4)
 
-        # ── Theory ──────────────────────────────────────────────────────
+        _sel_cv = tk.Canvas(_ksel_fr, height=90, bd=0, highlightthickness=0)
+        _sel_sb = ttk.Scrollbar(_ksel_fr, orient=tk.VERTICAL, command=_sel_cv.yview)
+        _sel_inner = tk.Frame(_sel_cv)
+        _sel_inner.bind("<Configure>",
+                        lambda e: _sel_cv.configure(scrollregion=_sel_cv.bbox("all")))
+        _sel_cv.create_window((0, 0), window=_sel_inner, anchor="nw")
+        _sel_cv.configure(yscrollcommand=_sel_sb.set)
+        _sel_sb.pack(side=tk.RIGHT, fill=tk.Y)
+        _sel_cv.pack(fill=tk.BOTH, expand=True, padx=4, pady=2)
+        _sel_cv.bind("<MouseWheel>",
+                     lambda e: _sel_cv.yview_scroll(-1*(e.delta//120), "units"))
+
+        _by_samp = {}; _samp_order = []
+        for idx, (E_a, J_a, rpm, lbl, col, sn) in enumerate(all_valid):
+            if sn not in _by_samp:
+                _by_samp[sn] = []; _samp_order.append(sn)
+            m = re.match(r'^\[(\w+)\]', lbl)
+            cat = m.group(1) if m else ""
+            _by_samp[sn].append((idx, E_a, J_a, rpm, lbl, col, cat))
+
+        _ksel_vars = {}  # idx → BooleanVar
+
+        for sn in _samp_order:
+            tk.Label(_sel_inner, text=f"  ▸ Group: {sn}",
+                     font=("TkDefaultFont", 8, "italic"), fg="#555555",
+                     anchor=tk.W).pack(fill=tk.X, anchor=tk.W, pady=(4, 0))
+            _by_cat = {}; _cat_ord = []
+            for idx, E_a, J_a, rpm, lbl, col, cat in _by_samp[sn]:
+                if cat not in _by_cat:
+                    _by_cat[cat] = []; _cat_ord.append(cat)
+                _by_cat[cat].append((idx, rpm, lbl, col))
+            for cat in _cat_ord:
+                cat_idxs = [it[0] for it in _by_cat[cat]]
+                cat_bv = tk.BooleanVar(value=True)
+                cat_row = tk.Frame(_sel_inner)
+                cat_row.pack(fill=tk.X, anchor=tk.W, padx=(18, 0), pady=1)
+                tk.Checkbutton(
+                    cat_row,
+                    text=f"[{cat}]" if cat else "(no cat)",
+                    variable=cat_bv,
+                    command=lambda idxs=cat_idxs, bv=cat_bv:
+                        [_ksel_vars[i].set(bv.get()) for i in idxs],
+                    font=("TkDefaultFont", 8, "bold")
+                ).pack(side=tk.LEFT, padx=(0, 8))
+                for idx, rpm, lbl, col in _by_cat[cat]:
+                    bv = tk.BooleanVar(value=True)
+                    _ksel_vars[idx] = bv
+                    display = re.sub(r'^\[\w+\]\s*', '', lbl)
+                    tk.Checkbutton(cat_row, text=display, variable=bv).pack(
+                        side=tk.LEFT, padx=3)
+                    bv.trace_add("write", _schedule)
+
+        # ── Theory ───────────────────────────────────────────────────
         _th = ttk.LabelFrame(win, text="Koutecky-Levich Theory")
-        _th.pack(fill=tk.X, padx=8, pady=(6, 0))
-        _th_txt = (
-            "  K-L equation:   1/J = 1/Jᵏ + 1/J_L = 1/Jᵏ + 1/(B · ω^½)\n"
-            "  Levich constant:  B = 0.62 · n · F · D^(2/3) · ν^(−1/6) · C\n"
-            "  Plot 1/J vs 1/ω^½ at each chosen E; linear fit → slope = 1/(n·B_unit)\n"
-            "  n = 1 / (|slope| · B_unit)  where  B_unit = 0.62·F·D^(2/3)·ν^(−1/6)·C·1000\n"
-            "  ω (rad/s) = 2π·RPM/60    F = 96485 C/mol"
-        )
-        ttk.Label(_th, text=_th_txt, justify=tk.LEFT,
-                  font=("Courier", 8)).pack(anchor=tk.W, padx=6, pady=3)
+        _th.pack(fill=tk.X, padx=8, pady=(4, 0))
+        _th_g = ttk.Frame(_th); _th_g.pack(fill=tk.X, padx=6, pady=3)
+        for _r, (_hd, _bd) in enumerate([
+            ("KL equation:",   "1/J = 1/Jᵏ + 1/(B·ω^½)"),
+            ("B factor:",      "B = 0.62 · n · F · D^(2/3) · ν^(-1/6) · C"),
+            ("Electron count:","n = 1 / (|slope| · B_factor)   ω = 2π·RPM/60"),
+        ]):
+            ttk.Label(_th_g, text=_hd, font=("TkDefaultFont", 9, "bold"),
+                      anchor=tk.W).grid(row=_r, column=0, sticky=tk.W, pady=2)
+            ttk.Label(_th_g, text=f"  {_bd}", font=("TkDefaultFont", 9),
+                      anchor=tk.W).grid(row=_r, column=1, sticky=tk.W, padx=(4,0), pady=2)
 
-        # Electrochemical parameters
-        prm = ttk.LabelFrame(win, text="Electrolyte parameters  (O₂ in 0.1 M KOH, 25 °C)")
-        prm.pack(fill=tk.X, padx=8, pady=(6, 2))
+        # ── Notation — 2-column grid ──────────────────────────────────
+        _sym = ttk.LabelFrame(win, text="Notation")
+        _sym.pack(fill=tk.X, padx=8, pady=(0, 2))
+        _sym_g = ttk.Frame(_sym); _sym_g.pack(fill=tk.X, padx=4, pady=3)
+        for _i, (_s, _d) in enumerate([
+            ("J",  "current density (mA cm⁻²)"),
+            ("Jᵏ", "kinetic J  (1/Jᵏ = KL y-intercept)"),
+            ("n",  "electrons per O₂  (4 = full 4e⁻,  2 = peroxide)"),
+            ("ω",  "angular velocity = 2π·RPM/60  (rad s⁻¹)"),
+            ("D",  "O₂ diffusion coefficient (cm² s⁻¹)"),
+            ("ν",  "kinematic viscosity (cm² s⁻¹)"),
+            ("C",  "O₂ solubility (mol cm⁻³)"),
+            ("F",  "Faraday constant = 96 485 C mol⁻¹"),
+        ]):
+            _r, _c = _i // 2, (_i % 2) * 2
+            ttk.Label(_sym_g, text=_s, font=("TkDefaultFont", 9, "bold"),
+                      width=5, anchor=tk.E).grid(row=_r, column=_c, sticky=tk.E, padx=(8,2), pady=2)
+            ttk.Label(_sym_g, text=f"= {_d}", font=("TkDefaultFont", 9),
+                      anchor=tk.W).grid(row=_r, column=_c+1, sticky=tk.W, padx=(0,16), pady=2)
+
+        # ── Electrolyte parameters ────────────────────────────────────
+        _ELYTE_PRESETS = {
+            "0.1 M KOH  (25 °C)":    ("1.90e-5", "1.00e-2", "1.20e-6"),
+            "0.5 M KOH  (25 °C)":    ("1.75e-5", "1.05e-2", "1.15e-6"),
+            "1.0 M KOH  (25 °C)":    ("1.65e-5", "1.15e-2", "1.10e-6"),
+            "0.1 M HClO₄ (25 °C)":   ("1.93e-5", "1.007e-2","1.26e-6"),
+            "0.5 M HClO₄ (25 °C)":   ("1.70e-5", "1.06e-2", "1.15e-6"),
+            "1.0 M HClO₄ (25 °C)":   ("1.60e-5", "1.07e-2", "1.00e-6"),
+            "0.5 M H₂SO₄ (25 °C)":   ("1.40e-5", "1.21e-2", "1.10e-6"),
+            "1.0 M H₂SO₄ (25 °C)":   ("1.10e-5", "1.45e-2", "1.00e-6"),
+        }
+        prm = ttk.LabelFrame(win, text="Electrolyte parameters")
+        prm.pack(fill=tk.X, padx=8, pady=(4, 2))
         _pr = ttk.Frame(prm)
         _pr.pack(fill=tk.X, padx=6, pady=3)
-        d_var  = tk.StringVar(value="1.9e-5")
-        nu_var = tk.StringVar(value="0.01")
-        c_var  = tk.StringVar(value="1.2e-6")
-        for lbl_txt, var, unit in (
-            ("Dₒ₂ (cm²/s):", d_var,  None),
-            ("ν (cm²/s):",        nu_var, None),
-            ("Cₒ₂ (mol/cm³):", c_var, None),
+        d_var  = tk.StringVar(value="1.90e-5")
+        nu_var = tk.StringVar(value="1.00e-2")
+        c_var  = tk.StringVar(value="1.20e-6")
+        _elyte_var = tk.StringVar(value="0.1 M KOH  (25 °C)")
+        ttk.Label(_pr, text="Electrolyte:").pack(side=tk.LEFT)
+        _elyte_cb = ttk.Combobox(_pr, textvariable=_elyte_var,
+                                  values=list(_ELYTE_PRESETS.keys()),
+                                  state="readonly", width=22)
+        _elyte_cb.pack(side=tk.LEFT, padx=(4, 12))
+        def _on_elyte_change(*_):
+            preset = _ELYTE_PRESETS.get(_elyte_var.get())
+            if preset:
+                d_var.set(preset[0]); nu_var.set(preset[1]); c_var.set(preset[2])
+        _elyte_cb.bind("<<ComboboxSelected>>", _on_elyte_change)
+        for lbl_txt, var in (
+            ("Dₒ₂ (cm²/s):", d_var),
+            ("ν (cm²/s):",    nu_var),
+            ("Cₒ₂ (mol/cm³):", c_var),
         ):
             ttk.Label(_pr, text=lbl_txt).pack(side=tk.LEFT, padx=(0, 2))
-            ttk.Entry(_pr, textvariable=var, width=9).pack(side=tk.LEFT, padx=(0, 10))
+            ttk.Entry(_pr, textvariable=var, width=9).pack(side=tk.LEFT, padx=(0, 8))
+        for v in (d_var, nu_var, c_var):
+            v.trace_add("write", _schedule)
 
-        # E-value controls
+        # ── E-value controls ─────────────────────────────────────────
         ectrl = ttk.Frame(win)
         ectrl.pack(fill=tk.X, padx=8, pady=(2, 0))
         ttk.Label(ectrl, text="E values  (V vs RHE, comma-sep):").pack(side=tk.LEFT)
         e_vals_var = tk.StringVar(value="0.70, 0.75, 0.80, 0.85")
-        ttk.Entry(ectrl, textvariable=e_vals_var, width=28).pack(side=tk.LEFT, padx=(4, 10))
-        ttk.Button(ectrl, text="Compute KL",
-                   command=lambda: _compute()).pack(side=tk.LEFT)
+        ttk.Entry(ectrl, textvariable=e_vals_var, width=28).pack(side=tk.LEFT, padx=(4, 0))
+        e_vals_var.trace_add("write", _schedule)
 
-        # Figure
-        fig = Figure(figsize=(7.5, 4.3), dpi=100)
+        # ── Figure — bottom items packed first ────────────────────────
+        fig = Figure(figsize=(7.5, 4.0), dpi=100)
         ax  = fig.add_subplot(111)
         cv  = FigureCanvasTkAgg(fig, master=win)
-        cv.get_tk_widget().pack(fill=tk.BOTH, expand=True, padx=8)
         tb  = NavigationToolbar2Tk(cv, win, pack_toolbar=False)
-        tb.pack(side=tk.BOTTOM, fill=tk.X, padx=8)
 
-        # Results
-        res = tk.Text(win, height=6, state=tk.DISABLED, font=("Courier", 8),
+        res = tk.Text(win, height=6, state=tk.DISABLED, font=("Courier", 9),
                       wrap=tk.WORD)
-        res.pack(fill=tk.X, padx=8, pady=(0, 4))
+        _kres_handle = tk.Frame(win, height=6, bg="#888888", cursor="sb_v_double_arrow")
+        tb.pack(side=tk.BOTTOM, fill=tk.X, padx=8)
+        res.pack(side=tk.BOTTOM, fill=tk.X, padx=8)
+        _kres_handle.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=(1, 1))
+        cv.get_tk_widget().pack(fill=tk.BOTH, expand=True, padx=8)
 
+        _kres_y0 = [0]; _kres_h0 = [6]
+        def _kres_start(e): _kres_y0[0] = e.y_root; _kres_h0[0] = int(res.cget("height"))
+        def _kres_drag(e):
+            res.configure(height=max(2, _kres_h0[0] + int((e.y_root - _kres_y0[0]) / 16)))
+        _kres_handle.bind("<ButtonPress-1>", _kres_start)
+        _kres_handle.bind("<B1-Motion>", _kres_drag)
+
+        # ── Compute ───────────────────────────────────────────────────
         def _compute():
             try:
                 D  = float(d_var.get())
                 nu = float(nu_var.get())
                 C  = float(c_var.get())
             except ValueError:
-                messagebox.showerror("KL", "Invalid parameter(s).", parent=win)
                 return
             try:
                 e_vals = [float(x.strip()) for x in e_vals_var.get().split(",")
                           if x.strip()]
             except ValueError:
-                messagebox.showerror("KL", "Invalid E values.", parent=win)
                 return
             if not e_vals:
                 return
             F = 96485.0
-            # Levich slope per electron: B = 0.62 F D^(2/3) nu^(-1/6) C  [A cm^-2 (rad/s)^-1/2]
-            # multiply by 1000 to convert to mA
-            B_factor = 0.62 * F * (D ** (2.0 / 3.0)) * (nu ** (-1.0 / 6.0)) * C * 1000.0
-            ax.clear()
-            lines = []
-            kl_colors = [_PALETTE[k % len(_PALETTE)] for k in range(len(e_vals))]
-            for ei, (e_val, c_kl) in enumerate(zip(e_vals, kl_colors)):
-                inv_J = []; inv_sqw = []; rpm_labels = []
-                sel_valid = [(E, J, r, l, c) for (E, J, r, l, c) in valid
-                             if _ksel_vars.get(r, tk.BooleanVar(value=True)).get()]
-                for E_arr, J_arr, rpm, label, _ in sel_valid:
-                    if e_val < E_arr[0] or e_val > E_arr[-1]:
-                        continue
-                    j_at_e = float(np.interp(e_val, E_arr, J_arr))
-                    if j_at_e == 0 or not np.isfinite(j_at_e):
-                        continue
-                    omega = 2.0 * math.pi * rpm / 60.0
-                    inv_J.append(1.0 / j_at_e)
-                    inv_sqw.append(1.0 / math.sqrt(omega))
-                    rpm_labels.append(label)
-                if len(inv_J) < 2:
-                    lines.append(f"E={e_val:.3f} V: < 2 data points — skipped")
+            B_factor = 0.62 * F * (D ** (2.0/3.0)) * (nu ** (-1.0/6.0)) * C * 1000.0
+
+            # Group selected curves by (sample, catalyst) — one KL fit per group
+            sel_by_grp = {}; grp_order = []
+            for idx, (E_a, J_a, rpm, lbl, col, sn) in enumerate(all_valid):
+                if not _ksel_vars.get(idx, tk.BooleanVar(value=True)).get():
                     continue
-                x = np.array(inv_sqw)
-                y = np.array(inv_J)
-                coeffs = np.polyfit(x, y, 1)
-                slope, intercept = coeffs
-                # |slope| = 1 / (n * B_factor)  →  n = 1 / (|slope| * B_factor)
-                n    = (1.0 / (abs(slope) * B_factor)) if slope != 0 else float("nan")
-                j_k  = (1.0 / intercept) if intercept != 0 else float("nan")
-                ax.scatter(x, y, color=c_kl, zorder=5, s=40)
-                xfit = np.linspace(x.min(), x.max(), 60)
-                ax.plot(xfit, np.polyval(coeffs, xfit), color=c_kl,
-                        linewidth=1.2, label=f"E={e_val:.3f} V  n={n:.2f}")
-                for xi_pt, yi_pt, rl in zip(x, y, rpm_labels):
-                    ax.annotate(rl, (xi_pt, yi_pt), fontsize=6, color=c_kl,
-                                xytext=(3, 3), textcoords="offset points")
-                lines.append(
-                    f"E={e_val:.3f} V:  n = {n:.2f}  |  Jᵏ = {j_k:+.3f} mA")
+                m = re.match(r'^\[(\w+)\]', lbl)
+                cat = m.group(1) if m else ""
+                key = (sn, cat)
+                if key not in sel_by_grp:
+                    sel_by_grp[key] = []; grp_order.append(key)
+                sel_by_grp[key].append((E_a, J_a, rpm, lbl, col))
+
+            ax.clear(); lines = []
+            _LS = ['-', '--', '-.', ':']
+            _MK = ['o', 's', '^', 'D', 'v', 'P']
+            n_ev = len(e_vals)
+
+            for gi, grp_key in enumerate(grp_order):
+                sn_g, cat_g = grp_key
+                grp_lbl = f"{sn_g}" + (f" [{cat_g}]" if cat_g else "")
+                grp_ls  = _LS[gi % len(_LS)]
+                grp_mk  = _MK[gi % len(_MK)]
+                grp_curves = sel_by_grp[grp_key]
+                lines.append(f"── {grp_lbl} ──")
+
+                for ei, e_val in enumerate(e_vals):
+                    c_kl = _PALETTE[(gi * n_ev + ei) % len(_PALETTE)]
+                    inv_J = []; inv_sqw = []; rpm_labels = []
+                    for E_arr, J_arr, rpm, label, _ in grp_curves:
+                        if e_val < E_arr[0] or e_val > E_arr[-1]:
+                            continue
+                        j_at_e = float(np.interp(e_val, E_arr, J_arr))
+                        if j_at_e == 0 or not np.isfinite(j_at_e):
+                            continue
+                        omega = 2.0 * math.pi * rpm / 60.0
+                        inv_J.append(1.0 / j_at_e)
+                        inv_sqw.append(1.0 / math.sqrt(omega))
+                        rpm_labels.append(re.sub(r'^\[\w+\]\s*', '', label))
+                    if len(inv_J) < 2:
+                        lines.append(f"  E={e_val:.3f} V: < 2 pts — skipped")
+                        continue
+                    x = np.array(inv_sqw); y = np.array(inv_J)
+                    coeffs = np.polyfit(x, y, 1)
+                    slope, intercept = coeffs
+                    n   = (1.0 / (abs(slope) * B_factor)) if slope != 0 else float("nan")
+                    j_k = (1.0 / intercept) if intercept != 0 else float("nan")
+                    ax.scatter(x, y, color=c_kl, zorder=5, s=40, marker=grp_mk)
+                    xfit = np.linspace(x.min(), x.max(), 60)
+                    ax.plot(xfit, np.polyval(coeffs, xfit), color=c_kl,
+                            linewidth=1.2, linestyle=grp_ls,
+                            label=f"{grp_lbl}  E={e_val:.3f} V  n={n:.2f}")
+                    for xi_pt, yi_pt, rl in zip(x, y, rpm_labels):
+                        ax.annotate(rl, (xi_pt, yi_pt), fontsize=7, color=c_kl,
+                                    xytext=(3, 3), textcoords="offset points")
+                    lines.append(
+                        f"  E={e_val:.3f} V:  n = {n:.2f}  Jᵏ = {j_k:+.3f} mA")
+
             ax.set_xlabel(r"$\omega^{-1/2}$  (rad s$^{-1}$)$^{-1/2}$")
             ax.set_ylabel("J⁻¹  (mA⁻¹ cm² or mA⁻¹)")
-            ax.set_title(f"Koutecky-Levich — {sname}")
-            ax.legend(fontsize=8, frameon=True)
+            ax.set_title("Koutecky-Levich")
+            ax.legend(fontsize=7, frameon=True)
             fig.tight_layout(pad=0.5)
             fig.set_layout_engine("none")
             cv.draw()
@@ -3099,6 +3309,734 @@ class ORRPanel(ttk.Frame):
             res.configure(state=tk.DISABLED)
 
         _compute()
+
+    def _open_sa_window(self):
+        """ECSA-normalised specific activity — all samples, sample-grouped selector."""
+        all_curves = []  # (E_arr, J_arr, rpm, label, color, sname)
+        for sn in self.samples:
+            for E, J, rpm, lbl, col in self._get_curves_for_sample(sn):
+                all_curves.append((E, J, rpm, lbl, col, sn))
+        if not all_curves:
+            messagebox.showwarning("SA Analysis", "No processed curves in any sample.")
+            return
+        ref = self.ref_electrode_var.get()
+
+        # Collect unique catalysts across all samples
+        _all_cats = []
+        for _, _, _, lbl, _, _ in all_curves:
+            m = re.match(r'^\[(\w+)\]', lbl)
+            cat = m.group(1) if m else ""
+            if cat not in _all_cats:
+                _all_cats.append(cat)
+        _cat_colors = {}
+        for ci, cat in enumerate(_all_cats):
+            for _, _, _, lbl, col, _ in all_curves:
+                m = re.match(r'^\[(\w+)\]', lbl)
+                if (m.group(1) if m else "") == cat:
+                    _cat_colors[cat] = col; break
+            if cat not in _cat_colors:
+                _cat_colors[cat] = _PALETTE[ci % len(_PALETTE)]
+
+        win = tk.Toplevel(self)
+        win.title("Specific Activity (SA)")
+        win.geometry("880x760")
+
+        # Debounce
+        _recompute_id = [None]
+        def _schedule(*_):
+            if _recompute_id[0]:
+                try: win.after_cancel(_recompute_id[0])
+                except Exception: pass
+            _recompute_id[0] = win.after(350, _compute)
+
+        # ── Theory ──────────────────────────────────────────────────────
+        _th = ttk.LabelFrame(win, text="Specific Activity Theory")
+        _th.pack(fill=tk.X, padx=8, pady=(6, 0))
+        _th_g = ttk.Frame(_th); _th_g.pack(fill=tk.X, padx=6, pady=3)
+        for _r, (_hd, _bd) in enumerate([
+            ("Kinetic current:",  "Jᵏ = J · J_lim / (J_lim − J)   (Koutecky correction)"),
+            ("Specific activity:","SA = |Jᵏ| / ECSA   [mA cm⁻²_ECSA]"),
+        ]):
+            ttk.Label(_th_g, text=_hd, font=("TkDefaultFont", 9, "bold"),
+                      anchor=tk.W).grid(row=_r, column=0, sticky=tk.W, pady=2)
+            ttk.Label(_th_g, text=f"  {_bd}", font=("TkDefaultFont", 9),
+                      anchor=tk.W).grid(row=_r, column=1, sticky=tk.W, padx=(4,0), pady=2)
+
+        # ── Notation — 2-column grid ──────────────────────────────────
+        _sym = ttk.LabelFrame(win, text="Notation")
+        _sym.pack(fill=tk.X, padx=8, pady=(0, 2))
+        _sym_g = ttk.Frame(_sym); _sym_g.pack(fill=tk.X, padx=4, pady=3)
+        for _i, (_s, _d) in enumerate([
+            ("SA",    "specific activity = |Jᵏ| / ECSA  (mA cm⁻²_ECSA)"),
+            ("ECSA",  "electrochemically active surface area (cm²)"),
+            ("Jᵏ",   "kinetic J = J · J_lim / (J_lim − J)"),
+            ("J_lim", "diffusion-limited plateau (most negative J)"),
+            ("J",     "current density (mA cm⁻²)"),
+        ]):
+            _r, _c = _i // 2, (_i % 2) * 2
+            ttk.Label(_sym_g, text=_s, font=("TkDefaultFont", 9, "bold"),
+                      width=7, anchor=tk.E).grid(row=_r, column=_c, sticky=tk.E, padx=(8,2), pady=2)
+            ttk.Label(_sym_g, text=f"= {_d}", font=("TkDefaultFont", 9),
+                      anchor=tk.W).grid(row=_r, column=_c+1, sticky=tk.W, padx=(0,16), pady=2)
+
+        # ── ECSA inputs per unique catalyst ───────────────────────────
+        _ecsa_fr = ttk.LabelFrame(win, text="ECSA (cm²) per catalyst")
+        _ecsa_fr.pack(fill=tk.X, padx=8, pady=(2, 0))
+        _ecsa_row = ttk.Frame(_ecsa_fr); _ecsa_row.pack(fill=tk.X, padx=6, pady=3)
+        _ecsa_vars = {}
+        for cat in _all_cats:
+            ttk.Label(_ecsa_row, text=f"[{cat}]:" if cat else "(no cat):").pack(
+                side=tk.LEFT, padx=(0, 2))
+            _ecv = tk.StringVar(value="")
+            _ecsa_vars[cat] = _ecv
+            ttk.Entry(_ecsa_row, textvariable=_ecv, width=8).pack(
+                side=tk.LEFT, padx=(0, 12))
+
+        # ── Curve selector — Group label → Sample [cat] checkbox → RPM ──
+        _ksel_fr = ttk.LabelFrame(
+            win, text="Select curves  (☑ [Cat] = one sample = one catalyst at multiple RPMs)")
+        _ksel_fr.pack(fill=tk.X, padx=8, pady=(4, 0))
+        _sel_cv = tk.Canvas(_ksel_fr, height=80, bd=0, highlightthickness=0)
+        _sel_sb = ttk.Scrollbar(_ksel_fr, orient=tk.VERTICAL, command=_sel_cv.yview)
+        _sel_inner = tk.Frame(_sel_cv)
+        _sel_inner.bind("<Configure>",
+                        lambda e: _sel_cv.configure(scrollregion=_sel_cv.bbox("all")))
+        _sel_cv.create_window((0, 0), window=_sel_inner, anchor="nw")
+        _sel_cv.configure(yscrollcommand=_sel_sb.set)
+        _sel_sb.pack(side=tk.RIGHT, fill=tk.Y)
+        _sel_cv.pack(fill=tk.BOTH, expand=True, padx=4, pady=2)
+        _sel_cv.bind("<MouseWheel>",
+                     lambda e: _sel_cv.yview_scroll(-1*(e.delta//120), "units"))
+
+        _by_samp = {}; _samp_order = []
+        for idx, (E_a, J_a, rpm, lbl, col, sn) in enumerate(all_curves):
+            if sn not in _by_samp:
+                _by_samp[sn] = []; _samp_order.append(sn)
+            m = re.match(r'^\[(\w+)\]', lbl)
+            cat = m.group(1) if m else ""
+            _by_samp[sn].append((idx, E_a, J_a, rpm, lbl, col, cat))
+
+        _ssel_vars = {}  # idx → BooleanVar
+
+        for sn in _samp_order:
+            tk.Label(_sel_inner, text=f"  ▸ Group: {sn}",
+                     font=("TkDefaultFont", 8, "italic"), fg="#555555",
+                     anchor=tk.W).pack(fill=tk.X, anchor=tk.W, pady=(4, 0))
+            _by_cat = {}; _cat_ord = []
+            for idx, E_a, J_a, rpm, lbl, col, cat in _by_samp[sn]:
+                if cat not in _by_cat:
+                    _by_cat[cat] = []; _cat_ord.append(cat)
+                _by_cat[cat].append((idx, rpm, lbl, col))
+            for cat in _cat_ord:
+                cat_idxs = [it[0] for it in _by_cat[cat]]
+                cat_bv = tk.BooleanVar(value=True)
+                cat_row = tk.Frame(_sel_inner)
+                cat_row.pack(fill=tk.X, anchor=tk.W, padx=(18, 0), pady=1)
+                tk.Checkbutton(
+                    cat_row,
+                    text=f"[{cat}]" if cat else "(no cat)",
+                    variable=cat_bv,
+                    command=lambda idxs=cat_idxs, bv=cat_bv:
+                        [_ssel_vars[i].set(bv.get()) for i in idxs],
+                    font=("TkDefaultFont", 8, "bold")
+                ).pack(side=tk.LEFT, padx=(0, 8))
+                for idx, rpm, lbl, col in _by_cat[cat]:
+                    bv = tk.BooleanVar(value=True)
+                    _ssel_vars[idx] = bv
+                    display = re.sub(r'^\[\w+\]\s*', '', lbl)
+                    tk.Checkbutton(cat_row, text=display, variable=bv).pack(
+                        side=tk.LEFT, padx=3)
+
+        # ── E-value controls ─────────────────────────────────────────
+        ectrl = ttk.Frame(win); ectrl.pack(fill=tk.X, padx=8, pady=(4, 0))
+        ttk.Label(ectrl, text="E values  (V vs RHE, comma-sep):").pack(side=tk.LEFT)
+        e_vals_var = tk.StringVar(value="0.80, 0.85, 0.90")
+        ttk.Entry(ectrl, textvariable=e_vals_var, width=26).pack(side=tk.LEFT, padx=(4, 10))
+        ttk.Button(ectrl, text="Compute SA", command=lambda: _compute()).pack(side=tk.LEFT)
+
+        # ── Figure — pack bottom items first ──────────────────────────
+        fig = Figure(figsize=(7.5, 3.8), dpi=100)
+        ax  = fig.add_subplot(111)
+        cv  = FigureCanvasTkAgg(fig, master=win)
+        tb  = NavigationToolbar2Tk(cv, win, pack_toolbar=False)
+        res = tk.Text(win, height=7, state=tk.DISABLED, font=("Courier", 9), wrap=tk.WORD)
+        _sres_handle = tk.Frame(win, height=6, bg="#888888", cursor="sb_v_double_arrow")
+        tb.pack(side=tk.BOTTOM, fill=tk.X, padx=8)
+        res.pack(side=tk.BOTTOM, fill=tk.X, padx=8)
+        _sres_handle.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=(1, 1))
+        cv.get_tk_widget().pack(fill=tk.BOTH, expand=True, padx=8)
+        _sres_y0 = [0]; _sres_h0 = [7]
+        def _sres_start(e): _sres_y0[0] = e.y_root; _sres_h0[0] = int(res.cget("height"))
+        def _sres_drag(e):
+            res.configure(height=max(2, _sres_h0[0] + int((e.y_root - _sres_y0[0]) / 16)))
+        _sres_handle.bind("<ButtonPress-1>", _sres_start)
+        _sres_handle.bind("<B1-Motion>", _sres_drag)
+
+        def _compute():
+            try:
+                e_vals = [float(x.strip()) for x in e_vals_var.get().split(",")
+                          if x.strip()]
+            except ValueError:
+                messagebox.showerror("SA", "Invalid E values.", parent=win)
+                return
+            if not e_vals:
+                return
+            ecsa_map = {}
+            for cat, var in _ecsa_vars.items():
+                raw = var.get().strip()
+                try:
+                    ecsa_map[cat] = float(raw) if raw else None
+                except ValueError:
+                    messagebox.showerror("SA", f"Invalid ECSA for [{cat}].", parent=win)
+                    return
+
+            sel_curves = []
+            for idx, (E_arr, J_arr, rpm, lbl, col, sn) in enumerate(all_curves):
+                if not _ssel_vars.get(idx, tk.BooleanVar(value=True)).get():
+                    continue
+                m = re.match(r'^\[(\w+)\]', lbl)
+                cat = m.group(1) if m else ""
+                sel_curves.append((idx, E_arr, J_arr, rpm, lbl, col, cat))
+
+            ax.clear()
+            lines = [f"{'Curve':<32}  {'E (V)':<7}  {'J':>10}  {'Jᵏ':>10}  SA"]
+            lines.append("-" * 80)
+            cat_e_sa = {}  # (cat, e_val) → [sa values]
+            e_vals_sorted = sorted(e_vals)
+
+            for _, E_arr, J_arr, rpm, lbl, col, cat in sel_curves:
+                j_lim = float(np.min(J_arr))
+                for e_val in e_vals:
+                    if e_val < E_arr[0] or e_val > E_arr[-1]:
+                        lines.append(f"  {lbl:<32}  E={e_val:.3f}: out of range"); continue
+                    j_at_e = float(np.interp(e_val, E_arr, J_arr))
+                    if j_lim >= 0 or j_at_e >= 0 or not np.isfinite(j_at_e):
+                        lines.append(f"  {lbl:<32}  E={e_val:.3f}: no cathodic J"); continue
+                    if abs(j_lim - j_at_e) < 1e-12:
+                        continue
+                    j_k = j_at_e * j_lim / (j_lim - j_at_e)
+                    ecsa = ecsa_map.get(cat)
+                    if ecsa and ecsa > 0:
+                        sa = abs(j_k) / ecsa
+                        sa_str = f"{sa:.4f}"
+                        cat_e_sa.setdefault((cat, e_val), []).append(sa)
+                    else:
+                        sa_str = "N/A"
+                    lines.append(
+                        f"  {lbl:<32}  {e_val:.3f}  {j_at_e:>+10.4f}  {j_k:>+10.4f}  {sa_str}")
+
+            if cat_e_sa:
+                cats_with_sa = [c for c in _all_cats
+                                if any((c, e) in cat_e_sa for e in e_vals)]
+                x_pos = np.arange(len(e_vals_sorted))
+                bar_w = 0.8 / max(len(cats_with_sa), 1)
+                for ci, cat in enumerate(cats_with_sa):
+                    sa_means = []; sa_errs = []
+                    for e_val in e_vals_sorted:
+                        vals = cat_e_sa.get((cat, e_val), [])
+                        sa_means.append(float(np.mean(vals)) if vals else 0.0)
+                        sa_errs.append(float(np.std(vals)) if len(vals) > 1 else 0.0)
+                    offset = (ci - (len(cats_with_sa)-1)/2.0) * bar_w
+                    ax.bar(x_pos + offset, sa_means, bar_w * 0.9,
+                           yerr=sa_errs if any(s > 0 for s in sa_errs) else None,
+                           label=f"[{cat}]" if cat else "(no cat)",
+                           color=_cat_colors.get(cat, _PALETTE[ci % len(_PALETTE)]),
+                           alpha=0.8, capsize=3)
+                ax.set_xticks(x_pos)
+                ax.set_xticklabels([f"{e:.3f} V" for e in e_vals_sorted])
+                ax.set_ylabel("SA  (mA cm⁻²_ECSA)")
+                ax.set_xlabel(f"E  (V vs {ref})")
+                ax.set_title("Specific Activity")
+                ax.legend(fontsize=8, frameon=True)
+            else:
+                ax.text(0.5, 0.5, "No SA data (check ECSA inputs and E range)",
+                        ha="center", va="center", transform=ax.transAxes)
+            fig.tight_layout(pad=0.5); fig.set_layout_engine("none"); cv.draw()
+            res.configure(state=tk.NORMAL)
+            res.delete("1.0", tk.END)
+            res.insert(tk.END, "\n".join(lines))
+            res.configure(state=tk.DISABLED)
+
+        _compute()
+
+    def _open_levich_window(self):
+        """Standalone Levich plot: |J| vs √RPM — all samples, sample-grouped selector."""
+        all_curves = []  # (E_arr, J_arr, rpm, label, color, sname)
+        for sn in self.samples:
+            for E, J, rpm, lbl, col in self._get_curves_for_sample(sn):
+                if rpm > 0:
+                    all_curves.append((E, J, rpm, lbl, col, sn))
+        if not all_curves:
+            messagebox.showwarning("Levich Plot",
+                                   "No curves with valid RPM values in any sample.")
+            return
+        ref = self.ref_electrode_var.get()
+
+        win = tk.Toplevel(self)
+        win.title("Levich Plot  |J| vs √RPM")
+        win.geometry("820x680")
+
+        _recompute_id = [None]
+        def _schedule(*_):
+            if _recompute_id[0]:
+                try: win.after_cancel(_recompute_id[0])
+                except Exception: pass
+            _recompute_id[0] = win.after(350, _compute)
+
+        # ── Theory ───────────────────────────────────────────────────
+        _th = ttk.LabelFrame(win, text="Theory")
+        _th.pack(fill=tk.X, padx=8, pady=(6, 0))
+        _th_g = ttk.Frame(_th); _th_g.pack(fill=tk.X, padx=6, pady=3)
+        for _r, (_hd, _bd) in enumerate([
+            ("Levich equation:", "|J| = B·√ω   (linear in √RPM at each potential)"),
+            ("B factor:",        "B = 0.62·n·F·D^(2/3)·ν^(-1/6)·C   (ω = 2π·RPM/60)"),
+        ]):
+            ttk.Label(_th_g, text=_hd, font=("TkDefaultFont", 9, "bold"),
+                      anchor=tk.W).grid(row=_r, column=0, sticky=tk.W, pady=2)
+            ttk.Label(_th_g, text=f"  {_bd}", font=("TkDefaultFont", 9),
+                      anchor=tk.W).grid(row=_r, column=1, sticky=tk.W, padx=(4, 0), pady=2)
+
+        # ── Notation ─────────────────────────────────────────────────
+        _sym = ttk.LabelFrame(win, text="Notation")
+        _sym.pack(fill=tk.X, padx=8, pady=(4, 0))
+        _sym_g = ttk.Frame(_sym); _sym_g.pack(fill=tk.X, padx=4, pady=3)
+        for _i, (_s, _d) in enumerate([
+            ("|J|",  "absolute cathodic current density (mA cm⁻²)"),
+            ("√RPM", "square-root of rotation rate (rpm⁰·⁵)"),
+            ("ω",    "angular velocity = 2π·RPM/60  (rad s⁻¹)"),
+            ("B",    "Levich B factor (slope of |J| vs √RPM)"),
+            ("n",    "electrons transferred per O₂"),
+            ("F",    "Faraday constant = 96485 C mol⁻¹"),
+            ("D",    "O₂ diffusion coefficient (cm² s⁻¹)"),
+            ("ν",    "kinematic viscosity (cm² s⁻¹)"),
+            ("C",    "O₂ bulk concentration (mol cm⁻³)"),
+        ]):
+            _r, _c = _i // 2, (_i % 2) * 2
+            ttk.Label(_sym_g, text=_s, font=("TkDefaultFont", 9, "bold"),
+                      width=7, anchor=tk.E).grid(row=_r, column=_c, sticky=tk.E, padx=(8, 2), pady=2)
+            ttk.Label(_sym_g, text=f"= {_d}", font=("TkDefaultFont", 9),
+                      anchor=tk.W).grid(row=_r, column=_c+1, sticky=tk.W, padx=(0, 16), pady=2)
+
+        # ── Curve selector ────────────────────────────────────────────
+        _sel_fr = ttk.LabelFrame(
+            win, text="Select curves  (catalyst [cat] = sample, checkbox toggles all RPMs)")
+        _sel_fr.pack(fill=tk.X, padx=8, pady=(4, 0))
+        _sel_cv = tk.Canvas(_sel_fr, height=80, bd=0, highlightthickness=0)
+        _sel_sb = ttk.Scrollbar(_sel_fr, orient=tk.VERTICAL, command=_sel_cv.yview)
+        _sel_inner = tk.Frame(_sel_cv)
+        _sel_inner.bind("<Configure>",
+                        lambda e: _sel_cv.configure(scrollregion=_sel_cv.bbox("all")))
+        _sel_cv.create_window((0, 0), window=_sel_inner, anchor="nw")
+        _sel_cv.configure(yscrollcommand=_sel_sb.set)
+        _sel_sb.pack(side=tk.RIGHT, fill=tk.Y)
+        _sel_cv.pack(fill=tk.BOTH, expand=True, padx=4, pady=2)
+        _sel_cv.bind("<MouseWheel>",
+                     lambda e: _sel_cv.yview_scroll(-1*(e.delta//120), "units"))
+
+        _by_samp = {}; _samp_order = []
+        for idx, (E_a, J_a, rpm, lbl, col, sn) in enumerate(all_curves):
+            if sn not in _by_samp:
+                _by_samp[sn] = []; _samp_order.append(sn)
+            m = re.match(r'^\[(\w+)\]', lbl)
+            cat = m.group(1) if m else ""
+            _by_samp[sn].append((idx, E_a, J_a, rpm, lbl, col, cat))
+
+        _lsel_vars = {}
+
+        for sn in _samp_order:
+            # Group label — non-interactive (user's "group")
+            tk.Label(_sel_inner, text=f"  ▸ Group: {sn}",
+                     font=("TkDefaultFont", 8, "italic"), fg="#555555",
+                     anchor=tk.W).pack(fill=tk.X, anchor=tk.W, pady=(4, 0))
+            _by_cat = {}; _cat_ord = []
+            for idx, E_a, J_a, rpm, lbl, col, cat in _by_samp[sn]:
+                if cat not in _by_cat:
+                    _by_cat[cat] = []; _cat_ord.append(cat)
+                _by_cat[cat].append((idx, rpm, lbl, col))
+            for cat in _cat_ord:
+                cat_idxs = [it[0] for it in _by_cat[cat]]
+                cat_bv = tk.BooleanVar(value=True)
+                cat_row = tk.Frame(_sel_inner)
+                cat_row.pack(fill=tk.X, anchor=tk.W, padx=(18, 0), pady=1)
+                # Catalyst [cat] = one sample (user's definition) — bold checkbox
+                tk.Checkbutton(
+                    cat_row,
+                    text=f"[{cat}]" if cat else "(no cat)",
+                    variable=cat_bv,
+                    command=lambda idxs=cat_idxs, bv=cat_bv:
+                        [_lsel_vars[i].set(bv.get()) for i in idxs],
+                    font=("TkDefaultFont", 8, "bold")
+                ).pack(side=tk.LEFT, padx=(0, 8))
+                for idx, rpm, lbl, col in _by_cat[cat]:
+                    bv = tk.BooleanVar(value=True)
+                    _lsel_vars[idx] = bv
+                    display = re.sub(r'^\[\w+\]\s*', '', lbl)
+                    tk.Checkbutton(cat_row, text=display, variable=bv).pack(
+                        side=tk.LEFT, padx=3)
+                    bv.trace_add("write", _schedule)
+
+        # ── E-value controls ──────────────────────────────────────────
+        ectrl = ttk.Frame(win); ectrl.pack(fill=tk.X, padx=8, pady=(4, 0))
+        ttk.Label(ectrl, text="E values (V vs RHE, comma-sep):").pack(side=tk.LEFT)
+        e_vals_var = tk.StringVar(value="0.40, 0.60, 0.70, 0.80, 0.90")
+        ttk.Entry(ectrl, textvariable=e_vals_var, width=30).pack(
+            side=tk.LEFT, padx=(4, 10))
+        e_vals_var.trace_add("write", _schedule)
+
+        # ── Figure — bottom first ─────────────────────────────────────
+        _LS = ['-', '--', '-.', ':']
+        _MK = ['o', 's', '^', 'D', 'v', 'P']
+        fig = Figure(figsize=(7.5, 4.2), dpi=100)
+        ax  = fig.add_subplot(111)
+        cv  = FigureCanvasTkAgg(fig, master=win)
+        tb  = NavigationToolbar2Tk(cv, win, pack_toolbar=False)
+        res = tk.Text(win, height=5, state=tk.DISABLED, font=("Courier", 9), wrap=tk.WORD)
+        _handle = tk.Frame(win, height=5, bg="#aaaaaa", cursor="sb_v_double_arrow")
+        tb.pack(side=tk.BOTTOM, fill=tk.X, padx=8)
+        res.pack(side=tk.BOTTOM, fill=tk.X, padx=8)
+        _handle.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=(1, 1))
+        cv.get_tk_widget().pack(fill=tk.BOTH, expand=True, padx=8)
+        _y0 = [0]; _h0 = [5]
+        def _start(e): _y0[0] = e.y_root; _h0[0] = int(res.cget("height"))
+        def _drag(e):
+            res.configure(height=max(2, _h0[0] + int((e.y_root - _y0[0]) / 16)))
+        _handle.bind("<ButtonPress-1>", _start)
+        _handle.bind("<B1-Motion>", _drag)
+
+        def _compute():
+            try:
+                e_vals = [float(x.strip()) for x in e_vals_var.get().split(",")
+                          if x.strip()]
+            except ValueError:
+                return
+            if not e_vals: return
+
+            # Group selected curves by (sample, catalyst)
+            sel_by_grp = {}; grp_order = []
+            for idx, (E_a, J_a, rpm, lbl, col, sn) in enumerate(all_curves):
+                if not _lsel_vars.get(idx, tk.BooleanVar(value=True)).get():
+                    continue
+                m = re.match(r'^\[(\w+)\]', lbl)
+                cat = m.group(1) if m else ""
+                key = (sn, cat)
+                if key not in sel_by_grp:
+                    sel_by_grp[key] = []; grp_order.append(key)
+                sel_by_grp[key].append((E_a, J_a, rpm, lbl, col))
+
+            ax.clear(); lines = []
+            n_ev = len(e_vals)
+
+            for gi, grp_key in enumerate(grp_order):
+                sn_g, cat_g = grp_key
+                grp_lbl = f"{sn_g}" + (f" [{cat_g}]" if cat_g else "")
+                ls = _LS[gi % len(_LS)]; mk = _MK[gi % len(_MK)]
+                grp_curves = sel_by_grp[grp_key]
+                lines.append(f"── {grp_lbl} ──")
+
+                for ei, e_val in enumerate(e_vals):
+                    c_lev = _PALETTE[(gi * n_ev + ei) % len(_PALETTE)]
+                    pts = []
+                    for E_arr, J_arr, rpm, _, _ in grp_curves:
+                        if e_val < E_arr[0] or e_val > E_arr[-1]: continue
+                        j = float(np.interp(e_val, E_arr, J_arr))
+                        if np.isfinite(j): pts.append((rpm, abs(j)))
+                    pts.sort(key=lambda x: x[0])
+                    if not pts:
+                        lines.append(f"  E={e_val:.3f} V: no pts"); continue
+                    x = [math.sqrt(r) for r, _ in pts]
+                    y = [j for _, j in pts]
+                    ax.plot(x, y, mk + ls, color=c_lev, linewidth=1.4, markersize=5,
+                            label=f"{grp_lbl}  E={e_val:.3f} V")
+                    if len(x) >= 2:
+                        coeffs = np.polyfit(x, y, 1)
+                        lines.append(
+                            f"  E={e_val:.3f} V:  slope={coeffs[0]:.4f}  "
+                            f"intercept={coeffs[1]:.4f}")
+                    else:
+                        lines.append(f"  E={e_val:.3f} V:  {len(x)} pt(s)")
+
+            ax.set_xlabel(r"$\sqrt{RPM}$  (rpm$^{0.5}$)")
+            ax.set_ylabel(r"$|J|$  (mA cm$^{-2}$)")
+            ax.set_title("Levich  |J| vs √RPM")
+            ax.legend(fontsize=7, frameon=True)
+            fig.tight_layout(pad=0.5); fig.set_layout_engine("none"); cv.draw()
+            res.configure(state=tk.NORMAL)
+            res.delete("1.0", tk.END)
+            res.insert(tk.END, "\n".join(lines))
+            res.configure(state=tk.DISABLED)
+
+        _compute()
+
+    def _open_comparison_window(self):
+        """Sample Comparison: Ratio / Levich / KL / Kinetic for all catalysts."""
+        curves = self._get_active_curves()
+        if not curves:
+            messagebox.showwarning("Sample Comparison",
+                                   "No processed curves for active sample.")
+            return
+
+        _by_cat = {}; _cat_order = []
+        for idx, (E_arr, J_arr, rpm, lbl, col) in enumerate(curves):
+            m = re.match(r'^\[(\w+)\]', lbl)
+            cat = m.group(1) if m else ""
+            if cat not in _by_cat:
+                _by_cat[cat] = []; _cat_order.append(cat)
+            _by_cat[cat].append((idx, E_arr, J_arr, rpm, lbl, col))
+
+        sname = self.active_sample
+        ref   = self.ref_electrode_var.get()
+        _LS = ['-', '--', '-.', ':']
+        _MK = ['o', 's', '^', 'D', 'v', 'P']
+        cat_colors = {cat: _PALETTE[i % len(_PALETTE)] for i, cat in enumerate(_cat_order)}
+
+        win = tk.Toplevel(self)
+        win.title(f"Sample Comparison — {sname}")
+        win.geometry("940x720")
+
+        # ── Global controls (E values only) ──────────────────────────
+        _ctrl = ttk.Frame(win); _ctrl.pack(fill=tk.X, padx=8, pady=(6, 0))
+        ttk.Label(_ctrl, text="E values (V vs RHE, comma-sep):").pack(side=tk.LEFT)
+        e_vals_var = tk.StringVar(value="0.40, 0.60, 0.70, 0.80, 0.85, 0.90")
+        ttk.Entry(_ctrl, textvariable=e_vals_var, width=34).pack(side=tk.LEFT, padx=(4, 10))
+        ttk.Button(_ctrl, text="Plot All", command=lambda: _plot_all()).pack(side=tk.LEFT)
+
+        # ── Notation ─────────────────────────────────────────────────
+        _sym = ttk.LabelFrame(win, text="Notation")
+        _sym.pack(fill=tk.X, padx=8, pady=(2, 0))
+        _sym_g = ttk.Frame(_sym); _sym_g.pack(fill=tk.X, padx=4, pady=3)
+        for _i, (_s, _d) in enumerate([
+            ("|J|",   "absolute cathodic current density (mA cm⁻²)"),
+            ("Jᵏ",    "kinetic J = J·J_lim / (J_lim − J)"),
+            ("J_lim", "diffusion plateau current (mA cm⁻²)"),
+            ("SA",    "|Jᵏ| / ECSA  (mA cm⁻²_ECSA)"),
+            ("ECSA",  "electrochemical active surface area (cm²)"),
+            ("ω",     "angular velocity = 2π·RPM/60  (rad s⁻¹)"),
+        ]):
+            _r, _c = _i // 2, (_i % 2) * 2
+            ttk.Label(_sym_g, text=_s, font=("TkDefaultFont", 9, "bold"),
+                      width=7, anchor=tk.E).grid(row=_r, column=_c, sticky=tk.E, padx=(8, 2), pady=2)
+            ttk.Label(_sym_g, text=f"= {_d}", font=("TkDefaultFont", 9),
+                      anchor=tk.W).grid(row=_r, column=_c+1, sticky=tk.W, padx=(0, 16), pady=2)
+
+        # ── Notebook ─────────────────────────────────────────────────
+        nb = ttk.Notebook(win); nb.pack(fill=tk.BOTH, expand=True, padx=8, pady=4)
+
+        # ── Helpers ──────────────────────────────────────────────────
+        def _rpm_j(cat, e_val):
+            out = []
+            for _, E_a, J_a, rpm, _, _ in _by_cat.get(cat, []):
+                if rpm <= 0 or e_val < E_a[0] or e_val > E_a[-1]: continue
+                j = float(np.interp(e_val, E_a, J_a))
+                if np.isfinite(j): out.append((rpm, j))
+            return sorted(out, key=lambda x: x[0])
+
+        def _best_curve(cat):
+            items = _by_cat.get(cat, [])
+            if not items: return None, None
+            best = max(items, key=lambda x: x[3])
+            return best[1], best[2]
+
+        def _get_e_vals():
+            try: return [float(x.strip()) for x in e_vals_var.get().split(",") if x.strip()]
+            except ValueError: return []
+
+        # ── Tab 1: Ratio — own numerator/denominator controls ─────────
+        tab_r = ttk.Frame(nb); nb.add(tab_r, text="Ratio  |Jn|/|Jd|")
+        _rctrl = ttk.Frame(tab_r); _rctrl.pack(fill=tk.X, padx=6, pady=(4, 0))
+        ttk.Label(_rctrl, text="Numerator:").pack(side=tk.LEFT)
+        num_var = tk.StringVar(value=_cat_order[0] if _cat_order else "")
+        ttk.Combobox(_rctrl, textvariable=num_var, values=_cat_order,
+                     state="readonly", width=16).pack(side=tk.LEFT, padx=(4, 10))
+        ttk.Label(_rctrl, text="÷  Denominator:").pack(side=tk.LEFT)
+        den_var = tk.StringVar(
+            value=_cat_order[1] if len(_cat_order) > 1 else _cat_order[0] if _cat_order else "")
+        ttk.Combobox(_rctrl, textvariable=den_var, values=_cat_order,
+                     state="readonly", width=16).pack(side=tk.LEFT, padx=(4, 10))
+        fig_r = Figure(figsize=(7.5, 4.2), dpi=100)
+        ax_r  = fig_r.add_subplot(111)
+        cv_r  = FigureCanvasTkAgg(fig_r, master=tab_r)
+        NavigationToolbar2Tk(cv_r, tab_r, pack_toolbar=False).pack(
+            side=tk.BOTTOM, fill=tk.X)
+        cv_r.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        num_var.trace_add("write", lambda *_: _plot_ratio())
+        den_var.trace_add("write", lambda *_: _plot_ratio())
+
+        # ── Tab 2: Levich ─────────────────────────────────────────────
+        tab_l = ttk.Frame(nb); nb.add(tab_l, text="Levich  |J| vs √RPM")
+        fig_l = Figure(figsize=(7.5, 4.2), dpi=100)
+        ax_l  = fig_l.add_subplot(111)
+        cv_l  = FigureCanvasTkAgg(fig_l, master=tab_l)
+        NavigationToolbar2Tk(cv_l, tab_l, pack_toolbar=False).pack(
+            side=tk.BOTTOM, fill=tk.X)
+        cv_l.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+        # ── Tab 3: KL ─────────────────────────────────────────────────
+        tab_kl = ttk.Frame(nb); nb.add(tab_kl, text="KL  1/|J| vs 1/√ω")
+        fig_kl = Figure(figsize=(7.5, 4.2), dpi=100)
+        ax_kl  = fig_kl.add_subplot(111)
+        cv_kl  = FigureCanvasTkAgg(fig_kl, master=tab_kl)
+        NavigationToolbar2Tk(cv_kl, tab_kl, pack_toolbar=False).pack(
+            side=tk.BOTTOM, fill=tk.X)
+        cv_kl.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+        # ── Tab 4: Kinetic — ECSA inputs in tab ──────────────────────
+        tab_kin = ttk.Frame(nb); nb.add(tab_kin, text="Kinetic  Jᵏ & SA")
+        _kctrl = ttk.Frame(tab_kin); _kctrl.pack(fill=tk.X, padx=6, pady=(4, 0))
+        ttk.Label(_kctrl, text="ECSA (cm²) per catalyst:").pack(side=tk.LEFT)
+        _ecsa_vars = {}
+        for cat in _cat_order:
+            ttk.Label(_kctrl, text=f" [{cat}]:").pack(side=tk.LEFT)
+            ev = tk.StringVar(value="")
+            _ecsa_vars[cat] = ev
+            ttk.Entry(_kctrl, textvariable=ev, width=7).pack(side=tk.LEFT, padx=(2, 4))
+        fig_kin = Figure(figsize=(7.5, 4.2), dpi=100)
+        ax_ta   = fig_kin.add_subplot(121)
+        ax_sa   = fig_kin.add_subplot(122)
+        cv_kin  = FigureCanvasTkAgg(fig_kin, master=tab_kin)
+        NavigationToolbar2Tk(cv_kin, tab_kin, pack_toolbar=False).pack(
+            side=tk.BOTTOM, fill=tk.X)
+        cv_kin.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+        # ── Plot Ratio ────────────────────────────────────────────────
+        def _plot_ratio():
+            e_vals = _get_e_vals()
+            if not e_vals: return
+            num_cat = num_var.get(); den_cat = den_var.get()
+            e_colors = [_PALETTE[i % len(_PALETTE)] for i in range(len(e_vals))]
+            ax_r.clear()
+            for e_val, c_e in zip(e_vals, e_colors):
+                d_pts = _rpm_j(den_cat, e_val); n_pts = _rpm_j(num_cat, e_val)
+                d_d = {r: j for r, j in d_pts}; n_d = {r: j for r, j in n_pts}
+                common = sorted(set(d_d) & set(n_d))
+                if not common: continue
+                ratio = [abs(n_d[r]) / abs(d_d[r]) for r in common
+                         if d_d[r] != 0 and np.isfinite(n_d[r]) and np.isfinite(d_d[r])]
+                if not ratio: continue
+                ax_r.plot(common[:len(ratio)], ratio, 'o-', color=c_e,
+                          linewidth=1.5, markersize=5, label=f"E = {e_val:.2f} V")
+            ax_r.axhline(1.0, color="gray", lw=0.8, ls="--")
+            ax_r.set_xlabel("RPM")
+            ax_r.set_ylabel(f"|J[{num_cat}]| / |J[{den_cat}]|")
+            ax_r.set_title(f"Current Ratio  [{num_cat}] / [{den_cat}]")
+            ax_r.legend(fontsize=7, frameon=True)
+            fig_r.tight_layout(pad=0.5); fig_r.set_layout_engine("none"); cv_r.draw()
+
+        # ── Plot All (Levich + KL + Kinetic) ─────────────────────────
+        def _plot_all():
+            e_vals = _get_e_vals()
+            if not e_vals:
+                messagebox.showerror("Comparison", "Invalid E values.", parent=win)
+                return
+            e_colors = [_PALETTE[i % len(_PALETTE)] for i in range(len(e_vals))]
+            lev_ev = e_vals[:5]; kl_ev = e_vals[:4]
+
+            # Levich
+            ax_l.clear()
+            for ci, cat in enumerate(_cat_order):
+                ls = _LS[ci % len(_LS)]; mk = _MK[ci % len(_MK)]
+                for e_val, c_e in zip(lev_ev, e_colors):
+                    pts = _rpm_j(cat, e_val)
+                    if not pts: continue
+                    x = [math.sqrt(r) for r, _ in pts]
+                    y = [abs(j) for _, j in pts]
+                    ax_l.plot(x, y, mk + ls, color=c_e, linewidth=1.4, markersize=5,
+                              label=f"[{cat}] {e_val:.2f} V")
+            ax_l.set_xlabel(r"$\sqrt{RPM}$  (rpm$^{0.5}$)")
+            ax_l.set_ylabel(r"$|J|$  (mA cm$^{-2}$)")
+            ax_l.set_title("Levich  |J| vs √RPM")
+            ax_l.legend(fontsize=6, frameon=True, ncol=max(1, len(_cat_order)))
+            fig_l.tight_layout(pad=0.5); fig_l.set_layout_engine("none"); cv_l.draw()
+
+            # KL
+            ax_kl.clear()
+            for ci, cat in enumerate(_cat_order):
+                ls = _LS[ci % len(_LS)]; mk = _MK[ci % len(_MK)]
+                for e_val, c_e in zip(kl_ev, e_colors):
+                    pts = _rpm_j(cat, e_val)
+                    x = []; y = []
+                    for r, j in pts:
+                        if j == 0: continue
+                        x.append(1.0 / math.sqrt(2.0 * math.pi * r / 60.0))
+                        y.append(1.0 / abs(j))
+                    if len(x) < 2: continue
+                    ax_kl.plot(x, y, mk + ls, color=c_e, linewidth=1.4, markersize=4,
+                               label=f"[{cat}] {e_val:.2f} V")
+            ax_kl.set_xlabel(r"$\omega^{-1/2}$  (rad s$^{-1}$)$^{-\!1/2}$")
+            ax_kl.set_ylabel(r"$|J|^{-1}$")
+            ax_kl.set_title("Koutecky–Levich  1/|J| vs 1/√ω")
+            ax_kl.legend(fontsize=6, frameon=True, ncol=max(1, len(_cat_order)))
+            fig_kl.tight_layout(pad=0.5); fig_kl.set_layout_engine("none"); cv_kl.draw()
+
+            # Kinetic
+            ax_ta.clear(); ax_sa.clear()
+            for ci, cat in enumerate(_cat_order):
+                E_a, J_a = _best_curve(cat)
+                if E_a is None: continue
+                j_lim = float(np.min(J_a))
+                if j_lim >= 0: continue
+                color = cat_colors[cat]; ls = _LS[ci % len(_LS)]
+                mask = (E_a >= 0.85) & (E_a <= 0.95)
+                if mask.sum() >= 3:
+                    E_k = E_a[mask]; J_k = J_a[mask]
+                    with np.errstate(divide="ignore", invalid="ignore"):
+                        jk = J_k * j_lim / (j_lim - J_k)
+                    good = np.isfinite(jk) & (jk < 0)
+                    if good.sum() >= 3:
+                        with np.errstate(divide="ignore", invalid="ignore"):
+                            log_jk = np.log10(np.abs(jk[good]))
+                        fin = np.isfinite(log_jk)
+                        ax_ta.plot(log_jk[fin], E_k[good][fin], ls,
+                                   color=color, linewidth=1.5, label=f"[{cat}]")
+            ax_ta.set_xlabel(r"$\log_{10}|J^k|$")
+            ax_ta.set_ylabel(f"E  (V vs {ref})")
+            ax_ta.set_title("Tafel (Koutecky-corrected, 0.85–0.95 V)")
+            ax_ta.legend(fontsize=7)
+
+            sa_e_list = []
+            for target in [0.90, 0.85]:
+                closest = min(e_vals, key=lambda v: abs(v - target))
+                if abs(closest - target) < 0.06 and closest not in sa_e_list:
+                    sa_e_list.append(closest)
+            if not sa_e_list:
+                sa_e_list = e_vals[-2:] if len(e_vals) >= 2 else e_vals
+            x_sa = np.arange(len(sa_e_list))
+            bw = 0.8 / max(len(_cat_order), 1)
+            any_ecsa = False
+            for ci, cat in enumerate(_cat_order):
+                raw = _ecsa_vars[cat].get().strip()
+                try: ecsa = float(raw) if raw else None
+                except ValueError: ecsa = None
+                if not ecsa or ecsa <= 0: continue
+                any_ecsa = True
+                E_a, J_a = _best_curve(cat)
+                if E_a is None: continue
+                j_lim = float(np.min(J_a))
+                sa_vals = []
+                for e_val in sa_e_list:
+                    if e_val < E_a[0] or e_val > E_a[-1] or j_lim >= 0:
+                        sa_vals.append(0.0); continue
+                    j = float(np.interp(e_val, E_a, J_a))
+                    if j >= 0 or abs(j_lim - j) < 1e-12:
+                        sa_vals.append(0.0); continue
+                    jk = j * j_lim / (j_lim - j)
+                    sa_vals.append(abs(jk) / ecsa)
+                offset = (ci - (len(_cat_order)-1)/2.0) * bw
+                ax_sa.bar(x_sa + offset, sa_vals, bw * 0.85,
+                          color=cat_colors[cat], alpha=0.8, label=f"[{cat}]")
+            ax_sa.set_xticks(x_sa)
+            ax_sa.set_xticklabels([f"{e:.2f} V" for e in sa_e_list])
+            ax_sa.set_ylabel(r"SA  (mA cm$^{-2}_{ECSA}$)")
+            ax_sa.set_title("Specific Activity")
+            ax_sa.legend(fontsize=7)
+            if not any_ecsa:
+                ax_sa.text(0.5, 0.5, "Enter ECSA above for SA",
+                           ha="center", va="center", transform=ax_sa.transAxes,
+                           color="gray", fontsize=8)
+            fig_kin.tight_layout(pad=0.5); fig_kin.set_layout_engine("none")
+            cv_kin.draw()
+            _plot_ratio()
+
+        _plot_all()
 
     # ════════════════════════════════════════════════════════════════
     # Excel export
