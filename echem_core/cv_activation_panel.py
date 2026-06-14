@@ -254,16 +254,22 @@ class CvActivationPanel(ttk.Frame):
         ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
         _rtv_lf = ttk.LabelFrame(left, text="Results")
         _rtv_lf.pack(fill=tk.BOTH, padx=4, pady=4, expand=False)
-        _rtv_cols = ("file", "j_final", "delta_pct", "status")
+        _rtv_cols = ("file", "e_tgt", "dir", "w_thr", "j_final", "delta_pct", "status")
         self._results_tv = ttk.Treeview(
             _rtv_lf, columns=_rtv_cols, show="headings", height=6, selectmode="browse")
         self._results_tv.heading("file",      text="Sample")
-        self._results_tv.heading("j_final",   text="J_final (mA)")
-        self._results_tv.heading("delta_pct", text="Δ% / N cyc")
+        self._results_tv.heading("e_tgt",     text="E tgt (V)")
+        self._results_tv.heading("dir",       text="Dir")
+        self._results_tv.heading("w_thr",     text="W / Thr%")
+        self._results_tv.heading("j_final",   text="J_final")
+        self._results_tv.heading("delta_pct", text="Δ%")
         self._results_tv.heading("status",    text="Status")
-        self._results_tv.column("file",      width=110, anchor=tk.W,      stretch=True)
-        self._results_tv.column("j_final",   width=80,  anchor=tk.CENTER, stretch=False)
-        self._results_tv.column("delta_pct", width=70,  anchor=tk.CENTER, stretch=False)
+        self._results_tv.column("file",      width=100, anchor=tk.W,      stretch=True)
+        self._results_tv.column("e_tgt",     width=62,  anchor=tk.CENTER, stretch=False)
+        self._results_tv.column("dir",       width=52,  anchor=tk.CENTER, stretch=False)
+        self._results_tv.column("w_thr",     width=65,  anchor=tk.CENTER, stretch=False)
+        self._results_tv.column("j_final",   width=62,  anchor=tk.CENTER, stretch=False)
+        self._results_tv.column("delta_pct", width=52,  anchor=tk.CENTER, stretch=False)
         self._results_tv.column("status",    width=90,  anchor=tk.CENTER, stretch=False)
         _rtv_sb = ttk.Scrollbar(_rtv_lf, orient=tk.VERTICAL,
                                  command=self._results_tv.yview)
@@ -337,25 +343,23 @@ class CvActivationPanel(ttk.Frame):
                 messagebox.showerror("Load error", f"{short}:\n{exc}")
                 continue
             color_idx = len(self.files) % len(_TRACE_COLORS)
-            self.files[short] = {
+            entry = {
                 "path": path, "df": df,
-                # per-file corrections
                 "r_sol": 0.0, "e_ref": 0.0,
-                # per-file column mapping (filled on first switch)
                 "x_col": "", "y_col": "", "cyc_col": "",
-                # per-file analysis settings (filled after load)
                 "e_target": "", "direction": "Anodic",
                 "window": "10", "threshold": "2.0",
                 "color": _TRACE_COLORS[color_idx],
                 "result": None,
             }
+            self._init_entry_defaults(entry)   # auto-detect cols + e_target
+            self.files[short] = entry
             self._loading = True
             self.file_listbox.insert(tk.END, short)
             self._loading = False
 
         if self.files:
             self._switch_file(list(self.files.keys())[-1])
-            self._auto_set_e_target()
 
     def _remove_file(self):
         sel = self.file_listbox.curselection()
@@ -439,8 +443,48 @@ class CvActivationPanel(ttk.Frame):
         entry["y_col"]     = self.y_var.get()
         entry["cyc_col"]   = self.cyc_var.get()
 
+    def _init_entry_defaults(self, entry):
+        """Auto-detect columns and e_target for a freshly created entry (no UI touch)."""
+        df   = entry["df"]
+        cols = list(df.columns)
+        # x column
+        xcol = ""
+        for c in ["Ewe/V", "Ewe/V ", "E/V", "E (V)"]:
+            if c in cols: xcol = c; break
+        if not xcol:
+            for c in cols:
+                if "/V" in c or "(V)" in c: xcol = c; break
+        # y column
+        ycol = ""
+        for c in ["I/mA", "<I>/mA", "I (mA)"]:
+            if c in cols: ycol = c; break
+        if not ycol:
+            for c in cols:
+                if "/mA" in c or "(mA)" in c or "/A" in c: ycol = c; break
+        # cycle column
+        ccol = "cycle number" if "cycle number" in cols else None
+        entry["x_col"]   = xcol
+        entry["y_col"]   = ycol
+        entry["cyc_col"] = ccol if ccol else "(none)"
+        # e_target
+        if not xcol or not ycol:
+            return
+        sub = df
+        if ccol:
+            last_cn = sorted(df[ccol].unique())[-1]
+            sub = df[df[ccol] == last_cn]
+        E = sub[xcol].dropna().values
+        I = sub[ycol].dropna().values
+        n = min(len(E), len(I))
+        if n < 4:
+            return
+        E_an, I_an, _, _ = _split_scans(E[:n], I[:n])
+        if len(I_an) == 0:
+            return
+        entry["e_target"] = f"{float(E_an[np.argmax(I_an)]):.4f}"
+
     def _auto_set_e_target(self):
-        """Set E_target to the potential of max anodic current in the last cycle."""
+        """Refresh e_target for the active file using current UI column selection."""
         entry = self.files.get(self.active_file)
         if not entry:
             return
@@ -466,8 +510,7 @@ class CvActivationPanel(ttk.Frame):
             return
         e_at_max_anodic = float(E_an[np.argmax(I_an)])
         self.e_target_var.set(f"{e_at_max_anodic:.4f}")
-        if entry:
-            entry["e_target"] = self.e_target_var.get()
+        entry["e_target"] = self.e_target_var.get()
 
     # ════════════════════════════════════════════════════════════════
     # Column management
@@ -519,8 +562,9 @@ class CvActivationPanel(ttk.Frame):
             return
         self.r_sol_var.set(str(entry.get("r_sol", 0.0)))
         self.e_ref_var.set(str(entry.get("e_ref", 0.0)))
-        if entry.get("e_target"):
-            self.e_target_var.set(entry["e_target"])
+        # Always restore e_target — even if empty. If we skip when empty,
+        # the previous file's value stays in the UI and gets saved to this file.
+        self.e_target_var.set(entry.get("e_target", ""))
         self.direction_var.set(entry.get("direction", "Anodic"))
         self.window_var.set(entry.get("window", "10"))
         self.threshold_var.set(entry.get("threshold", "2.0"))
@@ -644,9 +688,14 @@ class CvActivationPanel(ttk.Frame):
         tv = self._results_tv
         tv.delete(*tv.get_children())
         for short, entry in self.files.items():
+            et  = entry.get("e_target", "") or "—"
+            dr  = entry.get("direction", "Anodic")[:2]   # "An" / "Ca" / "Av"
+            w   = entry.get("window",    "10")
+            thr = entry.get("threshold", "2.0")
+            w_thr = f"{w} / {thr}%"
             res = entry.get("result")
             if res is None:
-                tv.insert("", tk.END, values=(short, "—", "—", "—"))
+                tv.insert("", tk.END, values=(short, et, dr, w_thr, "—", "—", "—"))
                 continue
             j_f = f"{res['j_final']:.4f}" if res["j_final"] is not None else "—"
             dp  = f"{res['delta_pct']:.2f}%" if res["delta_pct"] is not None else "—"
@@ -656,7 +705,8 @@ class CvActivationPanel(ttk.Frame):
                 status, tag = "Not activated ✗", "fail"
             else:
                 status, tag = "—", ""
-            tv.insert("", tk.END, values=(short, j_f, dp, status), tags=(tag,))
+            tv.insert("", tk.END, values=(short, et, dr, w_thr, j_f, dp, status),
+                      tags=(tag,))
 
     # ════════════════════════════════════════════════════════════════
     # Plotting
