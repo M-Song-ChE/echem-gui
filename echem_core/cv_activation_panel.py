@@ -138,7 +138,9 @@ class CvActivationPanel(ttk.Frame):
         _fb = ttk.Frame(left); _fb.pack(fill=tk.X, padx=4, pady=2)
         ttk.Button(_fb, text="Load File(s)", command=self._load_files).pack(
             side=tk.LEFT, padx=(0, 4))
-        ttk.Button(_fb, text="Remove", command=self._remove_file).pack(side=tk.LEFT)
+        ttk.Button(_fb, text="Remove", command=self._remove_file).pack(
+            side=tk.LEFT, padx=(0, 4))
+        ttk.Button(_fb, text="Merge…", command=self._open_merge_dialog).pack(side=tk.LEFT)
         _flf = ttk.Frame(left); _flf.pack(fill=tk.X, padx=4, pady=2)
         self.file_listbox = CheckableListbox(
             _flf, height=5, show_checkboxes=False, on_reorder=self._on_file_reorder)
@@ -480,9 +482,9 @@ class CvActivationPanel(ttk.Frame):
                 for c in cols:
                     if "/mA" in c or "(mA)" in c or "/A" in c: self.y_var.set(c); break
         sc = entry.get("cyc_col", "")
-        if sc and sc in ["(none)"] + cols:
-            self.cyc_var.set(sc)
-        elif self.cyc_var.get() not in ["(none)"] + cols:
+        if sc:   # previously saved for this file — restore exactly
+            self.cyc_var.set(sc if sc in ["(none)"] + cols else "(none)")
+        else:    # never saved → always auto-detect so "(none)" from another file doesn't stick
             self.cyc_var.set("cycle number" if "cycle number" in cols else "(none)")
 
     def _get_cycle_col(self, df):
@@ -674,7 +676,8 @@ class CvActivationPanel(ttk.Frame):
 
         for i, cn in enumerate(raw_cycles):
             sub   = df_c[df_c[ccol] == cn] if cn is not None else df_c
-            color = cmap(i / max(n_cyc - 1, 1))
+            # n_cyc==1 means no cycle column → use file's assigned colour, not viridis purple
+            color = entry["color"] if n_cyc == 1 else cmap(i / max(n_cyc - 1, 1))
             lbl   = f"C{int(cn)}" if cn is not None else "data"
             ax.plot(sub[xcol].values, sub[ycol].values,
                     lw=1.0, color=color, label=lbl, alpha=0.85)
@@ -934,3 +937,137 @@ class CvActivationPanel(ttk.Frame):
         self._cyc_fig.clf(); self._cyc_ax = self._cyc_fig.add_subplot(111)
         self._cv_cv.draw_idle()
         self._cyc_cv.draw_idle()
+
+    # ════════════════════════════════════════════════════════════════
+    # File merge
+    # ════════════════════════════════════════════════════════════════
+    def _open_merge_dialog(self):
+        if len(self.files) < 2:
+            messagebox.showinfo("Merge", "Load at least 2 files to merge.")
+            return
+
+        dlg = tk.Toplevel(self)
+        dlg.title("Merge Files")
+        dlg.resizable(False, False)
+        dlg.grab_set()
+
+        ttk.Label(dlg, text="Click files to set merge order:",
+                  font=("", 9, "bold")).pack(anchor=tk.W, padx=8, pady=(8, 2))
+        ttk.Label(dlg, text="File 1 cycles kept as-is; each subsequent file's cycles\n"
+                            "continue from where the previous file ended.",
+                  foreground="gray", font=("", 8), justify=tk.LEFT).pack(
+                      anchor=tk.W, padx=8)
+
+        _btns_frame = ttk.Frame(dlg)
+        _btns_frame.pack(fill=tk.X, padx=8, pady=4)
+
+        order   = []    # short names in selected order
+        btn_map = {}    # short → Button widget
+
+        def _refresh():
+            for sh, btn in btn_map.items():
+                if sh in order:
+                    idx = order.index(sh) + 1
+                    btn.config(text=f"[{idx}] {sh}", relief=tk.SUNKEN, bg="#c8e6c9")
+                else:
+                    btn.config(text=sh, relief=tk.RAISED, bg="SystemButtonFace")
+
+        def _toggle(sh):
+            if sh in order:
+                order.remove(sh)
+            else:
+                order.append(sh)
+            _refresh()
+
+        for sh in self.files:
+            btn = tk.Button(_btns_frame, text=sh, anchor=tk.W,
+                            command=lambda s=sh: _toggle(s))
+            btn.pack(fill=tk.X, pady=1)
+            btn_map[sh] = btn
+
+        _name_row = ttk.Frame(dlg)
+        _name_row.pack(fill=tk.X, padx=8, pady=(8, 4))
+        ttk.Label(_name_row, text="Merged file name:", width=18,
+                  anchor=tk.W).pack(side=tk.LEFT)
+        _name_var = tk.StringVar(value="merged.txt")
+        ttk.Entry(_name_row, textvariable=_name_var, width=26).pack(
+            side=tk.LEFT, padx=(4, 0))
+
+        def _confirm():
+            if len(order) < 2:
+                messagebox.showwarning("Merge", "Select at least 2 files.", parent=dlg)
+                return
+            name = _name_var.get().strip()
+            if not name:
+                messagebox.showwarning("Merge", "Enter a name for the merged file.", parent=dlg)
+                return
+            if name in self.files:
+                messagebox.showwarning("Merge", f"'{name}' already exists.", parent=dlg)
+                return
+            dlg.destroy()
+            self._do_merge(list(order), name)
+
+        _act_row = ttk.Frame(dlg)
+        _act_row.pack(fill=tk.X, padx=8, pady=(4, 10))
+        ttk.Button(_act_row, text="Merge",  command=_confirm).pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Button(_act_row, text="Cancel", command=dlg.destroy).pack(side=tk.LEFT)
+
+    def _do_merge(self, order: list, merged_name: str):
+        """Concatenate files, renumbering cycles so they run continuously."""
+        pieces    = []
+        max_cycle = 0
+        first_entry = self.files[order[0]]
+
+        for i, short in enumerate(order):
+            entry = self.files[short]
+            df    = entry["df"].copy()
+
+            saved_cc = entry.get("cyc_col", "")
+            if saved_cc and saved_cc != "(none)" and saved_cc in df.columns:
+                ccol = saved_cc
+            elif "cycle number" in df.columns:
+                ccol = "cycle number"
+            else:
+                ccol = None
+
+            if ccol:
+                cyc_vals = df[ccol].values.copy().astype(float)
+                min_cyc  = int(cyc_vals.min())
+                max_cyc  = int(cyc_vals.max())
+                if i == 0:
+                    df["cycle number"] = cyc_vals.astype(int)
+                    max_cycle = max_cyc
+                else:
+                    offset = max_cycle - min_cyc + 1
+                    df["cycle number"] = (cyc_vals + offset).astype(int)
+                    max_cycle = max_cycle + (max_cyc - min_cyc + 1)
+            else:
+                # No cycle info — treat whole file as one next cycle
+                max_cycle += 1
+                df["cycle number"] = max_cycle
+
+            pieces.append(df)
+
+        merged_df = pd.concat(pieces, ignore_index=True)
+
+        color_idx = len(self.files) % len(_TRACE_COLORS)
+        self.files[merged_name] = {
+            "path":      "",
+            "df":        merged_df,
+            "r_sol":     first_entry.get("r_sol", 0.0),
+            "e_ref":     first_entry.get("e_ref", 0.0),
+            "x_col":     first_entry.get("x_col", ""),
+            "y_col":     first_entry.get("y_col", ""),
+            "cyc_col":   "cycle number",
+            "e_target":  first_entry.get("e_target", ""),
+            "direction": first_entry.get("direction", "Anodic"),
+            "window":    first_entry.get("window", "10"),
+            "threshold": first_entry.get("threshold", "2.0"),
+            "color":     _TRACE_COLORS[color_idx],
+            "result":    None,
+        }
+        self._loading = True
+        self.file_listbox.insert(tk.END, merged_name)
+        self._loading = False
+        self._switch_file(merged_name)
+        self._auto_set_e_target()
