@@ -1283,6 +1283,15 @@ class ORRPanel(ttk.Frame):
 
         sentry["pairs"].sort(key=lambda p: (p.get("catalyst_id", ""),
                                             _safe_rpm_int(p.get("rpm_id", ""))))
+        # Positional default rpm_val: 1st pair→400, 2nd→900, 3rd→1600, 4th→2500
+        # Only applies when rpm_val == rpm_id (never manually edited by user)
+        _cat_pos: dict = {}
+        for _p in sentry["pairs"]:
+            _c = _p.get("catalyst_id", "")
+            _pos = _cat_pos.get(_c, 0)
+            _cat_pos[_c] = _pos + 1
+            if _p.get("rpm_val", "") == _p.get("rpm_id", "") and _pos < len(_RPM_DEFAULTS):
+                _p["rpm_val"] = str(_RPM_DEFAULTS[_pos])
         if added:
             self._rebuild_pair_table(self.active_sample)
             self._auto_replot()
@@ -3859,8 +3868,12 @@ class ORRPanel(ttk.Frame):
         _n_var.trace_add("write", _schedule)
         ttk.Label(_ec_fr, text="Electrode area (cm²):").pack(side=tk.LEFT)
         _area_var = tk.StringVar(value="0.196")
-        ttk.Entry(_ec_fr, textvariable=_area_var, width=7).pack(side=tk.LEFT, padx=(4, 12))
+        ttk.Entry(_ec_fr, textvariable=_area_var, width=7).pack(side=tk.LEFT, padx=(4, 8))
         _area_var.trace_add("write", _schedule)
+        _norm_data_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(_ec_fr, text="Normalize data by area",
+                        variable=_norm_data_var,
+                        command=_schedule).pack(side=tk.LEFT, padx=(0, 8))
         _show_theory_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(_ec_fr, text="Show theory line",
                         variable=_show_theory_var,
@@ -3953,6 +3966,12 @@ class ORRPanel(ttk.Frame):
         def _compute():
             ax.clear()
             lines_out = []
+            try:
+                area = float(_area_var.get())
+            except ValueError:
+                area = 0.196
+            norm_data = _norm_data_var.get() and area > 0
+
             # Group selected points by sample→catalyst for one line each
             _grp = {}; _grp_order = []
             for idx, (sn, lbl, col, rpm, sq, jl) in enumerate(all_valid):
@@ -3962,13 +3981,16 @@ class ORRPanel(ttk.Frame):
                 cat = m.group(1) if m else lbl
                 key = (sn, cat)
                 if key not in _grp: _grp[key] = []; _grp_order.append(key)
-                _grp[key].append((rpm, sq, jl, col))
+                # normalize raw mA → mA/cm² if requested
+                jl_norm = (abs(jl) / area) if norm_data else abs(jl)
+                _grp[key].append((rpm, sq, jl_norm, col))
 
+            y_unit = "mA/cm²" if norm_data else "mA"
             _palette_idx = 0
             for (sn, cat), pts in [(k, _grp[k]) for k in _grp_order]:
                 pts.sort(key=lambda t: t[0])
                 sq_arr  = np.array([t[1] for t in pts])
-                jl_arr  = np.abs([t[2] for t in pts])
+                jl_arr  = np.array([t[2] for t in pts])
                 col     = pts[0][3]
                 ls      = _LS[_palette_idx % len(_LS)]
                 mk      = _MK[_palette_idx % len(_MK)]
@@ -3982,31 +4004,32 @@ class ORRPanel(ttk.Frame):
                     x_fit = np.linspace(0, sq_arr.max() * 1.05, 60)
                     ax.plot(x_fit, slope * x_fit, ls="--", color=col, lw=0.8, alpha=0.6)
                     lines_out.append(
-                        f"[{cat}] {sn}: slope={slope:.4f} mA/(rad/s)^0.5  "
+                        f"[{cat}] {sn}: slope={slope:.4f} {y_unit}/(rad/s)^0.5  "
                         f"(pts: " + ", ".join(
-                            f"{int(t[0])} rpm→{abs(t[2]):.3f} mA" for t in pts) + ")")
+                            f"{int(t[0])} rpm→{t[2]:.3f} {y_unit}" for t in pts) + ")")
 
-            # Theoretical baseline
+            # Theoretical baseline — always in mA/cm² (B × √ω)
             if _show_theory_var.get():
                 try:
                     elec = _ELECTROLYTES.get(_elec_var.get(), list(_ELECTROLYTES.values())[0])
                     n, D, nu, C = elec
                     n  = float(_n_var.get()) if _n_var.get().strip() else n
-                    area = float(_area_var.get())
+                    # B in mA/(cm²·(rad/s)^0.5) — pure current density, no area factor
                     B  = 0.62 * n * F_const * (D ** (2/3)) * (nu ** (-1/6)) * C * 1000.0
-                    B_total = B * area   # mA per (rad/s)^0.5
                     sq_max = max((pts[-1][1] for pts in _grp.values()), default=5.0)
                     x_th = np.linspace(0, sq_max * 1.1, 80)
-                    ax.plot(x_th, B_total * x_th, "k--", lw=1.5, alpha=0.7,
-                            label=f"Theory ({_elec_var.get()}, n={n:.0f}, A={area} cm²)")
+                    # If data is not normalized, scale theory by area to match mA units
+                    B_plot = B if norm_data else B * area
+                    ax.plot(x_th, B_plot * x_th, "k--", lw=1.5, alpha=0.7,
+                            label=f"Theory ({_elec_var.get()}, n={n:.0f})")
                     lines_out.append(
-                        f"Theory B={B:.4f} mA·s^0.5/(rad^0.5·cm²), "
-                        f"total slope={B_total:.4f} mA/(rad/s)^0.5")
+                        f"Theory B={B:.4f} mA·s^0.5/(rad^0.5·cm²)  "
+                        f"[{_elec_var.get()}, n={n:.0f}]")
                 except (ValueError, KeyError):
                     pass
 
             ax.set_xlabel("√ω  [(rad/s)^0.5]", fontsize=9)
-            ax.set_ylabel("|J_lim|  (mA)", fontsize=9)
+            ax.set_ylabel(f"|J_lim|  ({y_unit})", fontsize=9)
             ax.set_title("Limiting Current vs √ω", fontsize=10)
             ax.tick_params(labelsize=8)
             ax.legend(fontsize=7, frameon=True)
