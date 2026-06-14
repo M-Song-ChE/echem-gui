@@ -238,12 +238,15 @@ class CvActivationPanel(ttk.Frame):
         # ── Buttons ───────────────────────────────────────────────
         ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
         _btn_row = ttk.Frame(left); _btn_row.pack(fill=tk.X, padx=4, pady=2)
+        ttk.Button(_btn_row, text="Analyze",
+                   command=self._update_all).pack(side=tk.LEFT, padx=(0, 4))
         ttk.Button(_btn_row, text="Clear",
                    command=self._clear_all).pack(side=tk.LEFT, padx=(0, 4))
-        ttk.Button(_btn_row, text="Copy CV",
+        _btn_row2 = ttk.Frame(left); _btn_row2.pack(fill=tk.X, padx=4, pady=(0, 2))
+        ttk.Button(_btn_row2, text="Copy CV",
                    command=lambda: copy_figure_to_clipboard(self._cv_fig)).pack(
                        side=tk.LEFT, padx=(0, 4))
-        ttk.Button(_btn_row, text="Copy Cycle",
+        ttk.Button(_btn_row2, text="Copy Cycle",
                    command=lambda: copy_figure_to_clipboard(self._cyc_fig)).pack(
                        side=tk.LEFT)
 
