@@ -22,6 +22,7 @@ from .multi_echem2_panel import MultiEchem2Panel
 from .eis_panel import EISPanel
 from .orr_panel import ORRPanel
 from .hupd_panel import HupdPanel
+from .cv_activation_panel import CvActivationPanel
 from . import session_manager as _sm
 
 _CYCLE_BG = "#e8f0fe"   # light blue for the cycle checkbox area
@@ -1374,6 +1375,12 @@ class EchemGUI(tk.Tk):
         ecsa_panel = ECSAPanel(ecsa_tab)
         ecsa_panel.pack(fill=tk.BOTH, expand=True)
         self._panels["ecsa"] = ecsa_panel
+
+        actv_tab = ttk.Frame(notebook)
+        notebook.add(actv_tab, text="CV Activation")
+        actv_panel = CvActivationPanel(actv_tab)
+        actv_panel.pack(fill=tk.BOTH, expand=True)
+        self._panels["cv_activation"] = actv_panel
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
