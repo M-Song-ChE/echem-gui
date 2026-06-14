@@ -3816,13 +3816,13 @@ class ORRPanel(ttk.Frame):
     # ════════════════════════════════════════════════════════════════
     def _open_lc_comparison_window(self):
         """Plot |J_lim| vs √RPM for each sample/catalyst with Levich theory baseline."""
-        all_valid = []   # (sname, label, color, rpm, sqrt_omega, j_lim)
+        all_valid = []   # (sname, label, color, rpm, sqrt_rpm, j_lim)
         for sn in self.samples:
             for E, J, rpm, lbl, col in self._get_curves_for_sample(sn):
                 if rpm > 0 and len(J) > 0:
-                    j_lim     = float(np.min(J))
-                    sqrt_omega = math.sqrt(2 * math.pi * rpm / 60.0)
-                    all_valid.append((sn, lbl, col, rpm, sqrt_omega, j_lim))
+                    j_lim    = float(np.min(J))
+                    sqrt_rpm = math.sqrt(rpm)
+                    all_valid.append((sn, lbl, col, rpm, sqrt_rpm, j_lim))
 
         if len(all_valid) < 2:
             messagebox.showwarning(
@@ -3831,7 +3831,7 @@ class ORRPanel(ttk.Frame):
             return
 
         win = tk.Toplevel(self)
-        win.title("Limiting Current Comparison  |J_lim| vs √ω")
+        win.title("Limiting Current Comparison  |J_lim| vs √RPM")
         win.geometry("860x720")
 
         _recompute_id = [None]
@@ -3847,7 +3847,7 @@ class ORRPanel(ttk.Frame):
         _th_g = ttk.Frame(_th); _th_g.pack(fill=tk.X, padx=6, pady=3)
         for _r, (_hd, _bd) in enumerate([
             ("Levich equation:",
-             "|J_lim| = 0.62·n·F·D^(2/3)·ν^(-1/6)·C·√ω  (ω = 2π·RPM/60)"),
+             "|J_lim| = B·√ω = B·√(2π/60)·√RPM   where B = 0.62·n·F·D^(2/3)·ν^(-1/6)·C"),
         ]):
             ttk.Label(_th_g, text=_hd, font=("TkDefaultFont", 9, "bold"),
                       anchor=tk.W).grid(row=_r, column=0, sticky=tk.W, pady=2)
@@ -4015,22 +4015,25 @@ class ORRPanel(ttk.Frame):
                     n, D, nu, C = elec
                     n  = float(_n_var.get()) if _n_var.get().strip() else n
                     # B in mA/(cm²·(rad/s)^0.5) — pure current density, no area factor
-                    B  = 0.62 * n * F_const * (D ** (2/3)) * (nu ** (-1/6)) * C * 1000.0
-                    sq_max = max((pts[-1][1] for pts in _grp.values()), default=5.0)
-                    x_th = np.linspace(0, sq_max * 1.1, 80)
-                    # If data is not normalized, scale theory by area to match mA units
-                    B_plot = B if norm_data else B * area
+                    # B in mA/(cm²·(rad/s)^0.5); convert to mA/(cm²·rpm^0.5)
+                    # ω = 2π/60 · RPM  →  √ω = √(2π/60) · √RPM
+                    B_rad  = 0.62 * n * F_const * (D ** (2/3)) * (nu ** (-1/6)) * C * 1000.0
+                    _conv  = math.sqrt(2 * math.pi / 60.0)   # (rad/s)^0.5 per rpm^0.5
+                    B_rpm  = B_rad * _conv                    # mA/(cm²·rpm^0.5)
+                    sq_max = max((pts[-1][1] for pts in _grp.values()), default=50.0)
+                    x_th   = np.linspace(0, sq_max * 1.1, 80)
+                    B_plot = B_rpm if norm_data else B_rpm * area
                     ax.plot(x_th, B_plot * x_th, "k--", lw=1.5, alpha=0.7,
                             label=f"Theory ({_elec_var.get()}, n={n:.0f})")
                     lines_out.append(
-                        f"Theory B={B:.4f} mA·s^0.5/(rad^0.5·cm²)  "
+                        f"Theory B={B_rpm:.5f} {y_unit}/rpm^0.5  "
                         f"[{_elec_var.get()}, n={n:.0f}]")
                 except (ValueError, KeyError):
                     pass
 
-            ax.set_xlabel("√ω  [(rad/s)^0.5]", fontsize=9)
+            ax.set_xlabel("√RPM  [rpm^0.5]", fontsize=9)
             ax.set_ylabel(f"|J_lim|  ({y_unit})", fontsize=9)
-            ax.set_title("Limiting Current vs √ω", fontsize=10)
+            ax.set_title("Limiting Current vs √RPM", fontsize=10)
             ax.tick_params(labelsize=8)
             ax.legend(fontsize=7, frameon=True)
             ax.grid(True, alpha=0.3)
