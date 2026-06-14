@@ -3874,6 +3874,10 @@ class ORRPanel(ttk.Frame):
         ttk.Checkbutton(_ec_fr, text="Normalize data by area",
                         variable=_norm_data_var,
                         command=_schedule).pack(side=tk.LEFT, padx=(0, 8))
+        _show_fit_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(_ec_fr, text="Show fit lines",
+                        variable=_show_fit_var,
+                        command=_schedule).pack(side=tk.LEFT, padx=(0, 8))
         _show_theory_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(_ec_fr, text="Show theory line",
                         variable=_show_theory_var,
@@ -4001,8 +4005,9 @@ class ORRPanel(ttk.Frame):
                 # Linear fit through origin
                 if len(sq_arr) >= 2:
                     slope = float(np.dot(sq_arr, jl_arr) / np.dot(sq_arr, sq_arr))
-                    x_fit = np.linspace(0, sq_arr.max() * 1.05, 60)
-                    ax.plot(x_fit, slope * x_fit, ls="--", color=col, lw=0.8, alpha=0.6)
+                    if _show_fit_var.get():
+                        x_fit = np.linspace(0, sq_arr.max() * 1.05, 60)
+                        ax.plot(x_fit, slope * x_fit, ls="--", color=col, lw=0.8, alpha=0.6)
                     lines_out.append(
                         f"[{cat}] {sn}: slope={slope:.4f} {y_unit}/(rad/s)^0.5  "
                         f"(pts: " + ", ".join(
