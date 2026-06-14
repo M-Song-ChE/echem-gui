@@ -619,10 +619,11 @@ class CvActivationPanel(ttk.Frame):
             cb = self._cv_fig.colorbar(
                 mpl_cm.ScalarMappable(
                     norm=mpl_colors.Normalize(1, n_cyc), cmap="viridis"),
-                ax=ax, shrink=0.8, pad=0.02)
+                ax=ax, shrink=0.8, pad=0.01, fraction=0.04)
             cb.set_label("Cycle #", fontsize=8)
 
-        self._cv_fig.tight_layout(pad=0.8)
+        self._cv_fig.tight_layout(pad=0.5)
+        self._cv_fig.subplots_adjust(right=0.97)
         self._cv_fig.set_layout_engine("none")
         self._cv_cv.draw_idle()
         self._cv_tb.update()   # re-register Home view after axes recreated
