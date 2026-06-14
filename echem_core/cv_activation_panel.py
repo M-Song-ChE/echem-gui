@@ -332,7 +332,13 @@ class CvActivationPanel(ttk.Frame):
             color_idx = len(self.files) % len(_TRACE_COLORS)
             self.files[short] = {
                 "path": path, "df": df,
+                # per-file corrections
                 "r_sol": 0.0, "e_ref": 0.0,
+                # per-file column mapping (filled on first switch)
+                "x_col": "", "y_col": "", "cyc_col": "",
+                # per-file analysis settings (filled after load)
+                "e_target": "", "direction": "Anodic",
+                "window": "10", "threshold": "2.0",
                 "color": _TRACE_COLORS[color_idx],
                 "result": None,
             }
@@ -384,6 +390,7 @@ class CvActivationPanel(ttk.Frame):
             self._switch_file(keys[sel[0]])
 
     def _switch_file(self, short):
+        self._save_active_state()          # save before leaving current file
         self.active_file = short
         keys = list(self.files.keys())
         if short in keys:
@@ -392,8 +399,25 @@ class CvActivationPanel(ttk.Frame):
             self.file_listbox.selection_set(keys.index(short))
             self._loading = False
         self._update_column_combos()
-        self._restore_corrections()
+        self._restore_state()
         self._schedule()
+
+    def _save_active_state(self):
+        """Save current UI values into the active file's entry."""
+        entry = self.files.get(self.active_file)
+        if not entry:
+            return
+        try: entry["r_sol"] = float(self.r_sol_var.get())
+        except ValueError: pass
+        try: entry["e_ref"] = float(self.e_ref_var.get())
+        except ValueError: pass
+        entry["e_target"]  = self.e_target_var.get()
+        entry["direction"] = self.direction_var.get()
+        entry["window"]    = self.window_var.get()
+        entry["threshold"] = self.threshold_var.get()
+        entry["x_col"]     = self.x_var.get()
+        entry["y_col"]     = self.y_var.get()
+        entry["cyc_col"]   = self.cyc_var.get()
 
     def _auto_set_e_target(self):
         """Set E_target to the potential of max anodic current in the last cycle."""
@@ -422,6 +446,8 @@ class CvActivationPanel(ttk.Frame):
             return
         e_at_max_anodic = float(E_an[np.argmax(I_an)])
         self.e_target_var.set(f"{e_at_max_anodic:.4f}")
+        if entry:
+            entry["e_target"] = self.e_target_var.get()
 
     # ════════════════════════════════════════════════════════════════
     # Column management
@@ -434,19 +460,29 @@ class CvActivationPanel(ttk.Frame):
         self.x_combo["values"] = cols
         self.y_combo["values"] = cols
         self.cyc_combo["values"] = ["(none)"] + cols
-        if self.x_var.get() not in cols:
+        # Restore saved column or auto-detect
+        sx = entry.get("x_col", "")
+        if sx and sx in cols:
+            self.x_var.set(sx)
+        elif self.x_var.get() not in cols:
             for c in ["Ewe/V", "Ewe/V ", "E/V", "E (V)"]:
                 if c in cols: self.x_var.set(c); break
             else:
                 for c in cols:
                     if "/V" in c or "(V)" in c: self.x_var.set(c); break
-        if self.y_var.get() not in cols:
+        sy = entry.get("y_col", "")
+        if sy and sy in cols:
+            self.y_var.set(sy)
+        elif self.y_var.get() not in cols:
             for c in ["I/mA", "<I>/mA", "I (mA)"]:
                 if c in cols: self.y_var.set(c); break
             else:
                 for c in cols:
                     if "/mA" in c or "(mA)" in c or "/A" in c: self.y_var.set(c); break
-        if self.cyc_var.get() not in ["(none)"] + cols:
+        sc = entry.get("cyc_col", "")
+        if sc and sc in ["(none)"] + cols:
+            self.cyc_var.set(sc)
+        elif self.cyc_var.get() not in ["(none)"] + cols:
             self.cyc_var.set("cycle number" if "cycle number" in cols else "(none)")
 
     def _get_cycle_col(self, df):
@@ -456,24 +492,26 @@ class CvActivationPanel(ttk.Frame):
     # ════════════════════════════════════════════════════════════════
     # Corrections
     # ════════════════════════════════════════════════════════════════
-    def _restore_corrections(self):
+    def _restore_state(self):
+        """Restore all per-file UI values from entry."""
         entry = self.files.get(self.active_file)
         if not entry:
             return
-        self.r_sol_var.set(str(entry["r_sol"]))
-        self.e_ref_var.set(str(entry["e_ref"]))
+        self.r_sol_var.set(str(entry.get("r_sol", 0.0)))
+        self.e_ref_var.set(str(entry.get("e_ref", 0.0)))
+        if entry.get("e_target"):
+            self.e_target_var.set(entry["e_target"])
+        self.direction_var.set(entry.get("direction", "Anodic"))
+        self.window_var.set(entry.get("window", "10"))
+        self.threshold_var.set(entry.get("threshold", "2.0"))
 
     def _save_corr_and_schedule(self):
-        entry = self.files.get(self.active_file)
-        if entry:
-            try: entry["r_sol"] = float(self.r_sol_var.get())
-            except ValueError: pass
-            try: entry["e_ref"] = float(self.e_ref_var.get())
-            except ValueError: pass
+        self._save_active_state()
         self._schedule()
 
-    def _apply_correction(self, df, r_sol, e_ref):
-        xcol = self.x_var.get(); ycol = self.y_var.get()
+    def _apply_correction(self, df, r_sol, e_ref, xcol=None, ycol=None):
+        xcol = xcol or self.x_var.get()
+        ycol = ycol or self.y_var.get()
         if not xcol or not ycol or xcol not in df.columns or ycol not in df.columns:
             return df
         df = df.copy()
@@ -501,9 +539,12 @@ class CvActivationPanel(ttk.Frame):
     # ════════════════════════════════════════════════════════════════
     # Core extraction + analysis
     # ════════════════════════════════════════════════════════════════
-    def _extract_cycle_j(self, df_c, e_target: float, direction: str):
-        xcol = self.x_var.get(); ycol = self.y_var.get()
-        ccol = self._get_cycle_col(df_c)
+    def _extract_cycle_j(self, df_c, e_target: float, direction: str,
+                         xcol=None, ycol=None, ccol=None):
+        xcol = xcol or self.x_var.get()
+        ycol = ycol or self.y_var.get()
+        if ccol is None:
+            ccol = self._get_cycle_col(df_c)
         if not xcol or not ycol:
             return []
         raw_cycles = sorted(df_c[ccol].unique()) if ccol else [None]
@@ -544,17 +585,26 @@ class CvActivationPanel(ttk.Frame):
         return out
 
     def _run_analysis(self):
-        """Run extraction + convergence for all files; populate results table."""
-        try:
-            e_target  = float(self.e_target_var.get())
-            window    = int(self.window_var.get())
-            threshold = float(self.threshold_var.get())
-        except ValueError:
-            return
-        direction = self.direction_var.get()
+        """Run extraction + convergence for all files using per-file settings."""
+        # Save current UI first so active file's settings are up to date
+        self._save_active_state()
         for short, entry in self.files.items():
-            df_c    = self._apply_correction(entry["df"], entry["r_sol"], entry["e_ref"])
-            cycle_j = self._extract_cycle_j(df_c, e_target, direction)
+            try:
+                e_target  = float(entry.get("e_target") or 0)
+                window    = int(entry.get("window", "10"))
+                threshold = float(entry.get("threshold", "2.0"))
+            except (ValueError, TypeError):
+                entry["result"] = None; continue
+            direction = entry.get("direction", "Anodic")
+            xcol = entry.get("x_col") or self.x_var.get()
+            ycol = entry.get("y_col") or self.y_var.get()
+            ccol_name = entry.get("cyc_col", "")
+            ccol = ccol_name if (ccol_name and ccol_name != "(none)"
+                                 and ccol_name in entry["df"].columns) else None
+            df_c    = self._apply_correction(entry["df"], entry["r_sol"], entry["e_ref"],
+                                             xcol=xcol, ycol=ycol)
+            cycle_j = self._extract_cycle_j(df_c, e_target, direction,
+                                            xcol=xcol, ycol=ycol, ccol=ccol)
             if not cycle_j:
                 entry["result"] = None
                 continue
@@ -664,14 +714,6 @@ class CvActivationPanel(ttk.Frame):
         self._cyc_ax = self._cyc_fig.add_subplot(111)
         ax = self._cyc_ax
 
-        try: e_target = float(self.e_target_var.get())
-        except ValueError: self._cyc_cv.draw_idle(); return
-        try: window = int(self.window_var.get())
-        except ValueError: window = 10
-        try: threshold = float(self.threshold_var.get())
-        except ValueError: threshold = 2.0
-
-        direction = self.direction_var.get()
         show_all  = self.overlay_all_var.get()
         files_to_show = (list(self.files.keys()) if show_all
                          else ([self.active_file] if self.active_file else []))
@@ -682,15 +724,30 @@ class CvActivationPanel(ttk.Frame):
             entry = self.files.get(short)
             if not entry:
                 continue
-            df_c    = self._apply_correction(entry["df"], entry["r_sol"], entry["e_ref"])
-            cycle_j = self._extract_cycle_j(df_c, e_target, direction)
+            try:
+                e_target  = float(entry.get("e_target") or 0)
+                window    = int(entry.get("window", "10"))
+                threshold = float(entry.get("threshold", "2.0"))
+            except (ValueError, TypeError):
+                continue
+            direction = entry.get("direction", "Anodic")
+            xcol = entry.get("x_col") or self.x_var.get()
+            ycol = entry.get("y_col") or self.y_var.get()
+            ccol_name = entry.get("cyc_col", "")
+            ccol = ccol_name if (ccol_name and ccol_name != "(none)"
+                                 and ccol_name in entry["df"].columns) else None
+            df_c    = self._apply_correction(entry["df"], entry["r_sol"], entry["e_ref"],
+                                             xcol=xcol, ycol=ycol)
+            cycle_j = self._extract_cycle_j(df_c, e_target, direction,
+                                            xcol=xcol, ycol=ycol, ccol=ccol)
             if not cycle_j:
                 continue
             conv  = self._check_convergence(cycle_j, window, threshold)
             cns   = [x[0] for x in conv]
             js    = [x[1] for x in conv]
             all_js.extend(js)
-            ax.plot(cns, js, "o-", color=entry["color"], lw=1.6, ms=4, label=short)
+            lbl = f"{short}  E={e_target:.3f}V" if len(files_to_show) > 1 else short
+            ax.plot(cns, js, "o-", color=entry["color"], lw=1.6, ms=4, label=lbl)
             # Mark last convergence delta
             if len(conv) > window:
                 cn_l, j_l, dp, passed = conv[-1]
@@ -701,11 +758,23 @@ class CvActivationPanel(ttk.Frame):
                             fontsize=7, color=col)
             any_data = True
 
+        # Y-axis label: use active file's E_target if single file, else generic
+        try:
+            act_et = float(self.files.get(self.active_file, {}).get("e_target") or 0)
+            y_lbl = f"J at E_target  (mA)"
+        except (ValueError, TypeError):
+            y_lbl = "J at E_target  (mA)"
+
         if any_data:
             ax.set_xlabel("Cycle number", fontsize=9)
-            ax.set_ylabel(f"J at E={e_target:.3f} V  (mA)", fontsize=9)
+            ax.set_ylabel(y_lbl, fontsize=9)
+            try:
+                act_w = int(self.files.get(self.active_file, {}).get("window", "10"))
+                act_th = float(self.files.get(self.active_file, {}).get("threshold", "2.0"))
+            except (ValueError, TypeError):
+                act_w, act_th = 10, 2.0
             ax.set_title(
-                f"Convergence check  (window={window} cyc, threshold={threshold}%)",
+                f"Convergence check  (window={act_w} cyc, threshold={act_th}%)",
                 fontsize=9)
             ax.tick_params(labelsize=8)
             if len(files_to_show) > 1:
