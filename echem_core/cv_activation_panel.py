@@ -396,12 +396,13 @@ class CvActivationPanel(ttk.Frame):
         self._schedule()
 
     def _auto_set_e_target(self):
-        """Set E_target to the most anodic (max) potential in the last cycle."""
+        """Set E_target to the potential of max anodic current in the last cycle."""
         entry = self.files.get(self.active_file)
         if not entry:
             return
         xcol = self.x_var.get()
-        if not xcol or xcol not in entry["df"].columns:
+        ycol = self.y_var.get()
+        if not xcol or not ycol or xcol not in entry["df"].columns or ycol not in entry["df"].columns:
             return
         df   = entry["df"]
         ccol = self._get_cycle_col(df)
@@ -411,9 +412,16 @@ class CvActivationPanel(ttk.Frame):
         else:
             sub = df
         E = sub[xcol].dropna().values
-        if len(E) == 0:
+        I = sub[ycol].dropna().values
+        n = min(len(E), len(I))
+        if n < 4:
             return
-        self.e_target_var.set(f"{float(np.max(E)):.4f}")
+        E, I = E[:n], I[:n]
+        E_an, I_an, _, _ = _split_scans(E, I)
+        if len(I_an) == 0:
+            return
+        e_at_max_anodic = float(E_an[np.argmax(I_an)])
+        self.e_target_var.set(f"{e_at_max_anodic:.4f}")
 
     # ════════════════════════════════════════════════════════════════
     # Column management
