@@ -281,8 +281,8 @@ class CvActivationPanel(ttk.Frame):
         self._cv_fig = Figure(figsize=(8, 4), dpi=100)
         self._cv_ax  = self._cv_fig.add_subplot(111)
         self._cv_cv  = FigureCanvasTkAgg(self._cv_fig, master=_cv_frame)
-        _cv_tb = NavigationToolbar2Tk(self._cv_cv, _cv_frame, pack_toolbar=False)
-        _cv_tb.pack(side=tk.BOTTOM, fill=tk.X)
+        self._cv_tb = NavigationToolbar2Tk(self._cv_cv, _cv_frame, pack_toolbar=False)
+        self._cv_tb.pack(side=tk.BOTTOM, fill=tk.X)
         self._cv_cv.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
         _cyc_frame = ttk.Frame(_rpw)
@@ -290,8 +290,8 @@ class CvActivationPanel(ttk.Frame):
         self._cyc_fig = Figure(figsize=(8, 3), dpi=100)
         self._cyc_ax  = self._cyc_fig.add_subplot(111)
         self._cyc_cv  = FigureCanvasTkAgg(self._cyc_fig, master=_cyc_frame)
-        _cyc_tb = NavigationToolbar2Tk(self._cyc_cv, _cyc_frame, pack_toolbar=False)
-        _cyc_tb.pack(side=tk.BOTTOM, fill=tk.X)
+        self._cyc_tb = NavigationToolbar2Tk(self._cyc_cv, _cyc_frame, pack_toolbar=False)
+        self._cyc_tb.pack(side=tk.BOTTOM, fill=tk.X)
         self._cyc_cv.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
         # ── Connect events ────────────────────────────────────────
@@ -615,6 +615,7 @@ class CvActivationPanel(ttk.Frame):
         self._cv_fig.tight_layout(pad=0.8)
         self._cv_fig.set_layout_engine("none")
         self._cv_cv.draw_idle()
+        self._cv_tb.update()   # re-register Home view after axes recreated
 
     def _replot_cycle(self):
         """Redraw lower cycle-vs-J figure."""
@@ -682,6 +683,7 @@ class CvActivationPanel(ttk.Frame):
         self._cyc_fig.tight_layout(pad=0.8)
         self._cyc_fig.set_layout_engine("none")
         self._cyc_cv.draw_idle()
+        self._cyc_tb.update()  # re-register Home view after axes recreated
 
     # ════════════════════════════════════════════════════════════════
     # Mouse interactions — scroll / pan / annotate
