@@ -14,6 +14,12 @@ Left (scrollable):
 Right:
     Upper – CV figure (all cycles of active file, gradient-colored)
     Lower – Cycle vs J@E_target (all loaded files overlaid)
+
+Interactions (both plots):
+    Scroll          – zoom centred on cursor
+    Left-drag       – pan
+    Left-click      – annotate nearest data point
+    Right-click     – clear annotation / set E_target (CV plot only, if no annotation)
 """
 
 import os
@@ -29,31 +35,21 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolb
 import matplotlib.cm as mpl_cm
 import matplotlib.colors as mpl_colors
 
-from .file_manager import _read_mpr, _COLOR_NAMES, _COLOR_HEX
+from .file_manager import _read_mpr
 from .checklist import CheckableListbox
 from .plotting import copy_figure_to_clipboard
 
-# ── Defaults ────────────────────────────────────────────────────────────────
-_DEF = dict(
-    e_target="0.70",
-    window="10",
-    threshold="2.0",
-    r_sol="0",
-    e_ref="0",
-)
-
+# ── Constants ────────────────────────────────────────────────────────────────
+_DEF = dict(e_target="0.70", window="10", threshold="2.0", r_sol="0", e_ref="0")
 _DIRECTIONS = ["Anodic", "Cathodic", "Average"]
-
-# Multi-file cycle-vs-J plot colors
 _TRACE_COLORS = [
     "#1f77b4", "#d62728", "#2ca02c", "#9467bd", "#ff7f0e",
     "#8c564b", "#17becf", "#e377c2", "#bcbd22", "#7f7f7f",
 ]
+_CLICK_PX = 8   # pixel radius for repeated-click cycling through candidates
 
-_trapz = getattr(np, "trapezoid", getattr(np, "trapz", None))
 
-
-# ── File reading (mirrors hupd_panel) ───────────────────────────────────────
+# ── Module-level helpers ─────────────────────────────────────────────────────
 def _read_one(path: str) -> pd.DataFrame:
     ext = os.path.splitext(path)[1].lower()
     if ext == ".mpr":
@@ -63,15 +59,8 @@ def _read_one(path: str) -> pd.DataFrame:
     return df.reset_index(drop=True)
 
 
-def _get_cycles(df: pd.DataFrame):
-    """Sorted unique cycle numbers, or [None] if no cycle column."""
-    if "cycle number" in df.columns and len(df):
-        return sorted(df["cycle number"].unique().tolist())
-    return [None]
-
-
 def _split_scans(E: np.ndarray, I: np.ndarray):
-    """Split E/I arrays into anodic and cathodic halves (each sorted ascending in E)."""
+    """Split E/I into anodic and cathodic halves (each sorted ascending in E)."""
     if len(E) < 4:
         return E, I, E, I
     n = len(E)
@@ -89,14 +78,9 @@ def _split_scans(E: np.ndarray, I: np.ndarray):
 
 
 def _interp_at_e(E: np.ndarray, I: np.ndarray, e_target: float):
-    """Return interpolated I at e_target, or None if out of range."""
-    E = np.asarray(E, dtype=float)
-    I = np.asarray(I, dtype=float)
-    if len(E) < 2:
-        return None
-    e_lo, e_hi = E.min(), E.max()
-    if e_target < e_lo or e_target > e_hi:
-        return None
+    E = np.asarray(E, dtype=float); I = np.asarray(I, dtype=float)
+    if len(E) < 2: return None
+    if e_target < E.min() or e_target > E.max(): return None
     return float(np.interp(e_target, E, I))
 
 
@@ -106,10 +90,23 @@ class CvActivationPanel(ttk.Frame):
 
     def __init__(self, master):
         ttk.Frame.__init__(self, master)
-        self.files       = OrderedDict()   # short_name → entry dict
+        self.files       = OrderedDict()
         self.active_file = None
         self._loading    = False
-        self._cv_cbar    = None            # colorbar handle — removed before each redraw
+        self._debounce_id = None
+
+        # Annotation state (shared across both plots)
+        self._ann          = None
+        self._ann_dot      = None
+        self._ann_ax       = None
+        self._cand_idx     = 0
+        self._last_click_pos = None
+        # Pan state
+        self._panning   = False
+        self._pan_ax    = None
+        self._pan_start = None
+        self._pan_moved = False
+
         self._build_panel()
 
     # ════════════════════════════════════════════════════════════════
@@ -122,13 +119,11 @@ class CvActivationPanel(ttk.Frame):
         # ── Scrollable left ───────────────────────────────────────
         left_outer = ttk.Frame(body, width=290)
         body.add(left_outer, weight=0)
-
         _lc = tk.Canvas(left_outer, highlightthickness=0)
         _ls = ttk.Scrollbar(left_outer, orient=tk.VERTICAL, command=_lc.yview)
         _lc.configure(yscrollcommand=_ls.set)
         _ls.pack(side=tk.RIGHT, fill=tk.Y)
         _lc.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
         left = tk.Frame(_lc)
         _lwin = _lc.create_window((0, 0), window=left, anchor=tk.NW)
         left.bind("<Configure>", lambda e: _lc.configure(scrollregion=_lc.bbox("all")))
@@ -146,117 +141,110 @@ class CvActivationPanel(ttk.Frame):
         ttk.Button(_fb, text="Remove", command=self._remove_file).pack(side=tk.LEFT)
         _flf = ttk.Frame(left); _flf.pack(fill=tk.X, padx=4, pady=2)
         self.file_listbox = CheckableListbox(
-            _flf, height=5, show_checkboxes=False,
-            on_reorder=self._on_file_reorder)
+            _flf, height=5, show_checkboxes=False, on_reorder=self._on_file_reorder)
         self.file_listbox.pack(fill=tk.X, expand=True)
         self.file_listbox.bind("<<ListboxSelect>>", self._on_file_select)
 
         # ── Column selectors ──────────────────────────────────────
         ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
-        ttk.Label(left, text="Column Mapping", font=("", 9, "bold")).pack(
-            anchor=tk.W, padx=4)
+        ttk.Label(left, text="Column Mapping", font=("", 9, "bold")).pack(anchor=tk.W, padx=4)
 
         ttk.Label(left, text="X-axis (potential):").pack(anchor=tk.W, padx=4, pady=(4, 0))
         self.x_var = tk.StringVar()
-        self.x_combo = ttk.Combobox(left, textvariable=self.x_var,
-                                    state="readonly", width=22)
+        self.x_combo = ttk.Combobox(left, textvariable=self.x_var, state="readonly", width=22)
         self.x_combo.pack(anchor=tk.W, padx=4, pady=2)
-        self.x_combo.bind("<<ComboboxSelected>>", lambda e: self._auto_replot())
+        self.x_combo.bind("<<ComboboxSelected>>", lambda e: self._schedule())
 
         ttk.Label(left, text="Y-axis (current):").pack(anchor=tk.W, padx=4)
         self.y_var = tk.StringVar()
-        self.y_combo = ttk.Combobox(left, textvariable=self.y_var,
-                                    state="readonly", width=22)
+        self.y_combo = ttk.Combobox(left, textvariable=self.y_var, state="readonly", width=22)
         self.y_combo.pack(anchor=tk.W, padx=4, pady=2)
-        self.y_combo.bind("<<ComboboxSelected>>", lambda e: self._auto_replot())
+        self.y_combo.bind("<<ComboboxSelected>>", lambda e: self._schedule())
 
         ttk.Label(left, text="Cycle column:").pack(anchor=tk.W, padx=4)
         self.cyc_var = tk.StringVar()
-        self.cyc_combo = ttk.Combobox(left, textvariable=self.cyc_var,
-                                      state="readonly", width=22)
+        self.cyc_combo = ttk.Combobox(left, textvariable=self.cyc_var, state="readonly", width=22)
         self.cyc_combo.pack(anchor=tk.W, padx=4, pady=2)
-        self.cyc_combo.bind("<<ComboboxSelected>>", lambda e: self._auto_replot())
+        self.cyc_combo.bind("<<ComboboxSelected>>", lambda e: self._schedule())
 
         # ── Corrections ───────────────────────────────────────────
         ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
-        ttk.Label(left, text="Corrections", font=("", 9, "bold")).pack(
-            anchor=tk.W, padx=4)
+        ttk.Label(left, text="Corrections", font=("", 9, "bold")).pack(anchor=tk.W, padx=4)
 
         _ir_row = ttk.Frame(left); _ir_row.pack(fill=tk.X, padx=4, pady=2)
         ttk.Label(_ir_row, text="R_sol (Ω):", width=12, anchor=tk.W).pack(side=tk.LEFT)
         self.r_sol_var = tk.StringVar(value=_DEF["r_sol"])
         _ir_e = ttk.Entry(_ir_row, textvariable=self.r_sol_var, width=8)
         _ir_e.pack(side=tk.LEFT, padx=(2, 0))
-        _ir_e.bind("<Return>",   lambda e: self._save_and_replot())
-        _ir_e.bind("<FocusOut>", lambda e: self._save_and_replot())
+        _ir_e.bind("<Return>",   lambda e: self._save_corr_and_schedule())
+        _ir_e.bind("<FocusOut>", lambda e: self._save_corr_and_schedule())
 
         _rhe_row = ttk.Frame(left); _rhe_row.pack(fill=tk.X, padx=4, pady=2)
         ttk.Label(_rhe_row, text="E_ref offset (V):", width=14, anchor=tk.W).pack(side=tk.LEFT)
         self.e_ref_var = tk.StringVar(value=_DEF["e_ref"])
         _rhe_e = ttk.Entry(_rhe_row, textvariable=self.e_ref_var, width=8)
         _rhe_e.pack(side=tk.LEFT, padx=(2, 0))
-        _rhe_e.bind("<Return>",   lambda e: self._save_and_replot())
-        _rhe_e.bind("<FocusOut>", lambda e: self._save_and_replot())
+        _rhe_e.bind("<Return>",   lambda e: self._save_corr_and_schedule())
+        _rhe_e.bind("<FocusOut>", lambda e: self._save_corr_and_schedule())
         ttk.Label(left, text="E_corr = E − I·R_sol + E_ref",
                   foreground="gray", font=("", 8)).pack(anchor=tk.W, padx=4)
 
         # ── Activation settings ────────────────────────────────────
         ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
-        ttk.Label(left, text="Activation Settings", font=("", 9, "bold")).pack(
-            anchor=tk.W, padx=4)
+        ttk.Label(left, text="Activation Settings", font=("", 9, "bold")).pack(anchor=tk.W, padx=4)
 
         _et_row = ttk.Frame(left); _et_row.pack(fill=tk.X, padx=4, pady=2)
         ttk.Label(_et_row, text="E target (V):", width=16, anchor=tk.W).pack(side=tk.LEFT)
         self.e_target_var = tk.StringVar(value=_DEF["e_target"])
         _et_e = ttk.Entry(_et_row, textvariable=self.e_target_var, width=8)
         _et_e.pack(side=tk.LEFT, padx=(2, 0))
-        _et_e.bind("<Return>",   lambda e: self._auto_replot())
-        _et_e.bind("<FocusOut>", lambda e: self._auto_replot())
+        _et_e.bind("<Return>",   lambda e: self._schedule())
+        _et_e.bind("<FocusOut>", lambda e: self._schedule())
 
         _dir_row = ttk.Frame(left); _dir_row.pack(fill=tk.X, padx=4, pady=2)
         ttk.Label(_dir_row, text="Scan direction:", width=16, anchor=tk.W).pack(side=tk.LEFT)
         self.direction_var = tk.StringVar(value="Anodic")
         ttk.Combobox(_dir_row, textvariable=self.direction_var,
-                     values=_DIRECTIONS, state="readonly", width=10).pack(side=tk.LEFT, padx=(2, 0))
-        self.direction_var.trace_add("write", lambda *_: self._auto_replot())
+                     values=_DIRECTIONS, state="readonly", width=10).pack(
+                         side=tk.LEFT, padx=(2, 0))
+        self.direction_var.trace_add("write", lambda *_: self._schedule())
 
         _win_row = ttk.Frame(left); _win_row.pack(fill=tk.X, padx=4, pady=2)
-        ttk.Label(_win_row, text="Conv. window (N cycles):", width=22, anchor=tk.W).pack(side=tk.LEFT)
+        ttk.Label(_win_row, text="Conv. window (cycles):", width=20, anchor=tk.W).pack(side=tk.LEFT)
         self.window_var = tk.StringVar(value=_DEF["window"])
         _win_e = ttk.Entry(_win_row, textvariable=self.window_var, width=5)
         _win_e.pack(side=tk.LEFT, padx=(2, 0))
-        _win_e.bind("<Return>",   lambda e: self._auto_replot())
-        _win_e.bind("<FocusOut>", lambda e: self._auto_replot())
+        _win_e.bind("<Return>",   lambda e: self._schedule())
+        _win_e.bind("<FocusOut>", lambda e: self._schedule())
 
         _thr_row = ttk.Frame(left); _thr_row.pack(fill=tk.X, padx=4, pady=2)
         ttk.Label(_thr_row, text="Threshold (%):", width=16, anchor=tk.W).pack(side=tk.LEFT)
         self.threshold_var = tk.StringVar(value=_DEF["threshold"])
         _thr_e = ttk.Entry(_thr_row, textvariable=self.threshold_var, width=6)
         _thr_e.pack(side=tk.LEFT, padx=(2, 0))
-        _thr_e.bind("<Return>",   lambda e: self._auto_replot())
-        _thr_e.bind("<FocusOut>", lambda e: self._auto_replot())
+        _thr_e.bind("<Return>",   lambda e: self._schedule())
+        _thr_e.bind("<FocusOut>", lambda e: self._schedule())
 
-        ttk.Label(left,
-                  text="Pass: |ΔJ over last N cycles| / |J| < threshold%",
+        ttk.Label(left, text="Pass: |ΔJ over last N cycles| / |J| < threshold%",
                   foreground="gray", font=("", 8), wraplength=270,
                   justify=tk.LEFT).pack(anchor=tk.W, padx=4, pady=(0, 4))
 
-        # ── Cycle-vs-J overlay option ──────────────────────────────
         _ol_row = ttk.Frame(left); _ol_row.pack(fill=tk.X, padx=4, pady=2)
         self.overlay_all_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(_ol_row, text="Show all samples in cycle plot",
                         variable=self.overlay_all_var,
-                        command=self._replot_cycle).pack(side=tk.LEFT)
+                        command=self._schedule).pack(side=tk.LEFT)
 
         # ── Buttons ───────────────────────────────────────────────
         ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
         _btn_row = ttk.Frame(left); _btn_row.pack(fill=tk.X, padx=4, pady=2)
-        ttk.Button(_btn_row, text="Analyze",
-                   command=self._analyze).pack(side=tk.LEFT, padx=(0, 4))
         ttk.Button(_btn_row, text="Clear",
                    command=self._clear_all).pack(side=tk.LEFT, padx=(0, 4))
         ttk.Button(_btn_row, text="Copy CV",
                    command=lambda: copy_figure_to_clipboard(self._cv_fig)).pack(
+                       side=tk.LEFT, padx=(0, 4))
+        ttk.Button(_btn_row, text="Copy Cycle",
+                   command=lambda: copy_figure_to_clipboard(self._cyc_fig)).pack(
                        side=tk.LEFT)
 
         # ── Results table ─────────────────────────────────────────
@@ -265,8 +253,7 @@ class CvActivationPanel(ttk.Frame):
         _rtv_lf.pack(fill=tk.BOTH, padx=4, pady=4, expand=False)
         _rtv_cols = ("file", "j_final", "delta_pct", "status")
         self._results_tv = ttk.Treeview(
-            _rtv_lf, columns=_rtv_cols, show="headings",
-            height=6, selectmode="browse")
+            _rtv_lf, columns=_rtv_cols, show="headings", height=6, selectmode="browse")
         self._results_tv.heading("file",      text="Sample")
         self._results_tv.heading("j_final",   text="J_final (mA)")
         self._results_tv.heading("delta_pct", text="Δ% / N cyc")
@@ -280,18 +267,15 @@ class CvActivationPanel(ttk.Frame):
         self._results_tv.configure(yscrollcommand=_rtv_sb.set)
         _rtv_sb.pack(side=tk.RIGHT, fill=tk.Y)
         self._results_tv.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
-        # Color-code rows
         self._results_tv.tag_configure("pass", background="#c8e6c9")
         self._results_tv.tag_configure("fail", background="#ffcdd2")
 
-        # ── Right panel: two figures stacked ─────────────────────
+        # ── Right: two stacked figures ────────────────────────────
         right = ttk.Frame(body)
         body.add(right, weight=1)
-
         _rpw = ttk.PanedWindow(right, orient=tk.VERTICAL)
         _rpw.pack(fill=tk.BOTH, expand=True)
 
-        # Upper: CV figure
         _cv_frame = ttk.Frame(_rpw)
         _rpw.add(_cv_frame, weight=3)
         self._cv_fig = Figure(figsize=(8, 4), dpi=100)
@@ -300,9 +284,7 @@ class CvActivationPanel(ttk.Frame):
         _cv_tb = NavigationToolbar2Tk(self._cv_cv, _cv_frame, pack_toolbar=False)
         _cv_tb.pack(side=tk.BOTTOM, fill=tk.X)
         self._cv_cv.get_tk_widget().pack(fill=tk.BOTH, expand=True)
-        self._cv_cv.mpl_connect("button_press_event", self._on_cv_click)
 
-        # Lower: cycle-vs-J figure
         _cyc_frame = ttk.Frame(_rpw)
         _rpw.add(_cyc_frame, weight=2)
         self._cyc_fig = Figure(figsize=(8, 3), dpi=100)
@@ -312,8 +294,12 @@ class CvActivationPanel(ttk.Frame):
         _cyc_tb.pack(side=tk.BOTTOM, fill=tk.X)
         self._cyc_cv.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
-        # Vertical line for E_target on CV plot (set on click)
-        self._cv_vline = None
+        # ── Connect events ────────────────────────────────────────
+        for cv in (self._cv_cv, self._cyc_cv):
+            cv.mpl_connect("scroll_event",        self._on_scroll)
+            cv.mpl_connect("button_press_event",  self._on_press)
+            cv.mpl_connect("button_release_event",self._on_release)
+            cv.mpl_connect("motion_notify_event", self._on_motion)
 
     # ════════════════════════════════════════════════════════════════
     # File management
@@ -321,8 +307,7 @@ class CvActivationPanel(ttk.Frame):
     def _load_files(self):
         paths = filedialog.askopenfilenames(
             title="Load Activation CV File(s)",
-            filetypes=[("Data files", "*.txt *.csv *.mpr *.mpt"),
-                       ("All files", "*.*")])
+            filetypes=[("Data files", "*.txt *.csv *.mpr *.mpt"), ("All files", "*.*")])
         if not paths:
             return
         for path in paths:
@@ -335,22 +320,18 @@ class CvActivationPanel(ttk.Frame):
                 messagebox.showerror("Load error", f"{short}:\n{exc}")
                 continue
             color_idx = len(self.files) % len(_TRACE_COLORS)
-            entry = {
-                "path":      path,
-                "df":        df,
-                "r_sol":     0.0,
-                "e_ref":     0.0,
-                "color":     _TRACE_COLORS[color_idx],
-                "result":    None,   # filled by _analyze
+            self.files[short] = {
+                "path": path, "df": df,
+                "r_sol": 0.0, "e_ref": 0.0,
+                "color": _TRACE_COLORS[color_idx],
+                "result": None,
             }
-            self.files[short] = entry
             self._loading = True
             self.file_listbox.insert(tk.END, short)
             self._loading = False
 
         if self.files:
-            last = list(self.files.keys())[-1]
-            self._switch_file(last)
+            self._switch_file(list(self.files.keys())[-1])
 
     def _remove_file(self):
         sel = self.file_listbox.curselection()
@@ -360,20 +341,17 @@ class CvActivationPanel(ttk.Frame):
         keys = list(self.files.keys())
         if idx >= len(keys):
             return
-        short = keys[idx]
-        del self.files[short]
+        del self.files[keys[idx]]
         self.file_listbox.delete(idx)
         keys = list(self.files.keys())
         if keys:
-            new_idx = min(idx, len(keys) - 1)
-            self._switch_file(keys[new_idx])
+            self._switch_file(keys[min(idx, len(keys) - 1)])
         else:
             self.active_file = None
             self._clear_plots()
         self._rebuild_results_tv()
 
     def _on_file_reorder(self, new_order):
-        old_keys = list(self.files.keys())
         new_files = OrderedDict()
         for name in new_order:
             if name in self.files:
@@ -382,22 +360,20 @@ class CvActivationPanel(ttk.Frame):
             if k not in new_files:
                 new_files[k] = v
         self.files = new_files
-        self._replot_cycle()
+        self._schedule()
 
-    def _on_file_select(self, _event=None):
+    def _on_file_select(self, _=None):
         if self._loading:
             return
         sel = self.file_listbox.curselection()
         if not sel:
             return
-        idx  = sel[0]
         keys = list(self.files.keys())
-        if idx < len(keys):
-            self._switch_file(keys[idx])
+        if sel[0] < len(keys):
+            self._switch_file(keys[sel[0]])
 
     def _switch_file(self, short):
         self.active_file = short
-        # Sync listbox selection
         keys = list(self.files.keys())
         if short in keys:
             self._loading = True
@@ -406,7 +382,7 @@ class CvActivationPanel(ttk.Frame):
             self._loading = False
         self._update_column_combos()
         self._restore_corrections()
-        self._auto_replot()
+        self._schedule()
 
     # ════════════════════════════════════════════════════════════════
     # Column management
@@ -419,36 +395,24 @@ class CvActivationPanel(ttk.Frame):
         self.x_combo["values"] = cols
         self.y_combo["values"] = cols
         self.cyc_combo["values"] = ["(none)"] + cols
-
-        # Auto-detect if not already set or column no longer valid
         if self.x_var.get() not in cols:
             for c in ["Ewe/V", "Ewe/V ", "E/V", "E (V)"]:
-                if c in cols:
-                    self.x_var.set(c); break
+                if c in cols: self.x_var.set(c); break
             else:
-                # pick first voltage-like column
                 for c in cols:
-                    if "/V" in c or "(V)" in c:
-                        self.x_var.set(c); break
+                    if "/V" in c or "(V)" in c: self.x_var.set(c); break
         if self.y_var.get() not in cols:
             for c in ["I/mA", "<I>/mA", "I (mA)"]:
-                if c in cols:
-                    self.y_var.set(c); break
+                if c in cols: self.y_var.set(c); break
             else:
                 for c in cols:
-                    if "/mA" in c or "(mA)" in c or "/A" in c:
-                        self.y_var.set(c); break
+                    if "/mA" in c or "(mA)" in c or "/A" in c: self.y_var.set(c); break
         if self.cyc_var.get() not in ["(none)"] + cols:
-            if "cycle number" in cols:
-                self.cyc_var.set("cycle number")
-            else:
-                self.cyc_var.set("(none)")
+            self.cyc_var.set("cycle number" if "cycle number" in cols else "(none)")
 
     def _get_cycle_col(self, df):
         c = self.cyc_var.get()
-        if c and c != "(none)" and c in df.columns:
-            return c
-        return None
+        return c if (c and c != "(none)" and c in df.columns) else None
 
     # ════════════════════════════════════════════════════════════════
     # Corrections
@@ -460,87 +424,76 @@ class CvActivationPanel(ttk.Frame):
         self.r_sol_var.set(str(entry["r_sol"]))
         self.e_ref_var.set(str(entry["e_ref"]))
 
-    def _save_and_replot(self):
+    def _save_corr_and_schedule(self):
         entry = self.files.get(self.active_file)
         if entry:
             try: entry["r_sol"] = float(self.r_sol_var.get())
             except ValueError: pass
             try: entry["e_ref"] = float(self.e_ref_var.get())
             except ValueError: pass
-        self._auto_replot()
+        self._schedule()
 
     def _apply_correction(self, df, r_sol, e_ref):
-        """IR compensation + RHE offset; returns corrected copy."""
-        xcol = self.x_var.get()
-        ycol = self.y_var.get()
+        xcol = self.x_var.get(); ycol = self.y_var.get()
         if not xcol or not ycol or xcol not in df.columns or ycol not in df.columns:
             return df
         df = df.copy()
         if r_sol != 0:
-            # Assume current column is in mA → convert to A
-            I_A = df[ycol].values * 1e-3
-            df[xcol] = df[xcol].values - I_A * r_sol
+            df[xcol] = df[xcol].values - df[ycol].values * 1e-3 * r_sol
         if e_ref != 0:
             df[xcol] = df[xcol].values + e_ref
         return df
 
     # ════════════════════════════════════════════════════════════════
-    # Core extraction
+    # Debounced real-time update
+    # ════════════════════════════════════════════════════════════════
+    def _schedule(self, *_):
+        if self._debounce_id is not None:
+            try: self.after_cancel(self._debounce_id)
+            except Exception: pass
+        self._debounce_id = self.after(300, self._update_all)
+
+    def _update_all(self):
+        self._debounce_id = None
+        self._replot_cv()
+        self._run_analysis()
+        self._replot_cycle()
+
+    # ════════════════════════════════════════════════════════════════
+    # Core extraction + analysis
     # ════════════════════════════════════════════════════════════════
     def _extract_cycle_j(self, df_c, e_target: float, direction: str):
-        """Return list of (cycle_num_int, J_at_E) for each cycle."""
-        xcol = self.x_var.get()
-        ycol = self.y_var.get()
+        xcol = self.x_var.get(); ycol = self.y_var.get()
         ccol = self._get_cycle_col(df_c)
         if not xcol or not ycol:
             return []
-
-        cycles = []
-        if ccol:
-            raw_cycles = sorted(df_c[ccol].unique())
-        else:
-            raw_cycles = [None]
-
+        raw_cycles = sorted(df_c[ccol].unique()) if ccol else [None]
+        result = []
         for cn in raw_cycles:
-            if cn is not None:
-                sub = df_c[df_c[ccol] == cn]
-            else:
-                sub = df_c
-            E = sub[xcol].dropna().values
-            I = sub[ycol].dropna().values
-            # Trim to matching lengths
+            sub = df_c[df_c[ccol] == cn] if cn is not None else df_c
+            E = sub[xcol].dropna().values; I = sub[ycol].dropna().values
             n = min(len(E), len(I))
-            if n < 4:
-                continue
+            if n < 4: continue
             E, I = E[:n], I[:n]
-
             if direction == "Anodic":
-                E_use, I_use, _, _ = _split_scans(E, I)
+                E_u, I_u, _, _ = _split_scans(E, I)
             elif direction == "Cathodic":
-                _, _, E_use, I_use = _split_scans(E, I)
-            else:  # Average
+                _, _, E_u, I_u = _split_scans(E, I)
+            else:
                 E_an, I_an, E_cat, I_cat = _split_scans(E, I)
-                j_an  = _interp_at_e(E_an,  I_an,  e_target)
-                j_cat = _interp_at_e(E_cat, I_cat, e_target)
-                vals  = [v for v in [j_an, j_cat] if v is not None]
+                vals = [v for v in [_interp_at_e(E_an, I_an, e_target),
+                                    _interp_at_e(E_cat, I_cat, e_target)]
+                        if v is not None]
                 if vals:
-                    cn_int = int(cn) if cn is not None else 0
-                    cycles.append((cn_int, float(np.mean(vals))))
+                    result.append((int(cn) if cn is not None else 0,
+                                   float(np.mean(vals))))
                 continue
-
-            j = _interp_at_e(E_use, I_use, e_target)
+            j = _interp_at_e(E_u, I_u, e_target)
             if j is not None:
-                cn_int = int(cn) if cn is not None else 0
-                cycles.append((cn_int, j))
-
-        return cycles  # [(cycle_num, J)]
+                result.append((int(cn) if cn is not None else 0, j))
+        return result
 
     def _check_convergence(self, cycle_j: list, window: int, threshold: float):
-        """
-        For each cycle i where i >= window:
-          delta% = |J[i] - J[i-window]| / max(|J[i-window]|, 1e-12) * 100
-        Returns list of (cn, J, delta_pct_or_None, pass_bool_or_None).
-        """
         out = []
         for i, (cn, j) in enumerate(cycle_j):
             if i < window:
@@ -548,231 +501,35 @@ class CvActivationPanel(ttk.Frame):
             else:
                 j_prev = cycle_j[i - window][1]
                 delta  = abs(j - j_prev) / max(abs(j_prev), 1e-12) * 100.0
-                passed = delta < threshold
-                out.append((cn, j, delta, passed))
+                out.append((cn, j, delta, delta < threshold))
         return out
 
-    # ════════════════════════════════════════════════════════════════
-    # Plotting
-    # ════════════════════════════════════════════════════════════════
-    def _auto_replot(self):
-        self._replot_cv()
-        self._replot_cycle()
-
-    def _replot_cv(self):
-        """Redraw upper CV figure for active file — all cycles, gradient-colored."""
-        # Remove stale colorbar before clearing axes (colorbar lives on the figure)
-        if self._cv_cbar is not None:
-            try:
-                self._cv_cbar.remove()
-            except Exception:
-                pass
-            self._cv_cbar = None
-
-        ax = self._cv_ax
-        ax.clear()
-        entry = self.files.get(self.active_file)
-        if not entry:
-            ax.set_title("CV  (no file loaded)")
-            self._cv_fig.tight_layout(pad=0.8)
-            self._cv_fig.set_layout_engine("none")
-            self._cv_cv.draw_idle()
-            return
-
-        xcol = self.x_var.get()
-        ycol = self.y_var.get()
-        if not xcol or not ycol:
-            self._cv_cv.draw_idle()
-            return
-
-        try:
-            r_sol = float(self.r_sol_var.get())
-        except ValueError:
-            r_sol = 0.0
-        try:
-            e_ref = float(self.e_ref_var.get())
-        except ValueError:
-            e_ref = 0.0
-
-        df_c  = self._apply_correction(entry["df"], r_sol, e_ref)
-        ccol  = self._get_cycle_col(df_c)
-
-        if ccol:
-            raw_cycles = sorted(df_c[ccol].unique())
-        else:
-            raw_cycles = [None]
-
-        n_cyc = len(raw_cycles)
-        cmap  = mpl_cm.get_cmap("viridis", max(n_cyc, 2))
-
-        for i, cn in enumerate(raw_cycles):
-            if cn is not None:
-                sub = df_c[df_c[ccol] == cn]
-            else:
-                sub = df_c
-            E = sub[xcol].values
-            I = sub[ycol].values
-            color = cmap(i / max(n_cyc - 1, 1))
-            lbl = f"C{int(cn)}" if cn is not None else "data"
-            ax.plot(E, I, lw=1.0, color=color, label=lbl, alpha=0.85)
-
-        # E_target marker
-        try:
-            e_t = float(self.e_target_var.get())
-            ax.axvline(e_t, color="red", lw=1.2, ls="--", alpha=0.7, label=f"E={e_t:.3f} V")
-        except ValueError:
-            pass
-
-        x_lbl = xcol
-        y_lbl = ycol
-        ref_lbl = ""
-        if e_ref != 0:
-            ref_lbl = " vs RHE"
-        ax.set_xlabel(f"{x_lbl}{ref_lbl}", fontsize=9)
-        ax.set_ylabel(y_lbl, fontsize=9)
-        ax.set_title(f"Activation CV — {self.active_file}  ({n_cyc} cycles)",
-                     fontsize=9)
-        ax.tick_params(labelsize=8)
-
-        if n_cyc <= 20:
-            ax.legend(fontsize=6, ncol=max(1, n_cyc // 8), frameon=True,
-                      loc="best")
-        else:
-            self._cv_cbar = self._cv_fig.colorbar(
-                mpl_cm.ScalarMappable(
-                    norm=mpl_colors.Normalize(1, n_cyc), cmap="viridis"),
-                ax=ax, shrink=0.8, pad=0.02)
-            self._cv_cbar.set_label("Cycle #", fontsize=8)
-
-        self._cv_fig.tight_layout(pad=0.8)
-        self._cv_fig.set_layout_engine("none")
-        self._cv_cv.draw_idle()
-
-    def _replot_cycle(self):
-        """Redraw lower cycle-vs-J figure."""
-        ax = self._cyc_ax
-        ax.clear()
-
-        try:
-            e_target = float(self.e_target_var.get())
-        except ValueError:
-            self._cyc_cv.draw_idle()
-            return
-        try:
-            window = int(self.window_var.get())
-        except ValueError:
-            window = 10
-        try:
-            threshold = float(self.threshold_var.get())
-        except ValueError:
-            threshold = 2.0
-
-        direction = self.direction_var.get()
-        show_all  = self.overlay_all_var.get()
-
-        files_to_show = (list(self.files.keys())
-                         if show_all else
-                         ([self.active_file] if self.active_file else []))
-
-        any_data = False
-        for fi, short in enumerate(files_to_show):
-            entry = self.files.get(short)
-            if not entry:
-                continue
-            try:
-                r_sol = entry["r_sol"]
-                e_ref = entry["e_ref"]
-            except Exception:
-                r_sol = e_ref = 0.0
-
-            df_c     = self._apply_correction(entry["df"], r_sol, e_ref)
-            cycle_j  = self._extract_cycle_j(df_c, e_target, direction)
-            if not cycle_j:
-                continue
-
-            conv     = self._check_convergence(cycle_j, window, threshold)
-            cns      = [x[0] for x in conv]
-            js       = [x[1] for x in conv]
-            color    = entry["color"]
-
-            ax.plot(cns, js, "o-", color=color, lw=1.6, ms=4, label=short)
-
-            # Mark the last window delta
-            if len(conv) > window:
-                *_, last = conv
-                cn_last, j_last, dp, passed = last
-                mk = "✓" if passed else "✗"
-                col_mk = "#2e7d32" if passed else "#c62828"
-                ax.annotate(
-                    f"{mk} {dp:.1f}%",
-                    xy=(cn_last, j_last),
-                    xytext=(6, 4), textcoords="offset points",
-                    fontsize=7, color=col_mk)
-            any_data = True
-
-        if any_data:
-            ax.set_xlabel("Cycle number", fontsize=9)
-            ax.set_ylabel(f"J at E={e_target:.3f} V  (mA)", fontsize=9)
-            ax.set_title(f"Convergence check  (window={window} cyc, threshold={threshold}%)",
-                         fontsize=9)
-            ax.tick_params(labelsize=8)
-            ax.axhline(0, color="k", lw=0.5, ls=":")
-            if len(files_to_show) > 1:
-                ax.legend(fontsize=7, frameon=True)
-            ax.grid(True, alpha=0.3)
-        else:
-            ax.set_title("Cycle vs J  (no data — check E_target or column mapping)",
-                         fontsize=9)
-
-        self._cyc_fig.tight_layout(pad=0.8)
-        self._cyc_fig.set_layout_engine("none")
-        self._cyc_cv.draw_idle()
-
-    # ════════════════════════════════════════════════════════════════
-    # Analyze button → fill results table
-    # ════════════════════════════════════════════════════════════════
-    def _analyze(self):
+    def _run_analysis(self):
+        """Run extraction + convergence for all files; populate results table."""
         try:
             e_target  = float(self.e_target_var.get())
             window    = int(self.window_var.get())
             threshold = float(self.threshold_var.get())
         except ValueError:
-            messagebox.showerror("Input error",
-                                 "Check E target, window, and threshold values.")
             return
-
         direction = self.direction_var.get()
-
         for short, entry in self.files.items():
-            try:
-                r_sol = entry["r_sol"]
-                e_ref = entry["e_ref"]
-            except Exception:
-                r_sol = e_ref = 0.0
-            df_c    = self._apply_correction(entry["df"], r_sol, e_ref)
+            df_c    = self._apply_correction(entry["df"], entry["r_sol"], entry["e_ref"])
             cycle_j = self._extract_cycle_j(df_c, e_target, direction)
             if not cycle_j:
                 entry["result"] = None
                 continue
             conv = self._check_convergence(cycle_j, window, threshold)
-            # Summary: use last entry that has a delta
-            last_with_delta = [(cn, j, dp, p) for cn, j, dp, p in conv
-                               if dp is not None]
-            if last_with_delta:
-                cn_f, j_f, dp_f, passed_f = last_with_delta[-1]
+            with_delta = [(cn, j, dp, p) for cn, j, dp, p in conv if dp is not None]
+            if with_delta:
+                cn_f, j_f, dp_f, passed_f = with_delta[-1]
             else:
                 cn_f, j_f, dp_f, passed_f = conv[-1][0], conv[-1][1], None, None
-
             entry["result"] = {
-                "cycle_j":   cycle_j,
-                "conv":      conv,
-                "j_final":   j_f,
-                "delta_pct": dp_f,
-                "passed":    passed_f,
+                "cycle_j": cycle_j, "conv": conv,
+                "j_final": j_f, "delta_pct": dp_f, "passed": passed_f,
             }
-
         self._rebuild_results_tv()
-        self._replot_cycle()
 
     def _rebuild_results_tv(self):
         tv = self._results_tv
@@ -782,38 +539,279 @@ class CvActivationPanel(ttk.Frame):
             if res is None:
                 tv.insert("", tk.END, values=(short, "—", "—", "—"))
                 continue
-            j_f  = f"{res['j_final']:.4f}" if res["j_final"] is not None else "—"
-            dp   = f"{res['delta_pct']:.2f}%" if res["delta_pct"] is not None else "—"
+            j_f = f"{res['j_final']:.4f}" if res["j_final"] is not None else "—"
+            dp  = f"{res['delta_pct']:.2f}%" if res["delta_pct"] is not None else "—"
             if res["passed"] is True:
-                status = "Activated ✓"
-                tag    = "pass"
+                status, tag = "Activated ✓", "pass"
             elif res["passed"] is False:
-                status = "Not activated ✗"
-                tag    = "fail"
+                status, tag = "Not activated ✗", "fail"
             else:
-                status = "—"
-                tag    = ""
+                status, tag = "—", ""
             tv.insert("", tk.END, values=(short, j_f, dp, status), tags=(tag,))
+
+    # ════════════════════════════════════════════════════════════════
+    # Plotting
+    # ════════════════════════════════════════════════════════════════
+    def _replot_cv(self):
+        """Redraw upper CV — clf() + re-add subplot avoids colorbar accumulation."""
+        self._clear_ann(redraw=False)
+        self._cv_fig.clf()
+        self._cv_ax = self._cv_fig.add_subplot(111)
+        ax = self._cv_ax
+
+        entry = self.files.get(self.active_file)
+        if not entry:
+            ax.set_title("CV  (no file loaded)")
+            self._cv_fig.tight_layout(pad=0.8)
+            self._cv_fig.set_layout_engine("none")
+            self._cv_cv.draw_idle()
+            return
+
+        xcol = self.x_var.get(); ycol = self.y_var.get()
+        if not xcol or not ycol:
+            self._cv_cv.draw_idle()
+            return
+
+        try: r_sol = float(self.r_sol_var.get())
+        except ValueError: r_sol = 0.0
+        try: e_ref = float(self.e_ref_var.get())
+        except ValueError: e_ref = 0.0
+
+        df_c  = self._apply_correction(entry["df"], r_sol, e_ref)
+        ccol  = self._get_cycle_col(df_c)
+        raw_cycles = sorted(df_c[ccol].unique()) if ccol else [None]
+        n_cyc = len(raw_cycles)
+        cmap  = mpl_cm.get_cmap("viridis", max(n_cyc, 2))
+
+        for i, cn in enumerate(raw_cycles):
+            sub   = df_c[df_c[ccol] == cn] if cn is not None else df_c
+            color = cmap(i / max(n_cyc - 1, 1))
+            lbl   = f"C{int(cn)}" if cn is not None else "data"
+            ax.plot(sub[xcol].values, sub[ycol].values,
+                    lw=1.0, color=color, label=lbl, alpha=0.85)
+
+        try:
+            e_t = float(self.e_target_var.get())
+            ax.axvline(e_t, color="red", lw=1.2, ls="--", alpha=0.7,
+                       label=f"E={e_t:.3f} V")
+        except ValueError:
+            pass
+
+        ref_suffix = " vs RHE" if e_ref != 0 else ""
+        ax.set_xlabel(f"{xcol}{ref_suffix}", fontsize=9)
+        ax.set_ylabel(ycol, fontsize=9)
+        ax.set_title(f"Activation CV — {self.active_file}  ({n_cyc} cycles)", fontsize=9)
+        ax.tick_params(labelsize=8)
+
+        if n_cyc <= 20:
+            ax.legend(fontsize=6, ncol=max(1, n_cyc // 8), frameon=True, loc="best")
+        else:
+            cb = self._cv_fig.colorbar(
+                mpl_cm.ScalarMappable(
+                    norm=mpl_colors.Normalize(1, n_cyc), cmap="viridis"),
+                ax=ax, shrink=0.8, pad=0.02)
+            cb.set_label("Cycle #", fontsize=8)
+
+        self._cv_fig.tight_layout(pad=0.8)
+        self._cv_fig.set_layout_engine("none")
+        self._cv_cv.draw_idle()
+
+    def _replot_cycle(self):
+        """Redraw lower cycle-vs-J figure."""
+        self._clear_ann(redraw=False)
+        self._cyc_fig.clf()
+        self._cyc_ax = self._cyc_fig.add_subplot(111)
+        ax = self._cyc_ax
+
+        try: e_target = float(self.e_target_var.get())
+        except ValueError: self._cyc_cv.draw_idle(); return
+        try: window = int(self.window_var.get())
+        except ValueError: window = 10
+        try: threshold = float(self.threshold_var.get())
+        except ValueError: threshold = 2.0
+
+        direction = self.direction_var.get()
+        show_all  = self.overlay_all_var.get()
+        files_to_show = (list(self.files.keys()) if show_all
+                         else ([self.active_file] if self.active_file else []))
+
+        any_data = False
+        all_js = []
+        for short in files_to_show:
+            entry = self.files.get(short)
+            if not entry:
+                continue
+            df_c    = self._apply_correction(entry["df"], entry["r_sol"], entry["e_ref"])
+            cycle_j = self._extract_cycle_j(df_c, e_target, direction)
+            if not cycle_j:
+                continue
+            conv  = self._check_convergence(cycle_j, window, threshold)
+            cns   = [x[0] for x in conv]
+            js    = [x[1] for x in conv]
+            all_js.extend(js)
+            ax.plot(cns, js, "o-", color=entry["color"], lw=1.6, ms=4, label=short)
+            # Mark last convergence delta
+            if len(conv) > window:
+                cn_l, j_l, dp, passed = conv[-1]
+                mk  = "✓" if passed else "✗"
+                col = "#2e7d32" if passed else "#c62828"
+                ax.annotate(f"{mk} {dp:.1f}%", xy=(cn_l, j_l),
+                            xytext=(6, 4), textcoords="offset points",
+                            fontsize=7, color=col)
+            any_data = True
+
+        if any_data:
+            ax.set_xlabel("Cycle number", fontsize=9)
+            ax.set_ylabel(f"J at E={e_target:.3f} V  (mA)", fontsize=9)
+            ax.set_title(
+                f"Convergence check  (window={window} cyc, threshold={threshold}%)",
+                fontsize=9)
+            ax.tick_params(labelsize=8)
+            if len(files_to_show) > 1:
+                ax.legend(fontsize=7, frameon=True)
+            ax.grid(True, alpha=0.3)
+            # Y-axis: fit data (don't force 0 into range)
+            if all_js:
+                j_lo = min(all_js); j_hi = max(all_js)
+                margin = max(abs(j_hi - j_lo) * 0.08, abs(j_lo) * 0.02, 0.01)
+                ax.set_ylim(j_lo - margin, j_hi + margin)
+        else:
+            ax.set_title("Cycle vs J  (no data — check E_target or column mapping)",
+                         fontsize=9)
+
+        self._cyc_fig.tight_layout(pad=0.8)
+        self._cyc_fig.set_layout_engine("none")
+        self._cyc_cv.draw_idle()
+
+    # ════════════════════════════════════════════════════════════════
+    # Mouse interactions — scroll / pan / annotate
+    # ════════════════════════════════════════════════════════════════
+    def _get_canvas(self, ax):
+        return self._cv_cv if ax is self._cv_ax else self._cyc_cv
+
+    def _on_scroll(self, event):
+        ax = event.inaxes
+        if ax is None:
+            return
+        factor = 0.85 if event.button == "up" else 1.0 / 0.85
+        xl, yl = ax.get_xlim(), ax.get_ylim()
+        xd, yd = event.xdata, event.ydata
+        ax.set_xlim(xd + (xl[0] - xd) * factor, xd + (xl[1] - xd) * factor)
+        ax.set_ylim(yd + (yl[0] - yd) * factor, yd + (yl[1] - yd) * factor)
+        self._get_canvas(ax).draw_idle()
+
+    def _on_press(self, event):
+        if event.button == 1 and event.inaxes:
+            self._panning   = True
+            self._pan_moved = False
+            self._pan_ax    = event.inaxes
+            self._pan_start = (event.xdata, event.ydata)
+
+    def _on_motion(self, event):
+        if not self._panning or self._pan_ax is None:
+            return
+        if event.xdata is None or event.ydata is None:
+            return
+        ax = self._pan_ax
+        dx = self._pan_start[0] - event.xdata
+        dy = self._pan_start[1] - event.ydata
+        if abs(dx) > 1e-12 or abs(dy) > 1e-12:
+            self._pan_moved = True
+        xl = ax.get_xlim(); yl = ax.get_ylim()
+        ax.set_xlim(xl[0] + dx, xl[1] + dx)
+        ax.set_ylim(yl[0] + dy, yl[1] + dy)
+        self._get_canvas(ax).draw_idle()
+
+    def _on_release(self, event):
+        was_panning = self._panning
+        pan_moved   = self._pan_moved
+        self._panning = False
+        self._pan_ax  = None
+
+        if event.button == 1 and not pan_moved and event.inaxes:
+            self._annotate(event)
+        elif event.button == 3 and event.inaxes:
+            if self._ann is not None:
+                # Right-click clears annotation
+                self._clear_ann()
+            elif event.inaxes is self._cv_ax and event.xdata is not None:
+                # Right-click on CV (no annotation active) → set E_target
+                self.e_target_var.set(f"{event.xdata:.4f}")
+                self._schedule()
+
+    def _annotate(self, event):
+        ax = event.inaxes
+        lines = [ln for ln in ax.lines
+                 if len(ln.get_xdata()) > 0 and ln.get_visible()
+                 and not ln.get_label().startswith("_")]
+        if not lines:
+            return
+        candidates = []
+        for ln in lines:
+            xd   = np.asarray(ln.get_xdata(), dtype=float)
+            yd   = np.asarray(ln.get_ydata(), dtype=float)
+            mask = np.isfinite(xd) & np.isfinite(yd)
+            if not mask.any():
+                continue
+            disp  = ax.transData.transform(np.column_stack([xd[mask], yd[mask]]))
+            dists = np.hypot(disp[:, 0] - event.x, disp[:, 1] - event.y)
+            best  = int(np.argmin(dists))
+            candidates.append((float(dists[best]), ln,
+                                float(xd[mask][best]), float(yd[mask][best])))
+        if not candidates:
+            return
+        candidates.sort(key=lambda t: t[0])
+        if (self._last_click_pos is not None
+                and abs(event.x - self._last_click_pos[0]) <= _CLICK_PX
+                and abs(event.y - self._last_click_pos[1]) <= _CLICK_PX):
+            self._cand_idx = (self._cand_idx + 1) % len(candidates)
+        else:
+            self._cand_idx = 0
+        self._last_click_pos = (event.x, event.y)
+        n                    = len(candidates)
+        _, ln, x, y          = candidates[self._cand_idx]
+        label                = ln.get_label() or "?"
+        xl, yl = ax.get_xlim(), ax.get_ylim()
+        xf = (x - xl[0]) / (xl[1] - xl[0]) if xl[1] != xl[0] else 0.5
+        yf = (y - yl[0]) / (yl[1] - yl[0]) if yl[1] != yl[0] else 0.5
+        xoff = -95 if xf > 0.65 else 15
+        yoff = -60 if yf > 0.65 else 15
+        hint = f"  [{self._cand_idx + 1}/{n}]" if n > 1 else ""
+        text = f"x = {x:.4g}\ny = {y:.4g}\n{label}{hint}"
+        if n > 1 and self._cand_idx == 0:
+            text += "\n↻ click again to cycle"
+        self._clear_ann(redraw=False)
+        self._ann_ax = ax
+        self._ann = ax.annotate(
+            text, xy=(x, y), xytext=(xoff, yoff), textcoords="offset points",
+            bbox=dict(boxstyle="round,pad=0.4", fc="lightyellow", ec="gray", alpha=0.92),
+            arrowprops=dict(arrowstyle="->", color="gray", lw=1.2),
+            fontsize=8, zorder=10)
+        self._ann.set_in_layout(False)
+        self._ann_dot, = ax.plot(x, y, "o", color=ln.get_color(),
+                                 markersize=7, zorder=11, label="_ann_dot")
+        self._get_canvas(ax).draw_idle()
+
+    def _clear_ann(self, redraw=True):
+        canvas = self._get_canvas(self._ann_ax) if self._ann_ax is not None else None
+        for artist in (self._ann, self._ann_dot):
+            if artist is not None:
+                try: artist.remove()
+                except Exception: pass
+        self._ann = self._ann_dot = None
+        self._last_click_pos = None
+        self._cand_idx       = 0
+        self._ann_ax         = None
+        if redraw and canvas is not None:
+            canvas.draw_idle()
 
     # ════════════════════════════════════════════════════════════════
     # Misc
     # ════════════════════════════════════════════════════════════════
-    def _on_cv_click(self, event):
-        """Right-click on CV sets E_target to clicked X value."""
-        if event.button == 3 and event.inaxes:
-            self.e_target_var.set(f"{event.xdata:.4f}")
-            self._auto_replot()
-
     def _clear_all(self):
-        if self._cv_cbar is not None:
-            try: self._cv_cbar.remove()
-            except Exception: pass
-            self._cv_cbar = None
-        self._cv_ax.clear()
-        self._cyc_ax.clear()
-        for fig in (self._cv_fig, self._cyc_fig):
-            fig.tight_layout(pad=0.8)
-            fig.set_layout_engine("none")
+        self._clear_ann(redraw=False)
+        self._cv_fig.clf();  self._cv_ax  = self._cv_fig.add_subplot(111)
+        self._cyc_fig.clf(); self._cyc_ax = self._cyc_fig.add_subplot(111)
         self._cv_cv.draw_idle()
         self._cyc_cv.draw_idle()
         for entry in self.files.values():
@@ -821,7 +819,7 @@ class CvActivationPanel(ttk.Frame):
         self._rebuild_results_tv()
 
     def _clear_plots(self):
-        self._cv_ax.clear()
-        self._cyc_ax.clear()
+        self._cv_fig.clf();  self._cv_ax  = self._cv_fig.add_subplot(111)
+        self._cyc_fig.clf(); self._cyc_ax = self._cyc_fig.add_subplot(111)
         self._cv_cv.draw_idle()
         self._cyc_cv.draw_idle()
