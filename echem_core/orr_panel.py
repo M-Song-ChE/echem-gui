@@ -3866,22 +3866,28 @@ class ORRPanel(ttk.Frame):
         _n_var = tk.StringVar(value="4")
         ttk.Entry(_ec_fr, textvariable=_n_var, width=4).pack(side=tk.LEFT, padx=(4, 12))
         _n_var.trace_add("write", _schedule)
-        ttk.Label(_ec_fr, text="Electrode area (cm²):").pack(side=tk.LEFT)
-        _area_var = tk.StringVar(value="0.196")
-        ttk.Entry(_ec_fr, textvariable=_area_var, width=7).pack(side=tk.LEFT, padx=(4, 8))
-        _area_var.trace_add("write", _schedule)
-        _norm_data_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(_ec_fr, text="Normalize data by area",
-                        variable=_norm_data_var,
-                        command=_schedule).pack(side=tk.LEFT, padx=(0, 8))
-        _show_fit_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(_ec_fr, text="Show fit lines",
-                        variable=_show_fit_var,
+        _show_pred_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(_ec_fr, text="Show Levich predicted",
+                        variable=_show_pred_var,
                         command=_schedule).pack(side=tk.LEFT, padx=(0, 8))
         _show_theory_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(_ec_fr, text="Show theory line",
                         variable=_show_theory_var,
-                        command=_schedule).pack(side=tk.LEFT)
+                        command=_schedule).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(_ec_fr, text="Copy Plot",
+                   command=lambda: _copy_plot()).pack(side=tk.LEFT, padx=(12, 0))
+
+        # ── X-axis range ──────────────────────────────────────────────
+        _ax_fr = ttk.Frame(win); _ax_fr.pack(fill=tk.X, padx=8, pady=(2, 0))
+        ttk.Label(_ax_fr, text="X (√RPM):").pack(side=tk.LEFT)
+        _xmin_var = tk.StringVar(value="")
+        _xmax_var = tk.StringVar(value="")
+        ttk.Label(_ax_fr, text="min").pack(side=tk.LEFT, padx=(4, 2))
+        ttk.Entry(_ax_fr, textvariable=_xmin_var, width=6).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Label(_ax_fr, text="max").pack(side=tk.LEFT, padx=(0, 2))
+        ttk.Entry(_ax_fr, textvariable=_xmax_var, width=6).pack(side=tk.LEFT)
+        _xmin_var.trace_add("write", _schedule)
+        _xmax_var.trace_add("write", _schedule)
 
         # ── Curve selector ───────────────────────────────────────────
         _sel_lf = ttk.LabelFrame(win, text="Samples / Catalysts")
@@ -3967,16 +3973,43 @@ class ORRPanel(ttk.Frame):
         _MK = ['o', 's', '^', 'D', 'v', 'P']
         F_const = 96485.0
 
+        def _copy_plot():
+            try:
+                import io
+                buf = io.BytesIO()
+                fig.savefig(buf, format='png', dpi=150, bbox_inches='tight')
+                buf.seek(0)
+                try:
+                    import win32clipboard
+                    from PIL import Image
+                    img = Image.open(buf)
+                    out2 = io.BytesIO()
+                    img.convert('RGB').save(out2, 'BMP')
+                    data = out2.getvalue()[14:]
+                    win32clipboard.OpenClipboard()
+                    win32clipboard.EmptyClipboard()
+                    win32clipboard.SetClipboardData(win32clipboard.CF_DIB, data)
+                    win32clipboard.CloseClipboard()
+                except ImportError:
+                    from tkinter.filedialog import asksaveasfilename
+                    path = asksaveasfilename(
+                        parent=win, defaultextension='.png',
+                        filetypes=[('PNG image', '*.png')])
+                    if path:
+                        buf.seek(0)
+                        with open(path, 'wb') as f:
+                            f.write(buf.read())
+            except Exception as exc:
+                messagebox.showerror("Copy Plot", str(exc), parent=win)
+
         def _compute():
             ax.clear()
             lines_out = []
-            try:
-                area = float(_area_var.get())
-            except ValueError:
-                area = 0.196
-            norm_data = _norm_data_var.get() and area > 0
+            # Data from _get_curves_for_sample is already in mA/cm²
+            # (_process_pair divides I_net by area when area > 0)
+            y_unit = "mA/cm²"
 
-            # Group selected points by sample→catalyst for one line each
+            # Group selected points by sample→catalyst
             _grp = {}; _grp_order = []
             for idx, (sn, lbl, col, rpm, sq, jl) in enumerate(all_valid):
                 if not _lsel_vars.get(idx, tk.BooleanVar(value=True)).get():
@@ -3985,33 +4018,29 @@ class ORRPanel(ttk.Frame):
                 cat = m.group(1) if m else lbl
                 key = (sn, cat)
                 if key not in _grp: _grp[key] = []; _grp_order.append(key)
-                # normalize raw mA → mA/cm² if requested
-                jl_norm = (abs(jl) / area) if norm_data else abs(jl)
-                _grp[key].append((rpm, sq, jl_norm, col))
+                _grp[key].append((rpm, sq, abs(jl), col))
 
-            y_unit = "mA/cm²" if norm_data else "mA"
             _palette_idx = 0
             for (sn, cat), pts in [(k, _grp[k]) for k in _grp_order]:
                 pts.sort(key=lambda t: t[0])
                 sq_arr  = np.array([t[1] for t in pts])
                 jl_arr  = np.array([t[2] for t in pts])
                 col     = pts[0][3]
-                ls      = _LS[_palette_idx % len(_LS)]
                 mk      = _MK[_palette_idx % len(_MK)]
                 _palette_idx += 1
                 lbl_txt = f"[{cat}] {sn}" if len(_grp) > 1 else f"[{cat}]"
-                ax.plot(sq_arr, jl_arr, marker=mk, ls=ls, color=col,
+                # Data: solid line
+                ax.plot(sq_arr, jl_arr, marker=mk, ls='-', color=col,
                         lw=1.6, ms=5, label=lbl_txt)
-                # Linear fit through origin
-                if len(sq_arr) >= 2:
-                    slope = float(np.dot(sq_arr, jl_arr) / np.dot(sq_arr, sq_arr))
-                    if _show_fit_var.get():
-                        x_fit = np.linspace(0, sq_arr.max() * 1.05, 60)
-                        ax.plot(x_fit, slope * x_fit, ls="--", color=col, lw=0.8, alpha=0.6)
-                    lines_out.append(
-                        f"[{cat}] {sn}: slope={slope:.4f} {y_unit}/(rad/s)^0.5  "
-                        f"(pts: " + ", ".join(
-                            f"{int(t[0])} rpm→{t[2]:.3f} {y_unit}" for t in pts) + ")")
+                # Levich predicted from lowest RPM — dashed
+                if _show_pred_var.get() and pts[0][1] > 0:
+                    _slope_pred = pts[0][2] / pts[0][1]   # J_0 / √RPM_0
+                    x_pred = np.linspace(0, sq_arr.max() * 1.1, 60)
+                    ax.plot(x_pred, _slope_pred * x_pred, ls="--", color=col,
+                            lw=0.9, alpha=0.65, label="_nolegend_")
+                lines_out.append(
+                    f"[{cat}] {sn}: "
+                    + ", ".join(f"{int(t[0])} rpm→{t[2]:.3f} {y_unit}" for t in pts))
 
             # Theoretical baseline — always in mA/cm² (B × √ω)
             if _show_theory_var.get():
@@ -4027,11 +4056,11 @@ class ORRPanel(ttk.Frame):
                     B_rpm  = B_rad * _conv                    # mA/(cm²·rpm^0.5)
                     sq_max = max((pts[-1][1] for pts in _grp.values()), default=50.0)
                     x_th   = np.linspace(0, sq_max * 1.1, 80)
-                    B_plot = B_rpm if norm_data else B_rpm * area
-                    ax.plot(x_th, B_plot * x_th, "k--", lw=1.5, alpha=0.7,
-                            label=f"Theory ({_elec_var.get()}, n={n:.0f})")
+                    # Theory always in mA/cm² regardless of data normalisation
+                    ax.plot(x_th, B_rpm * x_th, "k--", lw=1.5, alpha=0.7,
+                            label=f"Theory ({_elec_var.get()}, n={n:.0f}) [mA/cm²]")
                     lines_out.append(
-                        f"Theory B={B_rpm:.5f} {y_unit}/rpm^0.5  "
+                        f"Theory B={B_rpm:.5f} mA/cm²/rpm^0.5  "
                         f"[{_elec_var.get()}, n={n:.0f}]")
                 except (ValueError, KeyError):
                     pass
@@ -4042,6 +4071,13 @@ class ORRPanel(ttk.Frame):
             ax.tick_params(labelsize=8)
             ax.legend(fontsize=7, frameon=True)
             ax.grid(True, alpha=0.3)
+            try:
+                xlo = float(_xmin_var.get())
+                xhi = float(_xmax_var.get())
+                if xlo < xhi:
+                    ax.set_xlim(xlo, xhi)
+            except ValueError:
+                pass
             fig.tight_layout(pad=0.8)
             fig.set_layout_engine("none")
             cv.draw_idle()
@@ -4050,6 +4086,78 @@ class ORRPanel(ttk.Frame):
             res.insert(tk.END, "\n".join(lines_out) if lines_out
                        else "Select at least one curve above.")
             res.configure(state=tk.DISABLED)
+
+        # ── Click-to-annotate ─────────────────────────────────────────
+        _ann_obj = [None]    # current annotation artist
+        _plot_pts = []       # [(sq, jl, label), ...] populated by _compute
+
+        def _on_lc_click(event):
+            if event.inaxes is not ax or event.xdata is None:
+                return
+            if not _plot_pts:
+                return
+            # Find nearest point in display coordinates
+            x_click, y_click = event.xdata, event.ydata
+            xlim = ax.get_xlim(); ylim = ax.get_ylim()
+            x_span = xlim[1] - xlim[0] or 1.0
+            y_span = ylim[1] - ylim[0] or 1.0
+            best_dist, best_pt = float("inf"), None
+            for (sq, jl, lbl) in _plot_pts:
+                dx = (sq - x_click) / x_span
+                dy = (jl - y_click) / y_span
+                d = dx*dx + dy*dy
+                if d < best_dist:
+                    best_dist = d
+                    best_pt = (sq, jl, lbl)
+            if best_pt is None:
+                return
+            sq, jl, lbl = best_pt
+            rpm_val = sq * sq
+            # Remove old annotation
+            if _ann_obj[0] is not None:
+                try: _ann_obj[0].remove()
+                except Exception: pass
+                _ann_obj[0] = None
+            txt = f"{lbl}\nRPM = {rpm_val:.0f}\n√RPM = {sq:.2f}\n|J| = {jl:.4f} mA/cm²"
+            _ann_obj[0] = ax.annotate(
+                txt, xy=(sq, jl), xytext=(12, 12), textcoords="offset points",
+                bbox=dict(boxstyle="round,pad=0.4", fc="lightyellow", ec="#aaaaaa", alpha=0.9),
+                arrowprops=dict(arrowstyle="->", color="#555555", lw=0.8),
+                fontsize=8, zorder=10)
+            _ann_obj[0].set_in_layout(False)
+            cv.draw_idle()
+
+        def _on_lc_rclick(event):
+            if event.button == 3 and _ann_obj[0] is not None:
+                try: _ann_obj[0].remove()
+                except Exception: pass
+                _ann_obj[0] = None
+                cv.draw_idle()
+
+        cv.mpl_connect("button_press_event", _on_lc_click)
+        cv.mpl_connect("button_press_event", _on_lc_rclick)
+
+        # Patch _compute to also fill _plot_pts
+        _orig_compute = _compute
+        def _compute():
+            _plot_pts.clear()
+            if _ann_obj[0] is not None:
+                try: _ann_obj[0].remove()
+                except Exception: pass
+                _ann_obj[0] = None
+            _orig_compute()
+            # Collect marker points from lines on the axes
+            for line in ax.get_lines():
+                lbl = line.get_label()
+                if lbl.startswith("_"):
+                    continue
+                xd = line.get_xdata()
+                yd = line.get_ydata()
+                mk = line.get_marker()
+                if mk in (None, "None", "") or len(xd) == 0:
+                    continue
+                for xi, yi in zip(xd, yd):
+                    _plot_pts.append((float(xi), float(yi), lbl))
 
         _compute()
 
