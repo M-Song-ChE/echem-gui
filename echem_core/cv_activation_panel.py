@@ -109,6 +109,7 @@ class CvActivationPanel(ttk.Frame):
         self.files       = OrderedDict()   # short_name → entry dict
         self.active_file = None
         self._loading    = False
+        self._cv_cbar    = None            # colorbar handle — removed before each redraw
         self._build_panel()
 
     # ════════════════════════════════════════════════════════════════
@@ -560,6 +561,14 @@ class CvActivationPanel(ttk.Frame):
 
     def _replot_cv(self):
         """Redraw upper CV figure for active file — all cycles, gradient-colored."""
+        # Remove stale colorbar before clearing axes (colorbar lives on the figure)
+        if self._cv_cbar is not None:
+            try:
+                self._cv_cbar.remove()
+            except Exception:
+                pass
+            self._cv_cbar = None
+
         ax = self._cv_ax
         ax.clear()
         entry = self.files.get(self.active_file)
@@ -629,12 +638,11 @@ class CvActivationPanel(ttk.Frame):
             ax.legend(fontsize=6, ncol=max(1, n_cyc // 8), frameon=True,
                       loc="best")
         else:
-            # Colorbar instead of legend for many cycles
-            sm = mpl_colors.Normalize(vmin=1, vmax=n_cyc)
-            cb = self._cv_fig.colorbar(
-                mpl_cm.ScalarMappable(norm=mpl_colors.Normalize(1, n_cyc), cmap="viridis"),
+            self._cv_cbar = self._cv_fig.colorbar(
+                mpl_cm.ScalarMappable(
+                    norm=mpl_colors.Normalize(1, n_cyc), cmap="viridis"),
                 ax=ax, shrink=0.8, pad=0.02)
-            cb.set_label("Cycle #", fontsize=8)
+            self._cv_cbar.set_label("Cycle #", fontsize=8)
 
         self._cv_fig.tight_layout(pad=0.8)
         self._cv_fig.set_layout_engine("none")
@@ -797,6 +805,10 @@ class CvActivationPanel(ttk.Frame):
             self._auto_replot()
 
     def _clear_all(self):
+        if self._cv_cbar is not None:
+            try: self._cv_cbar.remove()
+            except Exception: pass
+            self._cv_cbar = None
         self._cv_ax.clear()
         self._cyc_ax.clear()
         for fig in (self._cv_fig, self._cyc_fig):
