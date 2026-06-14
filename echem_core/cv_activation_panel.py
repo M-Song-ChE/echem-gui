@@ -655,12 +655,14 @@ class CvActivationPanel(ttk.Frame):
             ax.set_title("CV  (no file loaded)")
             self._cv_fig.tight_layout(pad=0.8)
             self._cv_fig.set_layout_engine("none")
-            self._cv_cv.draw_idle()
+            self._cv_cv.draw()
+            self._cv_tb.update(); self._cv_tb.push_current()
             return
 
         xcol = self.x_var.get(); ycol = self.y_var.get()
         if not xcol or not ycol:
-            self._cv_cv.draw_idle()
+            self._cv_cv.draw()
+            self._cv_tb.update(); self._cv_tb.push_current()
             return
 
         try: r_sol = float(self.r_sol_var.get())
@@ -707,8 +709,9 @@ class CvActivationPanel(ttk.Frame):
         self._cv_fig.tight_layout(pad=0.5)
         self._cv_fig.subplots_adjust(right=0.97)
         self._cv_fig.set_layout_engine("none")
-        self._cv_cv.draw_idle()
-        self._cv_tb.update()   # re-register Home view after axes recreated
+        self._cv_cv.draw()           # synchronous so limits are set before toolbar sees them
+        self._cv_tb.update()         # clear stale nav stack
+        self._cv_tb.push_current()   # register current limits as Home view
 
     def _replot_cycle(self):
         """Redraw lower cycle-vs-J figure."""
@@ -794,8 +797,9 @@ class CvActivationPanel(ttk.Frame):
 
         self._cyc_fig.tight_layout(pad=0.8)
         self._cyc_fig.set_layout_engine("none")
-        self._cyc_cv.draw_idle()
-        self._cyc_tb.update()  # re-register Home view after axes recreated
+        self._cyc_cv.draw()
+        self._cyc_tb.update()
+        self._cyc_tb.push_current()
 
     # ════════════════════════════════════════════════════════════════
     # Mouse interactions — scroll / pan / annotate
