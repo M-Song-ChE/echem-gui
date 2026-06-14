@@ -241,14 +241,7 @@ class CvActivationPanel(ttk.Frame):
         ttk.Button(_btn_row, text="Analyze",
                    command=self._update_all).pack(side=tk.LEFT, padx=(0, 4))
         ttk.Button(_btn_row, text="Clear",
-                   command=self._clear_all).pack(side=tk.LEFT, padx=(0, 4))
-        _btn_row2 = ttk.Frame(left); _btn_row2.pack(fill=tk.X, padx=4, pady=(0, 2))
-        ttk.Button(_btn_row2, text="Copy CV",
-                   command=lambda: copy_figure_to_clipboard(self._cv_fig)).pack(
-                       side=tk.LEFT, padx=(0, 4))
-        ttk.Button(_btn_row2, text="Copy Cycle",
-                   command=lambda: copy_figure_to_clipboard(self._cyc_fig)).pack(
-                       side=tk.LEFT)
+                   command=self._clear_all).pack(side=tk.LEFT)
 
         # ── Results table ─────────────────────────────────────────
         ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
@@ -284,18 +277,32 @@ class CvActivationPanel(ttk.Frame):
         self._cv_fig = Figure(figsize=(8, 4), dpi=100)
         self._cv_ax  = self._cv_fig.add_subplot(111)
         self._cv_cv  = FigureCanvasTkAgg(self._cv_fig, master=_cv_frame)
-        self._cv_tb = NavigationToolbar2Tk(self._cv_cv, _cv_frame, pack_toolbar=False)
-        self._cv_tb.pack(side=tk.BOTTOM, fill=tk.X)
         self._cv_cv.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        _cv_tb_row = ttk.Frame(_cv_frame)
+        _cv_tb_row.pack(fill=tk.X)
+        self._cv_tb = NavigationToolbar2Tk(self._cv_cv, _cv_tb_row, pack_toolbar=False)
+        self._cv_tb.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self._cv_tb.update()
+        tk.Button(_cv_tb_row, text="Copy",
+                  command=lambda: copy_figure_to_clipboard(self._cv_fig),
+                  relief=tk.RAISED, borderwidth=1, padx=6).pack(
+                      side=tk.LEFT, padx=(4, 2), pady=1)
 
         _cyc_frame = ttk.Frame(_rpw)
         _rpw.add(_cyc_frame, weight=2)
         self._cyc_fig = Figure(figsize=(8, 3), dpi=100)
         self._cyc_ax  = self._cyc_fig.add_subplot(111)
         self._cyc_cv  = FigureCanvasTkAgg(self._cyc_fig, master=_cyc_frame)
-        self._cyc_tb = NavigationToolbar2Tk(self._cyc_cv, _cyc_frame, pack_toolbar=False)
-        self._cyc_tb.pack(side=tk.BOTTOM, fill=tk.X)
         self._cyc_cv.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        _cyc_tb_row = ttk.Frame(_cyc_frame)
+        _cyc_tb_row.pack(fill=tk.X)
+        self._cyc_tb = NavigationToolbar2Tk(self._cyc_cv, _cyc_tb_row, pack_toolbar=False)
+        self._cyc_tb.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self._cyc_tb.update()
+        tk.Button(_cyc_tb_row, text="Copy",
+                  command=lambda: copy_figure_to_clipboard(self._cyc_fig),
+                  relief=tk.RAISED, borderwidth=1, padx=6).pack(
+                      side=tk.LEFT, padx=(4, 2), pady=1)
 
         # ── Connect events ────────────────────────────────────────
         for cv in (self._cv_cv, self._cyc_cv):
