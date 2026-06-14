@@ -342,6 +342,7 @@ class CvActivationPanel(ttk.Frame):
 
         if self.files:
             self._switch_file(list(self.files.keys())[-1])
+            self._auto_set_e_target()
 
     def _remove_file(self):
         sel = self.file_listbox.curselection()
@@ -393,6 +394,26 @@ class CvActivationPanel(ttk.Frame):
         self._update_column_combos()
         self._restore_corrections()
         self._schedule()
+
+    def _auto_set_e_target(self):
+        """Set E_target to the most anodic (max) potential in the last cycle."""
+        entry = self.files.get(self.active_file)
+        if not entry:
+            return
+        xcol = self.x_var.get()
+        if not xcol or xcol not in entry["df"].columns:
+            return
+        df   = entry["df"]
+        ccol = self._get_cycle_col(df)
+        if ccol:
+            last_cn = sorted(df[ccol].unique())[-1]
+            sub = df[df[ccol] == last_cn]
+        else:
+            sub = df
+        E = sub[xcol].dropna().values
+        if len(E) == 0:
+            return
+        self.e_target_var.set(f"{float(np.max(E)):.4f}")
 
     # ════════════════════════════════════════════════════════════════
     # Column management
