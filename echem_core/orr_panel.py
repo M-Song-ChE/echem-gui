@@ -63,6 +63,23 @@ _GRID_STYLE_MAP = {
 
 _ANN_DOT_LABEL = "_orr_dot"
 
+_RPM_DEFAULTS = [400, 900, 1600, 2500]
+
+# Electrolyte parameters for Levich / limiting-current theoretical lines
+# (n, D_O2 cm²/s, ν cm²/s, C_O2 mol/cm³)
+_ELECTROLYTES = {
+    "0.1 M HClO₄":  (4, 1.93e-5, 1.005e-2, 1.26e-6),
+    "0.1 M KOH":    (4, 1.90e-5, 1.012e-2, 1.21e-6),
+    "0.5 M H₂SO₄":  (4, 1.40e-5, 1.000e-2, 1.10e-6),
+    "1 M KOH":      (4, 1.90e-5, 1.012e-2, 1.21e-6),
+    "1 M HClO₄":    (4, 1.93e-5, 1.000e-2, 1.21e-6),
+}
+
+
+def _safe_rpm_int(s) -> int:
+    try: return int(s)
+    except (ValueError, TypeError): return 0
+
 
 # ── Module-level helpers ─────────────────────────────────────────────────
 
@@ -739,7 +756,7 @@ class ORRPanel(ttk.Frame):
         ttk.Label(left, text="Analysis  (active sample)",
                   font=("", 9, "bold")).pack(anchor=tk.W, padx=4)
         _an_row = ttk.Frame(left)
-        _an_row.pack(fill=tk.X, padx=4, pady=(2, 2))
+        _an_row.pack(fill=tk.X, padx=4, pady=(2, 1))
         ttk.Button(_an_row, text="Tafel Analysis",
                    command=self._open_tafel_window).pack(side=tk.LEFT, padx=(0, 4))
         ttk.Button(_an_row, text="KL Analysis",
@@ -747,9 +764,13 @@ class ORRPanel(ttk.Frame):
         ttk.Button(_an_row, text="SA Analysis",
                    command=self._open_sa_window).pack(side=tk.LEFT, padx=(0, 4))
         ttk.Button(_an_row, text="Levich Plot",
-                   command=self._open_levich_window).pack(side=tk.LEFT, padx=(0, 4))
-        ttk.Button(_an_row, text="Sample Comparison",
-                   command=self._open_comparison_window).pack(side=tk.LEFT)
+                   command=self._open_levich_window).pack(side=tk.LEFT)
+        _an_row2 = ttk.Frame(left)
+        _an_row2.pack(fill=tk.X, padx=4, pady=(1, 2))
+        ttk.Button(_an_row2, text="Sample Comparison",
+                   command=self._open_comparison_window).pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Button(_an_row2, text="Lim. Current Compare",
+                   command=self._open_lc_comparison_window).pack(side=tk.LEFT)
 
         # ══ EXPORT ══════════════════════════════════════════════════
         ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
@@ -1260,7 +1281,8 @@ class ORRPanel(ttk.Frame):
                                       "linewidth": "1.5", "marker": "none"})
             added += 1
 
-        sentry["pairs"].sort(key=lambda p: (p.get("catalyst_id", ""), p.get("rpm_id", "")))
+        sentry["pairs"].sort(key=lambda p: (p.get("catalyst_id", ""),
+                                            _safe_rpm_int(p.get("rpm_id", ""))))
         if added:
             self._rebuild_pair_table(self.active_sample)
             self._auto_replot()
@@ -1313,6 +1335,20 @@ class ORRPanel(ttk.Frame):
                 _sep.pack(fill=tk.X, padx=2, pady=(6 if prev_cat is not None else 2, 0))
                 _sh = tk.Label(_sep, text="⠿", bg=_sep_bg, cursor="fleur", font=("", 10))
                 _sh.pack(side=tk.LEFT, padx=(4, 0))
+                # Group-level checkbox — toggles all pairs in this catalyst group
+                _cat_pairs = [p for p in pairs if p.get("catalyst_id") == cat]
+                _cat_en_val = all(p.get("enabled", True) for p in _cat_pairs)
+                _cat_en_var = tk.BooleanVar(value=_cat_en_val)
+                def _toggle_cat(bv=_cat_en_var, c=cat, sn=sample_name):
+                    v = bv.get()
+                    for _p in self.samples.get(sn, {}).get("pairs", []):
+                        if _p.get("catalyst_id") == c:
+                            _p["enabled"] = v
+                    self._rebuild_pair_table(sn)
+                    self._auto_replot()
+                tk.Checkbutton(_sep, variable=_cat_en_var, command=_toggle_cat,
+                               bg=_sep_bg, activebackground=_sep_bg,
+                               relief=tk.FLAT).pack(side=tk.LEFT, padx=(0, 0))
                 tk.Label(_sep, text=f"── {cat} ──", bg=_sep_bg,
                          font=("", 8, "bold"), anchor=tk.W, padx=4).pack(
                     side=tk.LEFT, fill=tk.X, expand=True)
@@ -2977,8 +3013,7 @@ class ORRPanel(ttk.Frame):
         _tres_y0 = [0]; _tres_h0 = [5]
         def _tres_start(e): _tres_y0[0] = e.y_root; _tres_h0[0] = int(res.cget("height"))
         def _tres_drag(e):
-            # handle is above text: drag down = larger text area
-            res.configure(height=max(2, _tres_h0[0] + int((e.y_root - _tres_y0[0]) / 16)))
+            res.configure(height=max(2, _tres_h0[0] - int((e.y_root - _tres_y0[0]) / 16)))
         _tres_handle.bind("<ButtonPress-1>", _tres_start)
         _tres_handle.bind("<B1-Motion>", _tres_drag)
 
@@ -3217,7 +3252,7 @@ class ORRPanel(ttk.Frame):
         _kres_y0 = [0]; _kres_h0 = [6]
         def _kres_start(e): _kres_y0[0] = e.y_root; _kres_h0[0] = int(res.cget("height"))
         def _kres_drag(e):
-            res.configure(height=max(2, _kres_h0[0] + int((e.y_root - _kres_y0[0]) / 16)))
+            res.configure(height=max(2, _kres_h0[0] - int((e.y_root - _kres_y0[0]) / 16)))
         _kres_handle.bind("<ButtonPress-1>", _kres_start)
         _kres_handle.bind("<B1-Motion>", _kres_drag)
 
@@ -3468,7 +3503,7 @@ class ORRPanel(ttk.Frame):
         _sres_y0 = [0]; _sres_h0 = [7]
         def _sres_start(e): _sres_y0[0] = e.y_root; _sres_h0[0] = int(res.cget("height"))
         def _sres_drag(e):
-            res.configure(height=max(2, _sres_h0[0] + int((e.y_root - _sres_y0[0]) / 16)))
+            res.configure(height=max(2, _sres_h0[0] - int((e.y_root - _sres_y0[0]) / 16)))
         _sres_handle.bind("<ButtonPress-1>", _sres_start)
         _sres_handle.bind("<B1-Motion>", _sres_drag)
 
@@ -3699,7 +3734,7 @@ class ORRPanel(ttk.Frame):
         _y0 = [0]; _h0 = [5]
         def _start(e): _y0[0] = e.y_root; _h0[0] = int(res.cget("height"))
         def _drag(e):
-            res.configure(height=max(2, _h0[0] + int((e.y_root - _y0[0]) / 16)))
+            res.configure(height=max(2, _h0[0] - int((e.y_root - _y0[0]) / 16)))
         _handle.bind("<ButtonPress-1>", _start)
         _handle.bind("<B1-Motion>", _drag)
 
@@ -3763,6 +3798,226 @@ class ORRPanel(ttk.Frame):
             res.configure(state=tk.NORMAL)
             res.delete("1.0", tk.END)
             res.insert(tk.END, "\n".join(lines))
+            res.configure(state=tk.DISABLED)
+
+        _compute()
+
+    # ════════════════════════════════════════════════════════════════
+    # Limiting Current Comparison
+    # ════════════════════════════════════════════════════════════════
+    def _open_lc_comparison_window(self):
+        """Plot |J_lim| vs √RPM for each sample/catalyst with Levich theory baseline."""
+        all_valid = []   # (sname, label, color, rpm, sqrt_omega, j_lim)
+        for sn in self.samples:
+            for E, J, rpm, lbl, col in self._get_curves_for_sample(sn):
+                if rpm > 0 and len(J) > 0:
+                    j_lim     = float(np.min(J))
+                    sqrt_omega = math.sqrt(2 * math.pi * rpm / 60.0)
+                    all_valid.append((sn, lbl, col, rpm, sqrt_omega, j_lim))
+
+        if len(all_valid) < 2:
+            messagebox.showwarning(
+                "Lim. Current Compare",
+                "Need at least 2 RPM curves with numeric RPM values.")
+            return
+
+        win = tk.Toplevel(self)
+        win.title("Limiting Current Comparison  |J_lim| vs √ω")
+        win.geometry("860x720")
+
+        _recompute_id = [None]
+        def _schedule(*_):
+            if _recompute_id[0]:
+                try: win.after_cancel(_recompute_id[0])
+                except Exception: pass
+            _recompute_id[0] = win.after(300, _compute)
+
+        # ── Theory section ──────────────────────────────────────────
+        _th = ttk.LabelFrame(win, text="Levich Theory Baseline")
+        _th.pack(fill=tk.X, padx=8, pady=(6, 0))
+        _th_g = ttk.Frame(_th); _th_g.pack(fill=tk.X, padx=6, pady=3)
+        for _r, (_hd, _bd) in enumerate([
+            ("Levich equation:",
+             "|J_lim| = 0.62·n·F·D^(2/3)·ν^(-1/6)·C·√ω  (ω = 2π·RPM/60)"),
+        ]):
+            ttk.Label(_th_g, text=_hd, font=("TkDefaultFont", 9, "bold"),
+                      anchor=tk.W).grid(row=_r, column=0, sticky=tk.W, pady=2)
+            ttk.Label(_th_g, text=f"  {_bd}", font=("TkDefaultFont", 9),
+                      anchor=tk.W).grid(row=_r, column=1, sticky=tk.W, padx=(4, 0), pady=2)
+
+        # ── Electrolyte selector + n + area ─────────────────────────
+        _ec_fr = ttk.Frame(win); _ec_fr.pack(fill=tk.X, padx=8, pady=(4, 0))
+        ttk.Label(_ec_fr, text="Electrolyte:").pack(side=tk.LEFT)
+        _elec_var = tk.StringVar(value=list(_ELECTROLYTES.keys())[0])
+        ttk.Combobox(_ec_fr, textvariable=_elec_var,
+                     values=list(_ELECTROLYTES.keys()),
+                     state="readonly", width=16).pack(side=tk.LEFT, padx=(4, 12))
+        _elec_var.trace_add("write", _schedule)
+        ttk.Label(_ec_fr, text="n (electrons):").pack(side=tk.LEFT)
+        _n_var = tk.StringVar(value="4")
+        ttk.Entry(_ec_fr, textvariable=_n_var, width=4).pack(side=tk.LEFT, padx=(4, 12))
+        _n_var.trace_add("write", _schedule)
+        ttk.Label(_ec_fr, text="Electrode area (cm²):").pack(side=tk.LEFT)
+        _area_var = tk.StringVar(value="0.196")
+        ttk.Entry(_ec_fr, textvariable=_area_var, width=7).pack(side=tk.LEFT, padx=(4, 12))
+        _area_var.trace_add("write", _schedule)
+        _show_theory_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(_ec_fr, text="Show theory line",
+                        variable=_show_theory_var,
+                        command=_schedule).pack(side=tk.LEFT)
+
+        # ── Curve selector ───────────────────────────────────────────
+        _sel_lf = ttk.LabelFrame(win, text="Samples / Catalysts")
+        _sel_lf.pack(fill=tk.X, padx=8, pady=(4, 0))
+        _sel_cv = tk.Canvas(_sel_lf, height=80, bd=0, highlightthickness=0)
+        _sel_sb = ttk.Scrollbar(_sel_lf, orient=tk.VERTICAL, command=_sel_cv.yview)
+        _sel_inner = tk.Frame(_sel_cv)
+        _sel_inner.bind("<Configure>",
+                        lambda e: _sel_cv.configure(scrollregion=_sel_cv.bbox("all")))
+        _sel_cv.create_window((0, 0), window=_sel_inner, anchor="nw")
+        _sel_cv.configure(yscrollcommand=_sel_sb.set)
+        _sel_sb.pack(side=tk.RIGHT, fill=tk.Y)
+        _sel_cv.pack(fill=tk.BOTH, expand=True, padx=4, pady=2)
+        _sel_cv.bind("<MouseWheel>",
+                     lambda e: _sel_cv.yview_scroll(-1*(e.delta//120), "units"))
+
+        # Group by sample → catalysts within sample
+        _by_samp = {}; _samp_order = []
+        for idx, (sn, lbl, col, rpm, sq, jl) in enumerate(all_valid):
+            if sn not in _by_samp: _by_samp[sn] = []; _samp_order.append(sn)
+            _by_samp[sn].append(idx)
+
+        _lsel_vars  = {}   # idx → BooleanVar
+        _samp_bvars = {}   # sname → BooleanVar (group toggle)
+
+        for sn in _samp_order:
+            sn_idxs = _by_samp[sn]
+            sn_bv   = tk.BooleanVar(value=True)
+            _samp_bvars[sn] = sn_bv
+            sn_row = tk.Frame(_sel_inner); sn_row.pack(anchor=tk.W, pady=(2, 0))
+            tk.Label(sn_row, text=f"  ▸ {sn}",
+                     font=("TkDefaultFont", 8, "italic"), fg="#555555").pack(
+                side=tk.LEFT)
+            tk.Checkbutton(sn_row, text="(all)", variable=sn_bv,
+                           command=lambda ids=sn_idxs, bv=sn_bv: [
+                               _lsel_vars[i].set(bv.get()) for i in ids] or _schedule(),
+                           font=("TkDefaultFont", 8, "bold")).pack(side=tk.LEFT)
+            # Unique catalysts within sample
+            _seen_cat = []
+            for idx in sn_idxs:
+                _, lbl, col, _, _, _ = all_valid[idx]
+                m = re.match(r'^\[(\w+)\]', lbl)
+                cat = m.group(1) if m else lbl
+                if cat not in _seen_cat:
+                    _seen_cat.append(cat)
+                    cat_idxs = [i for i in sn_idxs
+                                if (re.match(r'^\[(\w+)\]', all_valid[i][1]) or
+                                    type('', (), {'group': lambda s, n: all_valid[i][1]})).group(1) == cat]
+                    cat_bv = tk.BooleanVar(value=True)
+                    cat_row = tk.Frame(_sel_inner); cat_row.pack(anchor=tk.W)
+                    for i in cat_idxs:
+                        _lsel_vars[i] = tk.BooleanVar(value=True)
+                    tk.Checkbutton(cat_row, text=f"    [{cat}]", variable=cat_bv,
+                                   font=("TkDefaultFont", 8),
+                                   command=lambda idxs=cat_idxs, bv=cat_bv: [
+                                       _lsel_vars[i].set(bv.get()) for i in idxs
+                                   ] or _schedule()).pack(side=tk.LEFT)
+
+        # Fallback: any idx not yet in _lsel_vars
+        for idx in range(len(all_valid)):
+            _lsel_vars.setdefault(idx, tk.BooleanVar(value=True))
+
+        # ── Figure — bottom-packed first ─────────────────────────────
+        fig = Figure(figsize=(7.5, 3.8), dpi=100)
+        ax  = fig.add_subplot(111)
+        cv  = FigureCanvasTkAgg(fig, master=win)
+        tb  = NavigationToolbar2Tk(cv, win, pack_toolbar=False)
+        res = tk.Text(win, height=5, state=tk.DISABLED, font=("Courier", 9), wrap=tk.WORD)
+        _hdl = tk.Frame(win, height=6, bg="#888888", cursor="sb_v_double_arrow")
+        tb.pack(side=tk.BOTTOM, fill=tk.X, padx=8)
+        res.pack(side=tk.BOTTOM, fill=tk.X, padx=8)
+        _hdl.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=(1, 1))
+        cv.get_tk_widget().pack(fill=tk.BOTH, expand=True, padx=8)
+        _lcy0 = [0]; _lch0 = [5]
+        def _lc_start(e): _lcy0[0] = e.y_root; _lch0[0] = int(res.cget("height"))
+        def _lc_drag(e):
+            res.configure(height=max(2, _lch0[0] - int((e.y_root - _lcy0[0]) / 16)))
+        _hdl.bind("<ButtonPress-1>", _lc_start)
+        _hdl.bind("<B1-Motion>",     _lc_drag)
+
+        # ── Compute ───────────────────────────────────────────────────
+        _LS = ['-', '--', '-.', ':']
+        _MK = ['o', 's', '^', 'D', 'v', 'P']
+        F_const = 96485.0
+
+        def _compute():
+            ax.clear()
+            lines_out = []
+            # Group selected points by sample→catalyst for one line each
+            _grp = {}; _grp_order = []
+            for idx, (sn, lbl, col, rpm, sq, jl) in enumerate(all_valid):
+                if not _lsel_vars.get(idx, tk.BooleanVar(value=True)).get():
+                    continue
+                m = re.match(r'^\[(\w+)\]', lbl)
+                cat = m.group(1) if m else lbl
+                key = (sn, cat)
+                if key not in _grp: _grp[key] = []; _grp_order.append(key)
+                _grp[key].append((rpm, sq, jl, col))
+
+            _palette_idx = 0
+            for (sn, cat), pts in [(k, _grp[k]) for k in _grp_order]:
+                pts.sort(key=lambda t: t[0])
+                sq_arr  = np.array([t[1] for t in pts])
+                jl_arr  = np.abs([t[2] for t in pts])
+                col     = pts[0][3]
+                ls      = _LS[_palette_idx % len(_LS)]
+                mk      = _MK[_palette_idx % len(_MK)]
+                _palette_idx += 1
+                lbl_txt = f"[{cat}] {sn}" if len(_grp) > 1 else f"[{cat}]"
+                ax.plot(sq_arr, jl_arr, marker=mk, ls=ls, color=col,
+                        lw=1.6, ms=5, label=lbl_txt)
+                # Linear fit through origin
+                if len(sq_arr) >= 2:
+                    slope = float(np.dot(sq_arr, jl_arr) / np.dot(sq_arr, sq_arr))
+                    x_fit = np.linspace(0, sq_arr.max() * 1.05, 60)
+                    ax.plot(x_fit, slope * x_fit, ls="--", color=col, lw=0.8, alpha=0.6)
+                    lines_out.append(
+                        f"[{cat}] {sn}: slope={slope:.4f} mA/(rad/s)^0.5  "
+                        f"(pts: " + ", ".join(
+                            f"{int(t[0])} rpm→{abs(t[2]):.3f} mA" for t in pts) + ")")
+
+            # Theoretical baseline
+            if _show_theory_var.get():
+                try:
+                    elec = _ELECTROLYTES.get(_elec_var.get(), list(_ELECTROLYTES.values())[0])
+                    n, D, nu, C = elec
+                    n  = float(_n_var.get()) if _n_var.get().strip() else n
+                    area = float(_area_var.get())
+                    B  = 0.62 * n * F_const * (D ** (2/3)) * (nu ** (-1/6)) * C * 1000.0
+                    B_total = B * area   # mA per (rad/s)^0.5
+                    sq_max = max((pts[-1][1] for pts in _grp.values()), default=5.0)
+                    x_th = np.linspace(0, sq_max * 1.1, 80)
+                    ax.plot(x_th, B_total * x_th, "k--", lw=1.5, alpha=0.7,
+                            label=f"Theory ({_elec_var.get()}, n={n:.0f}, A={area} cm²)")
+                    lines_out.append(
+                        f"Theory B={B:.4f} mA·s^0.5/(rad^0.5·cm²), "
+                        f"total slope={B_total:.4f} mA/(rad/s)^0.5")
+                except (ValueError, KeyError):
+                    pass
+
+            ax.set_xlabel("√ω  [(rad/s)^0.5]", fontsize=9)
+            ax.set_ylabel("|J_lim|  (mA)", fontsize=9)
+            ax.set_title("Limiting Current vs √ω", fontsize=10)
+            ax.tick_params(labelsize=8)
+            ax.legend(fontsize=7, frameon=True)
+            ax.grid(True, alpha=0.3)
+            fig.tight_layout(pad=0.8)
+            fig.set_layout_engine("none")
+            cv.draw_idle()
+            res.configure(state=tk.NORMAL)
+            res.delete("1.0", tk.END)
+            res.insert(tk.END, "\n".join(lines_out) if lines_out
+                       else "Select at least one curve above.")
             res.configure(state=tk.DISABLED)
 
         _compute()
