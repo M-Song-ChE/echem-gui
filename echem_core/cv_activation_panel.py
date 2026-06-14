@@ -244,6 +244,11 @@ class CvActivationPanel(ttk.Frame):
                    command=self._update_all).pack(side=tk.LEFT, padx=(0, 4))
         ttk.Button(_btn_row, text="Clear",
                    command=self._clear_all).pack(side=tk.LEFT)
+        _btn_row2 = ttk.Frame(left); _btn_row2.pack(fill=tk.X, padx=4, pady=(0, 2))
+        ttk.Button(_btn_row2, text="Apply Settings to All Files",
+                   command=self._apply_settings_to_all).pack(side=tk.LEFT)
+        ttk.Label(_btn_row2, text="(E target / direction / window / threshold)",
+                  foreground="gray", font=("", 7)).pack(side=tk.LEFT, padx=(6, 0))
 
         # ── Results table ─────────────────────────────────────────
         ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
@@ -403,6 +408,19 @@ class CvActivationPanel(ttk.Frame):
         self._update_column_combos()
         self._restore_state()
         self._schedule()
+
+    def _apply_settings_to_all(self):
+        """Broadcast current activation params to every file (corrections excluded)."""
+        self._save_active_state()
+        src = self.files.get(self.active_file)
+        if not src:
+            return
+        for entry in self.files.values():
+            entry["e_target"]  = src["e_target"]
+            entry["direction"] = src["direction"]
+            entry["window"]    = src["window"]
+            entry["threshold"] = src["threshold"]
+        self._update_all()
 
     def _save_active_state(self):
         """Save current UI values into the active file's entry."""
