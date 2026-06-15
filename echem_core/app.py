@@ -1331,58 +1331,59 @@ class EchemGUI(tk.Tk):
     def _build_ui(self):
         self._build_menubar()
 
-        notebook = ttk.Notebook(self)
-        notebook.pack(fill=tk.BOTH, expand=True, padx=6, pady=4)
+        # Two-row tab bar with a shared content container.
+        # ttk.Notebook does not natively support multi-row tabs, so we use a
+        # custom button-strip + Frame.pack_forget swap.
+        tabs_outer = ttk.Frame(self)
+        tabs_outer.pack(fill=tk.X, padx=6, pady=(4, 0))
+        row1 = ttk.Frame(tabs_outer); row1.pack(fill=tk.X)
+        row2 = ttk.Frame(tabs_outer); row2.pack(fill=tk.X)
 
-        gen_tab = ttk.Frame(notebook)
-        notebook.add(gen_tab, text="General E.Chem")
-        gen_panel = EchemPanel(gen_tab, show_ecsa=False, show_log=True)
-        gen_panel.pack(fill=tk.BOTH, expand=True)
-        self._panels["general"] = gen_panel
+        content = ttk.Frame(self)
+        content.pack(fill=tk.BOTH, expand=True, padx=6, pady=(2, 4))
 
-        multi_tab = ttk.Frame(notebook)
-        notebook.add(multi_tab, text="Multi E.Chem")
-        multi_panel = MultiEchemPanel(multi_tab)
-        multi_panel.pack(fill=tk.BOTH, expand=True)
-        self._panels["multi_echem"] = multi_panel
+        # (key, label, row, builder) — row 1 = General/Multi/Multi2/Nyquist,
+        #                              row 2 = ORR/ECSA_Hupd/ECSA_Cdl/CV Activation
+        _builders = [
+            ("general",       "General E.Chem", row1,
+                              lambda p: EchemPanel(p, show_ecsa=False, show_log=True)),
+            ("multi_echem",   "Multi E.Chem",   row1, MultiEchemPanel),
+            ("multi_echem2",  "Multi E.Chem 2", row1, MultiEchem2Panel),
+            ("nyquist",       "Nyquist Plot",   row1, EISPanel),
+            ("orr",           "ORR Analysis",   row2, ORRPanel),
+            ("hupd",          "ECSA_Hupd",      row2, HupdPanel),
+            ("ecsa",          "ECSA_Cdl",       row2, ECSAPanel),
+            ("cv_activation", "CV Activation",  row2, CvActivationPanel),
+        ]
 
-        multi2_tab = ttk.Frame(notebook)
-        notebook.add(multi2_tab, text="Multi E.Chem 2")
-        multi2_panel = MultiEchem2Panel(multi2_tab)
-        multi2_panel.pack(fill=tk.BOTH, expand=True)
-        self._panels["multi_echem2"] = multi2_panel
+        self._tab_buttons = {}
+        self._current_tab = None
+        for key, text, row, ctor in _builders:
+            panel = ctor(content)
+            self._panels[key] = panel
+            btn = tk.Button(row, text=text, relief=tk.RAISED,
+                            padx=10, pady=4,
+                            command=lambda k=key: self._select_tab(k))
+            btn.pack(side=tk.LEFT, padx=2, pady=2, expand=True, fill=tk.X)
+            self._tab_buttons[key] = btn
 
-        eis_tab = ttk.Frame(notebook)
-        notebook.add(eis_tab, text="Nyquist Plot")
-        eis_panel = EISPanel(eis_tab)
-        eis_panel.pack(fill=tk.BOTH, expand=True)
-        self._panels["nyquist"] = eis_panel
-
-        orr_tab = ttk.Frame(notebook)
-        notebook.add(orr_tab, text="ORR Analysis")
-        orr_panel = ORRPanel(orr_tab)
-        orr_panel.pack(fill=tk.BOTH, expand=True)
-        self._panels["orr"] = orr_panel
-
-        hupd_tab = ttk.Frame(notebook)
-        notebook.add(hupd_tab, text="ECSA_Hupd")
-        hupd_panel = HupdPanel(hupd_tab)
-        hupd_panel.pack(fill=tk.BOTH, expand=True)
-        self._panels["hupd"] = hupd_panel
-
-        ecsa_tab = ttk.Frame(notebook)
-        notebook.add(ecsa_tab, text="ECSA_Cdl")
-        ecsa_panel = ECSAPanel(ecsa_tab)
-        ecsa_panel.pack(fill=tk.BOTH, expand=True)
-        self._panels["ecsa"] = ecsa_panel
-
-        actv_tab = ttk.Frame(notebook)
-        notebook.add(actv_tab, text="CV Activation")
-        actv_panel = CvActivationPanel(actv_tab)
-        actv_panel.pack(fill=tk.BOTH, expand=True)
-        self._panels["cv_activation"] = actv_panel
+        self._select_tab("general")
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _select_tab(self, key):
+        """Show the panel for *key* and pack-forget all others."""
+        if key not in self._panels or key == self._current_tab:
+            # Still refresh button reliefs on first call when _current_tab is None
+            if key not in self._panels:
+                return
+        for k, p in self._panels.items():
+            try: p.pack_forget()
+            except Exception: pass
+        for k, btn in self._tab_buttons.items():
+            btn.configure(relief=(tk.SUNKEN if k == key else tk.RAISED))
+        self._panels[key].pack(fill=tk.BOTH, expand=True)
+        self._current_tab = key
 
     def _build_menubar(self):
         menubar = tk.Menu(self)

@@ -80,6 +80,179 @@ def copy_figure_to_clipboard(fig):
 _ANN_DOT_LABEL = "_click_dot"
 
 
+def attach_plot_assistant(parent, fig, axes, canvas):
+    """Build a horizontal "plot assistant" ribbon and return it (unpacked).
+
+    Provides: title override (first axis), font sizes (title/axis/tick/legend),
+    legend frame toggle, legend draggable. Hooks ``canvas.draw`` and
+    ``canvas.draw_idle`` so user overrides are re-applied on every redraw
+    (including after the window's ``_compute()`` rebuilds the plot).
+
+    Parameters
+    ----------
+    parent : tk widget
+        Parent container — caller must ``pack``/``grid`` the returned Frame.
+    fig : matplotlib.figure.Figure
+    axes : Axes or list of Axes
+    canvas : FigureCanvasTkAgg
+    """
+    import tkinter as _tk
+    from tkinter import ttk as _ttk
+
+    if not isinstance(axes, (list, tuple)):
+        axes = [axes]
+
+    title_var    = _tk.StringVar(value="")
+    fs_title_var = _tk.StringVar(value="11")
+    fs_axis_var  = _tk.StringVar(value="9")
+    fs_tick_var  = _tk.StringVar(value="8")
+    fs_lgd_var   = _tk.StringVar(value="7")
+    frame_var    = _tk.BooleanVar(value=True)
+    plot_w_var   = _tk.StringVar(value="")  # blank = auto-fit window
+    plot_h_var   = _tk.StringVar(value="")
+
+    _applying = [False]
+
+    def _int(var, default):
+        try: return max(4, int(float(var.get())))
+        except (ValueError, TypeError): return default
+
+    def _apply():
+        if _applying[0]:
+            return
+        _applying[0] = True
+        try:
+            tfs = _int(fs_title_var, 11)
+            afs = _int(fs_axis_var,   9)
+            kfs = _int(fs_tick_var,   8)
+            lfs = _int(fs_lgd_var,    7)
+            user_t = title_var.get().strip()
+            for i, ax in enumerate(axes):
+                if i == 0 and user_t:
+                    ax.set_title(user_t)
+                if ax.title is not None and ax.title.get_text():
+                    ax.title.set_fontsize(tfs)
+                if ax.xaxis.label.get_text():
+                    ax.xaxis.label.set_fontsize(afs)
+                if ax.yaxis.label.get_text():
+                    ax.yaxis.label.set_fontsize(afs)
+                ax.tick_params(labelsize=kfs)
+                leg = ax.get_legend()
+                if leg is not None:
+                    leg.set_frame_on(frame_var.get())
+                    # Determine current legend font size (uniform across texts)
+                    _cur_fs = None
+                    for _txt in leg.get_texts():
+                        _cur_fs = _txt.get_fontsize()
+                        break
+                    if _cur_fs and abs(_cur_fs - lfs) > 1e-6:
+                        _ratio = float(lfs) / float(_cur_fs)
+                        # Scale text font sizes
+                        for _txt in leg.get_texts():
+                            _txt.set_fontsize(lfs)
+                        # Scale markers / handle icons / row+col spacing → full legend resize
+                        try: _scale_legend_spacing(leg, _ratio)
+                        except Exception: pass
+                    # Exclude legend from constrained_layout so it doesn't
+                    # shrink the axes — legend overlays the plot instead
+                    try: leg.set_in_layout(False)
+                    except Exception: pass
+                    try: leg.set_draggable(True)
+                    except Exception: pass
+        finally:
+            _applying[0] = False
+
+    # Wrap canvas.draw / draw_idle so overrides apply on every redraw
+    _orig_draw      = canvas.draw
+    _orig_draw_idle = canvas.draw_idle
+
+    def _wrap_draw(*a, **kw):
+        if not _applying[0]:
+            _apply()
+        return _orig_draw(*a, **kw)
+
+    def _wrap_draw_idle(*a, **kw):
+        if not _applying[0]:
+            _apply()
+        return _orig_draw_idle(*a, **kw)
+
+    canvas.draw      = _wrap_draw
+    canvas.draw_idle = _wrap_draw_idle
+
+    def _on_change(*_):
+        _apply()
+        _orig_draw_idle()
+
+    # Plot size (W × H inches) — blank entries = auto-fit window
+    _pack_info = [None]   # original pack settings (captured on first resize)
+
+    def _apply_size(*_):
+        widget = canvas.get_tk_widget()
+        if _pack_info[0] is None:
+            try: _pack_info[0] = widget.pack_info()
+            except Exception: _pack_info[0] = {}
+        w_str = plot_w_var.get().strip()
+        h_str = plot_h_var.get().strip()
+        if not w_str or not h_str:
+            # Restore auto-fit
+            try: widget.pack_configure(fill=_tk.BOTH, expand=True)
+            except Exception: pass
+            _orig_draw_idle()
+            return
+        try:
+            w = float(w_str); h = float(h_str)
+        except ValueError:
+            return
+        if w <= 0 or h <= 0:
+            return
+        w = max(1.5, min(50.0, w))
+        h = max(1.0, min(50.0, h))
+        dpi = fig.get_dpi() or 100
+        try:
+            widget.pack_configure(fill=_tk.NONE, expand=False)
+            widget.configure(width=int(w * dpi), height=int(h * dpi))
+        except Exception:
+            pass
+        try: fig.set_size_inches(w, h, forward=False)
+        except Exception: pass
+        _orig_draw_idle()
+
+    # Build ribbon
+    bar = _ttk.Frame(parent)
+    _ttk.Label(bar, text="Title:").pack(side=_tk.LEFT)
+    _te = _ttk.Entry(bar, textvariable=title_var, width=22)
+    _te.pack(side=_tk.LEFT, padx=(2, 8))
+    _te.bind("<Return>",   _on_change)
+    _te.bind("<FocusOut>", _on_change)
+
+    for label, var in [("Title fs:", fs_title_var),
+                       ("Axis fs:",  fs_axis_var),
+                       ("Tick fs:",  fs_tick_var),
+                       ("Lgd fs:",   fs_lgd_var)]:
+        _ttk.Label(bar, text=label).pack(side=_tk.LEFT)
+        _en = _ttk.Entry(bar, textvariable=var, width=4)
+        _en.pack(side=_tk.LEFT, padx=(1, 6))
+        _en.bind("<Return>",   _on_change)
+        _en.bind("<FocusOut>", _on_change)
+
+    _ttk.Checkbutton(bar, text="Legend frame", variable=frame_var,
+                     command=_on_change).pack(side=_tk.LEFT, padx=(4, 0))
+
+    # Plot size (inches)
+    _ttk.Label(bar, text="  W:").pack(side=_tk.LEFT)
+    _we = _ttk.Entry(bar, textvariable=plot_w_var, width=4)
+    _we.pack(side=_tk.LEFT, padx=(1, 0))
+    _we.bind("<Return>",   _apply_size)
+    _we.bind("<FocusOut>", _apply_size)
+    _ttk.Label(bar, text="H:").pack(side=_tk.LEFT, padx=(2, 0))
+    _he = _ttk.Entry(bar, textvariable=plot_h_var, width=4)
+    _he.pack(side=_tk.LEFT, padx=(1, 0))
+    _he.bind("<Return>",   _apply_size)
+    _he.bind("<FocusOut>", _apply_size)
+
+    return bar
+
+
 # Maps J density range units to the underlying current base unit
 _J_TO_BASE = {"A/cm²": "A", "mA/cm²": "mA", "µA/cm²": "µA", "nA/cm²": "nA"}
 

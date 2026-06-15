@@ -237,6 +237,103 @@ class CvActivationPanel(ttk.Frame):
                         variable=self.overlay_all_var,
                         command=self._schedule).pack(side=tk.LEFT)
 
+        # ── Display Settings ──────────────────────────────────────
+        ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
+        ttk.Label(left, text="Display", font=("", 9, "bold")).pack(anchor=tk.W, padx=4)
+
+        # Layout selector (1x2 = side-by-side, 2x1 = stacked)
+        _lay_row = ttk.Frame(left); _lay_row.pack(fill=tk.X, padx=4, pady=2)
+        ttk.Label(_lay_row, text="Layout:", width=12, anchor=tk.W).pack(side=tk.LEFT)
+        self.layout_var = tk.StringVar(value="1x2")
+        _lay_cb = ttk.Combobox(_lay_row, textvariable=self.layout_var,
+                                values=["1x2", "2x1"], state="readonly", width=6)
+        _lay_cb.pack(side=tk.LEFT, padx=(2, 0))
+        _lay_cb.bind("<<ComboboxSelected>>", lambda e: self._apply_layout())
+
+        # Plot size (W × H inches, per figure)
+        _ps_row = ttk.Frame(left); _ps_row.pack(fill=tk.X, padx=4, pady=2)
+        ttk.Label(_ps_row, text="Plot size (in):", width=12, anchor=tk.W).pack(side=tk.LEFT)
+        ttk.Label(_ps_row, text="W").pack(side=tk.LEFT)
+        self.plot_w_var = tk.StringVar(value="6.0")
+        _pw_e = ttk.Entry(_ps_row, textvariable=self.plot_w_var, width=5)
+        _pw_e.pack(side=tk.LEFT, padx=(1, 6))
+        ttk.Label(_ps_row, text="H").pack(side=tk.LEFT)
+        self.plot_h_var = tk.StringVar(value="5.0")
+        _ph_e = ttk.Entry(_ps_row, textvariable=self.plot_h_var, width=5)
+        _ph_e.pack(side=tk.LEFT, padx=(1, 0))
+        for _e in (_pw_e, _ph_e):
+            _e.bind("<Return>",   lambda ev: self._apply_plot_size())
+            _e.bind("<FocusOut>", lambda ev: self._apply_plot_size())
+
+        # Font sizes — separate per element type
+        def _fs_field(row_parent, label, var_name, default):
+            row = ttk.Frame(row_parent); row.pack(fill=tk.X, padx=4, pady=1)
+            ttk.Label(row, text=label, width=14, anchor=tk.W).pack(side=tk.LEFT)
+            sv = tk.StringVar(value=str(default))
+            setattr(self, var_name, sv)
+            e = ttk.Entry(row, textvariable=sv, width=5)
+            e.pack(side=tk.LEFT, padx=(2, 0))
+            e.bind("<Return>",   lambda ev: self._schedule())
+            e.bind("<FocusOut>", lambda ev: self._schedule())
+
+        _fs_field(left, "Title fs:",       "fs_title_var",  11)
+        _fs_field(left, "Axis label fs:",  "fs_axis_var",    9)
+        _fs_field(left, "Tick fs:",        "fs_tick_var",    8)
+        _fs_field(left, "Legend fs:",      "fs_legend_var",  7)
+        _fs_field(left, "Annot. fs:",      "fs_annot_var",  10)
+
+        # Custom plot titles
+        _tit1_row = ttk.Frame(left); _tit1_row.pack(fill=tk.X, padx=4, pady=(4, 1))
+        ttk.Label(_tit1_row, text="CV title:", width=12, anchor=tk.W).pack(side=tk.LEFT)
+        self.cv_title_var = tk.StringVar(value="")
+        _ct1 = ttk.Entry(_tit1_row, textvariable=self.cv_title_var)
+        _ct1.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(2, 0))
+        _ct1.bind("<Return>",   lambda e: self._save_titles_and_schedule())
+        _ct1.bind("<FocusOut>", lambda e: self._save_titles_and_schedule())
+
+        _tit2_row = ttk.Frame(left); _tit2_row.pack(fill=tk.X, padx=4, pady=(1, 2))
+        ttk.Label(_tit2_row, text="Cycle title:", width=12, anchor=tk.W).pack(side=tk.LEFT)
+        self.cyc_title_var = tk.StringVar(value="")
+        _ct2 = ttk.Entry(_tit2_row, textvariable=self.cyc_title_var)
+        _ct2.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(2, 0))
+        _ct2.bind("<Return>",   lambda e: self._schedule())
+        _ct2.bind("<FocusOut>", lambda e: self._schedule())
+
+        ttk.Label(left, text="(blank = auto; CV title is per-file)",
+                  foreground="gray", font=("", 8)).pack(anchor=tk.W, padx=4)
+
+        # Axis range — per plot (blank = auto-fit).
+        # CV range is per-file (saved into entry on FocusOut/Return);
+        # Cycle range is shared across files (panel-level).
+        def _range_row(parent, label, var_lo_name, var_hi_name, per_file=False):
+            row = ttk.Frame(parent); row.pack(fill=tk.X, padx=4, pady=1)
+            ttk.Label(row, text=label, width=12, anchor=tk.W).pack(side=tk.LEFT)
+            ttk.Label(row, text="min").pack(side=tk.LEFT)
+            lo = tk.StringVar(value="");  setattr(self, var_lo_name, lo)
+            e1 = ttk.Entry(row, textvariable=lo, width=7)
+            e1.pack(side=tk.LEFT, padx=(2, 4))
+            ttk.Label(row, text="max").pack(side=tk.LEFT)
+            hi = tk.StringVar(value="");  setattr(self, var_hi_name, hi)
+            e2 = ttk.Entry(row, textvariable=hi, width=7)
+            e2.pack(side=tk.LEFT, padx=(2, 0))
+            if per_file:
+                _cb = lambda ev: self._save_corr_and_schedule()
+            else:
+                _cb = lambda ev: self._schedule()
+            for _e in (e1, e2):
+                _e.bind("<Return>",   _cb)
+                _e.bind("<FocusOut>", _cb)
+
+        ttk.Label(left, text="CV plot range (per-file):",
+                  font=("", 8, "italic")).pack(anchor=tk.W, padx=4, pady=(4, 0))
+        _range_row(left, "X (E):", "cv_xmin_var", "cv_xmax_var", per_file=True)
+        _range_row(left, "Y (I):", "cv_ymin_var", "cv_ymax_var", per_file=True)
+
+        ttk.Label(left, text="Cycle plot range:",
+                  font=("", 8, "italic")).pack(anchor=tk.W, padx=4, pady=(4, 0))
+        _range_row(left, "X (cycle):", "cyc_xmin_var", "cyc_xmax_var")
+        _range_row(left, "Y (J):",     "cyc_ymin_var", "cyc_ymax_var")
+
         # ── Buttons ───────────────────────────────────────────────
         ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
         _btn_row = ttk.Frame(left); _btn_row.pack(fill=tk.X, padx=4, pady=2)
@@ -279,19 +376,42 @@ class CvActivationPanel(ttk.Frame):
         self._results_tv.tag_configure("pass", background="#c8e6c9")
         self._results_tv.tag_configure("fail", background="#ffcdd2")
 
-        # ── Right: two stacked figures ────────────────────────────
+        # ── Right: scrollable area with two figures (layout-driven) ─
         right = ttk.Frame(body)
         body.add(right, weight=1)
-        _rpw = ttk.PanedWindow(right, orient=tk.VERTICAL)
-        _rpw.pack(fill=tk.BOTH, expand=True)
+        right.rowconfigure(0, weight=1)
+        right.columnconfigure(0, weight=1)
 
-        _cv_frame = ttk.Frame(_rpw)
-        _rpw.add(_cv_frame, weight=3)
-        self._cv_fig = Figure(figsize=(8, 4), dpi=100)
+        _plot_sc = tk.Canvas(right, highlightthickness=0)
+        _right_vs = ttk.Scrollbar(right, orient=tk.VERTICAL,   command=_plot_sc.yview)
+        _right_hs = ttk.Scrollbar(right, orient=tk.HORIZONTAL, command=_plot_sc.xview)
+        _plot_sc.configure(yscrollcommand=_right_vs.set, xscrollcommand=_right_hs.set)
+        _right_vs.grid(row=0, column=1, sticky="ns")
+        _right_hs.grid(row=1, column=0, sticky="ew")
+        _plot_sc.grid(row=0, column=0, sticky="nsew")
+        _plot_sc.bind("<MouseWheel>",
+                       lambda e: _plot_sc.yview_scroll(-1*(e.delta//120), "units"))
+        _plot_sc.bind("<Shift-MouseWheel>",
+                       lambda e: _plot_sc.xview_scroll(-1*(e.delta//120), "units"))
+        self._plot_sc = _plot_sc
+
+        _plots_frame = ttk.Frame(_plot_sc)
+        _plot_sc.create_window((0, 0), window=_plots_frame, anchor=tk.NW)
+        _plots_frame.bind("<Configure>",
+                          lambda e: _plot_sc.configure(scrollregion=_plot_sc.bbox("all")))
+        self._plots_frame = _plots_frame
+
+        _fw = float(self.plot_w_var.get())
+        _fh = float(self.plot_h_var.get())
+
+        # CV figure
+        self._cv_frame = ttk.Frame(_plots_frame)
+        self._cv_fig = Figure(figsize=(_fw, _fh), dpi=100, constrained_layout=True)
         self._cv_ax  = self._cv_fig.add_subplot(111)
-        self._cv_cv  = FigureCanvasTkAgg(self._cv_fig, master=_cv_frame)
-        self._cv_cv.get_tk_widget().pack(fill=tk.BOTH, expand=True)
-        _cv_tb_row = ttk.Frame(_cv_frame)
+        self._cv_cv  = FigureCanvasTkAgg(self._cv_fig, master=self._cv_frame)
+        self._cv_cv.get_tk_widget().pack()
+        self._cv_cv.get_tk_widget().config(width=int(_fw * 100), height=int(_fh * 100))
+        _cv_tb_row = ttk.Frame(self._cv_frame)
         _cv_tb_row.pack(fill=tk.X)
         self._cv_tb = NavigationToolbar2Tk(self._cv_cv, _cv_tb_row, pack_toolbar=False)
         self._cv_tb.pack(side=tk.LEFT, fill=tk.X, expand=True)
@@ -301,13 +421,14 @@ class CvActivationPanel(ttk.Frame):
                   relief=tk.RAISED, borderwidth=1, padx=6).pack(
                       side=tk.LEFT, padx=(4, 2), pady=1)
 
-        _cyc_frame = ttk.Frame(_rpw)
-        _rpw.add(_cyc_frame, weight=2)
-        self._cyc_fig = Figure(figsize=(8, 3), dpi=100)
+        # Cycle figure
+        self._cyc_frame = ttk.Frame(_plots_frame)
+        self._cyc_fig = Figure(figsize=(_fw, _fh), dpi=100, constrained_layout=True)
         self._cyc_ax  = self._cyc_fig.add_subplot(111)
-        self._cyc_cv  = FigureCanvasTkAgg(self._cyc_fig, master=_cyc_frame)
-        self._cyc_cv.get_tk_widget().pack(fill=tk.BOTH, expand=True)
-        _cyc_tb_row = ttk.Frame(_cyc_frame)
+        self._cyc_cv  = FigureCanvasTkAgg(self._cyc_fig, master=self._cyc_frame)
+        self._cyc_cv.get_tk_widget().pack()
+        self._cyc_cv.get_tk_widget().config(width=int(_fw * 100), height=int(_fh * 100))
+        _cyc_tb_row = ttk.Frame(self._cyc_frame)
         _cyc_tb_row.pack(fill=tk.X)
         self._cyc_tb = NavigationToolbar2Tk(self._cyc_cv, _cyc_tb_row, pack_toolbar=False)
         self._cyc_tb.pack(side=tk.LEFT, fill=tk.X, expand=True)
@@ -317,7 +438,13 @@ class CvActivationPanel(ttk.Frame):
                   relief=tk.RAISED, borderwidth=1, padx=6).pack(
                       side=tk.LEFT, padx=(4, 2), pady=1)
 
+        # Initial layout: 1x2
+        self._apply_layout()
+
         # ── Connect events ────────────────────────────────────────
+        # Legend tracking — for hit testing in mouse handlers
+        self._cv_legend  = None
+        self._cyc_legend = None
         for cv in (self._cv_cv, self._cyc_cv):
             cv.mpl_connect("scroll_event",        self._on_scroll)
             cv.mpl_connect("button_press_event",  self._on_press)
@@ -351,6 +478,9 @@ class CvActivationPanel(ttk.Frame):
                 "window": "10", "threshold": "2.0",
                 "color": _TRACE_COLORS[color_idx],
                 "result": None,
+                "custom_cv_title": "",
+                "cv_xmin": "", "cv_xmax": "",
+                "cv_ymin": "", "cv_ymax": "",
             }
             self._init_entry_defaults(entry)   # auto-detect cols + e_target
             self.files[short] = entry
@@ -442,6 +572,14 @@ class CvActivationPanel(ttk.Frame):
         entry["x_col"]     = self.x_var.get()
         entry["y_col"]     = self.y_var.get()
         entry["cyc_col"]   = self.cyc_var.get()
+        if hasattr(self, "cv_title_var"):
+            entry["custom_cv_title"] = self.cv_title_var.get()
+        # Per-file CV plot axis range (blank = auto)
+        if hasattr(self, "cv_xmin_var"):
+            entry["cv_xmin"] = self.cv_xmin_var.get()
+            entry["cv_xmax"] = self.cv_xmax_var.get()
+            entry["cv_ymin"] = self.cv_ymin_var.get()
+            entry["cv_ymax"] = self.cv_ymax_var.get()
 
     def _init_entry_defaults(self, entry):
         """Auto-detect columns and e_target for a freshly created entry (no UI touch)."""
@@ -568,6 +706,14 @@ class CvActivationPanel(ttk.Frame):
         self.direction_var.set(entry.get("direction", "Anodic"))
         self.window_var.set(entry.get("window", "10"))
         self.threshold_var.set(entry.get("threshold", "2.0"))
+        if hasattr(self, "cv_title_var"):
+            self.cv_title_var.set(entry.get("custom_cv_title", "") or "")
+        # Per-file CV plot axis range (blank = auto)
+        if hasattr(self, "cv_xmin_var"):
+            self.cv_xmin_var.set(entry.get("cv_xmin", "") or "")
+            self.cv_xmax_var.set(entry.get("cv_xmax", "") or "")
+            self.cv_ymin_var.set(entry.get("cv_ymin", "") or "")
+            self.cv_ymax_var.set(entry.get("cv_ymax", "") or "")
 
     def _save_corr_and_schedule(self):
         self._save_active_state()
@@ -709,6 +855,72 @@ class CvActivationPanel(ttk.Frame):
                       tags=(tag,))
 
     # ════════════════════════════════════════════════════════════════
+    # Display helpers: layout, plot-size, fonts
+    # ════════════════════════════════════════════════════════════════
+    def _fs(self, var, default):
+        """Read a font-size StringVar with fallback to default."""
+        try:
+            return max(4, int(float(var.get())))
+        except (ValueError, TypeError, AttributeError):
+            return default
+
+    def _apply_layout(self):
+        """Arrange CV/cycle frames inside _plots_frame per layout_var."""
+        for w in (self._cv_frame, self._cyc_frame):
+            w.grid_forget()
+        if self.layout_var.get() == "2x1":
+            self._cv_frame.grid(row=0,  column=0, padx=4, pady=4, sticky="nw")
+            self._cyc_frame.grid(row=1, column=0, padx=4, pady=4, sticky="nw")
+        else:  # 1x2
+            self._cv_frame.grid(row=0,  column=0, padx=4, pady=4, sticky="nw")
+            self._cyc_frame.grid(row=0, column=1, padx=4, pady=4, sticky="nw")
+        self._plot_sc.after(
+            50, lambda: self._plot_sc.configure(
+                scrollregion=self._plot_sc.bbox("all")))
+
+    def _apply_plot_size(self, event=None):
+        """Resize both figures to plot_w_var × plot_h_var (inches)."""
+        try:
+            w = float(self.plot_w_var.get())
+            h = float(self.plot_h_var.get())
+        except ValueError:
+            return
+        w = max(2.0, min(50.0, w))
+        h = max(1.5, min(50.0, h))
+        dpi = 100
+        for fig, canvas in ((self._cv_fig, self._cv_cv),
+                            (self._cyc_fig, self._cyc_cv)):
+            fig.set_size_inches(w, h)
+            canvas.get_tk_widget().config(width=int(w * dpi), height=int(h * dpi))
+            canvas.draw_idle()
+        self._plot_sc.after(
+            50, lambda: self._plot_sc.configure(
+                scrollregion=self._plot_sc.bbox("all")))
+
+    def _save_titles_and_schedule(self):
+        """Save the CV title into the active file's entry, then replot."""
+        entry = self.files.get(self.active_file)
+        if entry is not None:
+            entry["custom_cv_title"] = self.cv_title_var.get()
+        self._schedule()
+
+    def _apply_axis_range(self, ax, xmin_var, xmax_var, ymin_var, ymax_var):
+        """Apply user-entered axis ranges. Blank fields keep matplotlib's
+        auto-computed limits."""
+        try:
+            xlo = float(xmin_var.get())
+            xhi = float(xmax_var.get())
+            if xlo < xhi: ax.set_xlim(xlo, xhi)
+        except (ValueError, AttributeError):
+            pass
+        try:
+            ylo = float(ymin_var.get())
+            yhi = float(ymax_var.get())
+            if ylo < yhi: ax.set_ylim(ylo, yhi)
+        except (ValueError, AttributeError):
+            pass
+
+    # ════════════════════════════════════════════════════════════════
     # Plotting
     # ════════════════════════════════════════════════════════════════
     def _replot_cv(self):
@@ -720,9 +932,8 @@ class CvActivationPanel(ttk.Frame):
 
         entry = self.files.get(self.active_file)
         if not entry:
-            ax.set_title("CV  (no file loaded)")
-            self._cv_fig.tight_layout(pad=0.8)
-            self._cv_fig.set_layout_engine("none")
+            ax.set_title("CV  (no file loaded)",
+                         fontsize=self._fs(self.fs_title_var, 11))
             self._cv_cv.draw()
             self._cv_tb.update(); self._cv_tb.push_current()
             return
@@ -760,23 +971,38 @@ class CvActivationPanel(ttk.Frame):
             pass
 
         ref_suffix = " vs RHE" if e_ref != 0 else ""
-        ax.set_xlabel(f"{xcol}{ref_suffix}", fontsize=9)
-        ax.set_ylabel(ycol, fontsize=9)
-        ax.set_title(f"Activation CV — {self.active_file}  ({n_cyc} cycles)", fontsize=9)
-        ax.tick_params(labelsize=8)
+        fs_axis  = self._fs(self.fs_axis_var,    9)
+        fs_title = self._fs(self.fs_title_var,  11)
+        fs_tick  = self._fs(self.fs_tick_var,    8)
+        fs_lgd   = self._fs(self.fs_legend_var,  7)
+        ax.set_xlabel(f"{xcol}{ref_suffix}", fontsize=fs_axis)
+        ax.set_ylabel(ycol, fontsize=fs_axis)
+        custom_cv = entry.get("custom_cv_title", "") or ""
+        default_cv = f"Activation CV — {self.active_file}  ({n_cyc} cycles)"
+        ax.set_title(custom_cv if custom_cv.strip() else default_cv, fontsize=fs_title)
+        ax.tick_params(labelsize=fs_tick)
 
+        self._cv_legend = None
         if n_cyc <= 20:
-            ax.legend(fontsize=6, ncol=max(1, n_cyc // 8), frameon=True, loc="best")
+            leg = ax.legend(fontsize=fs_lgd,
+                            ncol=max(1, n_cyc // 8), frameon=True, loc="best")
+            if leg is not None:
+                try: leg.set_in_layout(False)
+                except Exception: pass
+                leg.set_draggable(True)
+                self._cv_legend = leg
         else:
             cb = self._cv_fig.colorbar(
                 mpl_cm.ScalarMappable(
                     norm=mpl_colors.Normalize(1, n_cyc), cmap="viridis"),
                 ax=ax, shrink=0.8, pad=0.01, fraction=0.04)
-            cb.set_label("Cycle #", fontsize=8)
+            cb.set_label("Cycle #", fontsize=fs_axis)
+            cb.ax.tick_params(labelsize=fs_tick)
 
-        self._cv_fig.tight_layout(pad=0.5)
-        self._cv_fig.subplots_adjust(right=0.97)
-        self._cv_fig.set_layout_engine("none")
+        # Apply user-set axis range (blank = auto)
+        self._apply_axis_range(ax,
+                               self.cv_xmin_var, self.cv_xmax_var,
+                               self.cv_ymin_var, self.cv_ymax_var)
         self._cv_cv.draw()           # synchronous so limits are set before toolbar sees them
         self._cv_tb.update()         # clear stale nav stack
         self._cv_tb.push_current()   # register current limits as Home view
@@ -787,6 +1013,12 @@ class CvActivationPanel(ttk.Frame):
         self._cyc_fig.clf()
         self._cyc_ax = self._cyc_fig.add_subplot(111)
         ax = self._cyc_ax
+
+        fs_axis  = self._fs(self.fs_axis_var,    9)
+        fs_title = self._fs(self.fs_title_var,  11)
+        fs_tick  = self._fs(self.fs_tick_var,    8)
+        fs_lgd   = self._fs(self.fs_legend_var,  7)
+        fs_ann   = self._fs(self.fs_annot_var,  10)
 
         show_all  = self.overlay_all_var.get()
         files_to_show = (list(self.files.keys()) if show_all
@@ -822,14 +1054,18 @@ class CvActivationPanel(ttk.Frame):
             all_js.extend(js)
             lbl = f"{short}  E={e_target:.3f}V" if len(files_to_show) > 1 else short
             ax.plot(cns, js, "o-", color=entry["color"], lw=1.6, ms=4, label=lbl)
-            # Mark last convergence delta
+            # Mark last convergence delta — draggable so user can move out-of-bounds text
             if len(conv) > window:
                 cn_l, j_l, dp, passed = conv[-1]
                 mk  = "✓" if passed else "✗"
                 col = "#2e7d32" if passed else "#c62828"
-                ax.annotate(f"{mk} {dp:.1f}%", xy=(cn_l, j_l),
-                            xytext=(6, 4), textcoords="offset points",
-                            fontsize=7, color=col)
+                ann = ax.annotate(f"{mk} {dp:.1f}%", xy=(cn_l, j_l),
+                                  xytext=(6, 4), textcoords="offset points",
+                                  fontsize=fs_ann, fontweight="bold", color=col)
+                try:
+                    ann.draggable()
+                except Exception:
+                    pass
             any_data = True
 
         # Y-axis label: use active file's E_target if single file, else generic
@@ -839,20 +1075,26 @@ class CvActivationPanel(ttk.Frame):
         except (ValueError, TypeError):
             y_lbl = "J at E_target  (mA)"
 
+        self._cyc_legend = None
         if any_data:
-            ax.set_xlabel("Cycle number", fontsize=9)
-            ax.set_ylabel(y_lbl, fontsize=9)
+            ax.set_xlabel("Cycle number", fontsize=fs_axis)
+            ax.set_ylabel(y_lbl, fontsize=fs_axis)
             try:
                 act_w = int(self.files.get(self.active_file, {}).get("window", "10"))
                 act_th = float(self.files.get(self.active_file, {}).get("threshold", "2.0"))
             except (ValueError, TypeError):
                 act_w, act_th = 10, 2.0
-            ax.set_title(
-                f"Convergence check  (window={act_w} cyc, threshold={act_th}%)",
-                fontsize=9)
-            ax.tick_params(labelsize=8)
+            custom_cyc = (self.cyc_title_var.get() if hasattr(self, "cyc_title_var") else "") or ""
+            default_cyc = f"Convergence check  (window={act_w} cyc, threshold={act_th}%)"
+            ax.set_title(custom_cyc if custom_cyc.strip() else default_cyc, fontsize=fs_title)
+            ax.tick_params(labelsize=fs_tick)
             if len(files_to_show) > 1:
-                ax.legend(fontsize=7, frameon=True)
+                leg = ax.legend(fontsize=fs_lgd, frameon=True)
+                if leg is not None:
+                    try: leg.set_in_layout(False)
+                    except Exception: pass
+                    leg.set_draggable(True)
+                    self._cyc_legend = leg
             ax.grid(True, alpha=0.3)
             # Y-axis: fit data (don't force 0 into range)
             if all_js:
@@ -861,10 +1103,12 @@ class CvActivationPanel(ttk.Frame):
                 ax.set_ylim(j_lo - margin, j_hi + margin)
         else:
             ax.set_title("Cycle vs J  (no data — check E_target or column mapping)",
-                         fontsize=9)
+                         fontsize=fs_title)
 
-        self._cyc_fig.tight_layout(pad=0.8)
-        self._cyc_fig.set_layout_engine("none")
+        # Apply user-set axis range (overrides auto-fit ylim above when set)
+        self._apply_axis_range(ax,
+                               self.cyc_xmin_var, self.cyc_xmax_var,
+                               self.cyc_ymin_var, self.cyc_ymax_var)
         self._cyc_cv.draw()
         self._cyc_tb.update()
         self._cyc_tb.push_current()
@@ -886,8 +1130,31 @@ class CvActivationPanel(ttk.Frame):
         ax.set_ylim(yd + (yl[0] - yd) * factor, yd + (yl[1] - yd) * factor)
         self._get_canvas(ax).draw_idle()
 
+    def _legend_for_ax(self, ax):
+        if ax is self._cv_ax:  return self._cv_legend
+        if ax is self._cyc_ax: return self._cyc_legend
+        return None
+
+    def _event_on_legend(self, event):
+        """True if click event is inside the visible legend bbox for its axes."""
+        if event.inaxes is None:
+            return False
+        leg = self._legend_for_ax(event.inaxes)
+        if leg is None or not leg.get_visible():
+            return False
+        try:
+            renderer = self._get_canvas(event.inaxes).get_renderer()
+            bbox = leg.get_window_extent(renderer)
+            return bbox.contains(event.x, event.y)
+        except Exception:
+            return False
+
     def _on_press(self, event):
         if event.button == 1 and event.inaxes:
+            # Don't start panning when click is on the (draggable) legend —
+            # let matplotlib's set_draggable handle that.
+            if self._event_on_legend(event):
+                return
             self._panning   = True
             self._pan_moved = False
             self._pan_ax    = event.inaxes
@@ -972,7 +1239,7 @@ class CvActivationPanel(ttk.Frame):
             text, xy=(x, y), xytext=(xoff, yoff), textcoords="offset points",
             bbox=dict(boxstyle="round,pad=0.4", fc="lightyellow", ec="gray", alpha=0.92),
             arrowprops=dict(arrowstyle="->", color="gray", lw=1.2),
-            fontsize=8, zorder=10)
+            fontsize=self._fs(self.fs_annot_var, 10), zorder=10)
         self._ann.set_in_layout(False)
         self._ann_dot, = ax.plot(x, y, "o", color=ln.get_color(),
                                  markersize=7, zorder=11, label="_ann_dot")
@@ -1137,6 +1404,9 @@ class CvActivationPanel(ttk.Frame):
             "threshold": first_entry.get("threshold", "2.0"),
             "color":     _TRACE_COLORS[color_idx],
             "result":    None,
+            "custom_cv_title": "",
+            "cv_xmin": "", "cv_xmax": "",
+            "cv_ymin": "", "cv_ymax": "",
         }
         self._loading = True
         self.file_listbox.insert(tk.END, merged_name)

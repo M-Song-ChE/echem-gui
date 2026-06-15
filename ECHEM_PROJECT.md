@@ -22,7 +22,7 @@ echem_gui/
     hupd_panel.py           ← HupdPanel class (Hupd Calc tab — Hupd-based ECSA from last CV cycle)
     file_manager.py         ← FileManagerMixin: load/remove/switch files; data-type-aware _default_xcol/_default_ycol; column-type predicates (_is_voltage_col, _is_current_col, _is_time_col, _is_impedance_col); _on_file_visibility_change; _on_file_reorder; _MPR_DESIRED frozenset; _read_mpr(path) with retry loop for unknown galvani column IDs (tries <f4>/<f8>/<u4>/<u2> until buffer size matches)
     correction.py           ← CorrectionMixin: IR compensation + RHE conversion
-    plotting.py             ← PlottingMixin: plot, zoom, pan, legend drag/resize, reset view, click-annotate; draw_reflines() helper; _build_legend_order() module-level helper (rank-1 file first, cycles ascending within each file); _reorder_legend_handles() module-level helper (apply saved custom order)
+    plotting.py             ← PlottingMixin: plot, zoom, pan, legend drag/resize, reset view, click-annotate; draw_reflines() helper; _build_legend_order() module-level helper (rank-1 file first, cycles ascending within each file); _reorder_legend_handles() module-level helper (apply saved custom order); attach_plot_assistant(parent, fig, axes, canvas) — module-level helper that builds a horizontal "plot assistant" ribbon (Title override, Title/Axis/Tick/Legend font sizes, Legend frame toggle, Plot W/H size fields); wraps canvas.draw / draw_idle so user overrides re-apply on every redraw even after _compute() rebuilds the plot; on legend font change calls _scale_legend_spacing(leg, ratio) so handles/markers scale together; calls leg.set_in_layout(False) so axes don't shrink to accommodate large legends; used by all 6 ORR analysis windows + the 4 sub-tabs of the comparison window
     ecsa.py                 ← ECSAMixin: legacy ECSA calc (used only by General E.Chem tab)
     export.py               ← ExportMixin: Excel export (raw + corrected sheets)
     session_manager.py      ← Session save/restore: save_session(), load_session(), autosave(), autosave_exists(), autosave_info(); .echemsession ZIP format (manifest.json + preview.png + deduplicated DataFrames as data/{sha256}.csv + per-tab JSON state); SESSION_VERSION="1.0"; AUTOSAVE_PATH=Path.home()/".echem_sessions"/"autosave.echemsession"
@@ -31,14 +31,21 @@ echem_gui/
 ```
 
 ## Architecture
-The app uses a **seven-tab Notebook** at the top level (in this order):
-- **General E.Chem tab** → `EchemPanel(ttk.Frame + all mixins)`, `show_log=True`
-- **Multi E.Chem tab** → `MultiEchemPanel(ttk.Frame + FileManagerMixin + CorrectionMixin)`
-- **Multi E.Chem 2 tab** → `MultiEchem2Panel(ttk.Frame + FileManagerMixin + CorrectionMixin)` — group-based overlay; each group has its own figure; files assigned to groups; active group drives left-panel controls
-- **ECSA Calc tab** → `ECSAPanel(ttk.Frame + FileManagerMixin + CorrectionMixin)`
-- **Nyquist Plot tab** → `EISPanel(ttk.Frame + FileManagerMixin)`
-- **ORR Analysis tab** → `ORRPanel(ttk.Frame)` — sample-based; N2/O2 CV files paired by RPM; background subtraction + IR/RHE correction per sample; anodic-scan extraction; no auto-merge
-- **Hupd Calc tab** → `HupdPanel(ttk.Frame)` — multi-file; last-cycle extraction; linear DL baseline; Hupd-range Q_H integration; ECSA and RF results table
+The app uses an **8-tab 2-row tab strip** at the top level (custom `tk.Button` strip + shared content `ttk.Frame`; `ttk.Notebook` is not used because Tk does not support multi-row tabs natively). Tabs in this order:
+- **Row 1**: General E.Chem · Multi E.Chem · Multi E.Chem 2 · Nyquist Plot
+- **Row 2**: ORR Analysis · ECSA_Hupd · ECSA_Cdl · CV Activation
+
+Each row uses `pack(side=tk.LEFT, expand=True, fill=tk.X)` for buttons so both rows are equal width (symmetric). `EchemGUI._select_tab(key)` shows the matching panel and `pack_forget()`s the others; selected button gets `relief=tk.SUNKEN`. All panels are instantiated once at startup (parented to the shared `content` Frame) so each panel keeps its own state independent of which tab is currently visible.
+
+Panel classes (instance type ↔ tab key):
+- **`EchemPanel(ttk.Frame + all mixins)`** ↔ `"general"`, `show_log=True`
+- **`MultiEchemPanel(ttk.Frame + FileManagerMixin + CorrectionMixin)`** ↔ `"multi_echem"`
+- **`MultiEchem2Panel(ttk.Frame + FileManagerMixin + CorrectionMixin)`** ↔ `"multi_echem2"` — group-based overlay; each group has its own figure
+- **`EISPanel(ttk.Frame + FileManagerMixin)`** ↔ `"nyquist"`
+- **`ORRPanel(ttk.Frame)`** ↔ `"orr"` — sample-based; N2/O2 CV pairs by RPM; per-catalyst correction
+- **`HupdPanel(ttk.Frame)`** ↔ `"hupd"` — Hupd-based ECSA from last CV cycle
+- **`ECSAPanel(ttk.Frame + FileManagerMixin + CorrectionMixin)`** ↔ `"ecsa"` — Cdl method
+- **`CvActivationPanel(ttk.Frame)`** ↔ `"cv_activation"` — convergence check on activation CV series
 
 Each panel is fully **independent**: its own `files` dict, `active_file`, figures, and canvases. Switching tabs never affects the other tab's data or plots.
 
@@ -120,6 +127,18 @@ Each panel is fully **independent**: its own `files` dict, `active_file`, figure
 - **Session**: `get_session_state(data_store)` / `restore_session_state(state, data_store)` — pairs stored with `df_n2_hash`/`df_o2_hash` referencing `data_store`; reflines serialised as lists, restored as tuples; `catalyst_corrections` and `catalyst_styles` serialised as plain dicts
 - **Layout**: identical to ME2 — scrollable right panel, drag-to-reorder headers, CheckableListbox, `_relayout_figures()`, configurable grid cols, single-sample zoom toggle, `_drop_line` blue indicator
 - **`_SAMPLE_RUNTIME`** / **`_PAIR_RUNTIME`** frozensets strip non-serialisable keys before JSON
+- **Analysis windows** — 6 popup `tk.Toplevel(self)` windows: `_open_tafel_window`, `_open_kl_window`, `_open_sa_window`, `_open_levich_window`, `_open_lc_comparison_window`, `_open_comparison_window` (last has 4 sub-tabs in a Notebook: Ratio / Levich / KL / Kinetic)
+  - **`win.state('zoomed')`** called right after `win.geometry(...)` so analysis windows open maximised by default; wrapped in try/except for non-Windows fallback
+  - All figures created with `constrained_layout=True` (no `tight_layout()` / `set_layout_engine("none")` calls inside `_compute()` callbacks) so titles/labels/colorbars auto-fit when fonts/data change or the window is resized
+  - **Copy button** packed next to each `NavigationToolbar2Tk` (toolbar in `_tb_row` Frame: toolbar `side=LEFT, expand=True` + Copy button `side=LEFT`); uses shared `copy_figure_to_clipboard(f)` helper
+  - **`attach_plot_assistant(parent, fig, axes, canvas)`** — ribbon packed at `side=TOP, fill=X` below the existing settings row: Title override (first axes only), Title fs / Axis fs / Tick fs / Lgd fs, Legend frame toggle, Plot W×H size fields; wraps `canvas.draw`/`draw_idle` so overrides re-apply on every redraw including after `_compute()` rebuilds the plot; legend font change also calls `_scale_legend_spacing(leg, ratio)` so handles/markers scale together
+  - **Sample/catalyst color gradient** — `_gradient_recolor(curves, ...)` re-colors curves so all curves in the same `(sample, catalyst)` group share a base color (from `catalyst_styles`) and vary by HSL lightness along RPM-sorted order; `_gradient_shades(base_hex, n)` returns n dark→light shades. Applied to Tafel/SA/LC Compare on `all_curves` data; KL/Levich apply it inline (their plot loops compute `_grp_shades` per group since they draw one fitted line per `(group, e_val)` rather than raw curves). Sample Comparison's `cat_colors` uses each catalyst's registered color via `_by_cat[cat][0][5]`; tab plots use `cat_colors[cat]` as base + `_gradient_shades(base, n_E)` for differentiating E values within a catalyst
+  - **No-cat label handling** — `_label_cat(lbl)` helper used by LC Compare selector and `_compute`: when label has no `[cat]` prefix returns `"(no cat)"` so all such curves group into a single bucket; previously they incorrectly grouped by full label (`"100 rpm"`) making each RPM its own catalyst
+  - **Unified label format** — sample/catalyst order standardised to `"[cat] sn"` across KL, Levich, LC Compare, and Sample Comparison; LaTeX axis labels unified: `r"$\sqrt{RPM}$ (rpm$^{0.5}$)"` for Levich/LC, `r"$\omega^{-1/2}$ (rad s$^{-1}$)$^{-1/2}$"` for KL (no `\!` spacing); KL title `"Koutecky-Levich  1/|J| vs 1/√ω"` with ASCII hyphen
+  - **LC Compare result text** — multi-line block per group: `── [cat] sn ──` header + indented `rpm → |J_lim| = X mA/cm²` lines + `Linear fit: slope = ... intercept = ...` + `Pred. slope (from lowest RPM) = ...` + blank separator; replaces the previous single-line comma-joined format
+  - **LC Compare selector checkbox bug** — the "(all)" sample-level and `[cat]` catalyst-level toggle commands previously used `[_lsel_vars[i].set(bv.get()) for i in ids] or _schedule()` which never called `_schedule()` because the non-empty list `[None, None, ...]` is truthy and short-circuited the `or`. Replaced with explicit inline functions that set vars and call `_schedule()` unconditionally
+  - **Catalyst label regex** — `re.match(r'^\[(\w+)\]', lbl)` was too restrictive: `\w` matches only `[A-Za-z0-9_]` so catalyst names with `/`, space, hyphen, parentheses, or non-ASCII chars (e.g. `Ca800 10J/cm2`, `Pt/C`) silently failed parsing → fell back to no-cat. **Fix**: changed all 14 `re.match` and 5 `re.sub` occurrences to `[^\]]+` (any char except `]`). Applied panel-wide
+- **Catalyst color dropdown** — left-panel "Color:" field is a `ttk.Combobox` with `values=_COLOR_NAMES` (not a free-text Entry); load converts stored hex via `_COLOR_HEX` reverse lookup to display name, save converts name to hex via `_COLOR_HEX[name]`; matches ECSA / EIS / Multi panels UX
 
 ### HupdPanel (Hupd Calc)
 - Inherits only `ttk.Frame` — no FileManagerMixin; file loading handled internally
@@ -148,11 +167,37 @@ Each panel is fully **independent**: its own `files` dict, `active_file`, figure
 - **Session**: `get_session_state(data_store)` / `restore_session_state(state, data_store)` — DataFrames stored by SHA-256 hash; `sel_cycle` persisted; `restore_session_state` ends by calling `_compute_all()` to repopulate results
 - **Default parameters** (`_DEF`): `scan_rate="50"`, `dl_lo="0.40"`, `dl_hi="0.50"`, `e1="0.05"`, `e2="0.40"`, `q_ref="210"`, `geo_area="0.1963"`
 
+### CvActivationPanel (CV Activation)
+- Inherits only `ttk.Frame` — no FileManagerMixin
+- **Purpose**: track activation-CV convergence — interpolate current at a target potential vs cycle number across an activation series, evaluate whether the last N cycles show <threshold% drift
+- **Data model**: `self.files = OrderedDict[str, entry]` keyed by short filename
+  - Entry: `{path, df, r_sol, e_ref, x_col, y_col, cyc_col, e_target, direction, window, threshold, color, result, custom_cv_title, cv_xmin, cv_xmax, cv_ymin, cv_ymax}`
+  - `result` = last `_run_analysis` output (`{cycle_j, conv, j_final, delta_pct, passed}`) or `None`
+- **Two figures**, side-by-side (1×2 default) or stacked (2×1) — selectable via `layout_var` combobox; both figures use `constrained_layout=True` so titles/labels auto-fit on font/data changes
+  - `_cv_fig / _cv_ax / _cv_cv` — activation CV (all cycles of active file, viridis-gradient colored, with red dashed `E_target` line)
+  - `_cyc_fig / _cyc_ax / _cyc_cv` — cycle vs J@E_target (all loaded files overlaid; checkbox to limit to active)
+- **Right panel = scrollable `tk.Canvas`** (`_plot_sc`) with H+V scrollbars holding `_plots_frame`; layout-driven grid via `_apply_layout()` places `_cv_frame` and `_cyc_frame` (each containing its figure + toolbar + Copy button) at `(0,0)/(0,1)` for 1×2 or `(0,0)/(1,0)` for 2×1
+- **Display panel** (left): Layout combobox · Plot size W×H (per-figure, both same size) · five separate font-size entries (Title fs/Axis fs/Tick fs/Legend fs/Annot. fs) · CV title (per-file) · Cycle title (panel-global) · CV plot range X/Y (per-file, saved in entry on Return/FocusOut) · Cycle plot range X/Y (panel-global)
+- **Helpers**:
+  - `_fs(var, default)` — read a font-size StringVar with clamp `max(4, int)` and fallback
+  - `_apply_layout()` — re-grid `_cv_frame` / `_cyc_frame` per `layout_var`, refresh scrollregion via `after(50, ...)`
+  - `_apply_plot_size()` — `fig.set_size_inches(w, h)` + `canvas.config(width=int(w*dpi), height=int(h*dpi))` for both figures; clamp 1.5–50
+  - `_save_titles_and_schedule()` — write `cv_title_var` into active entry then `_schedule()`
+  - `_apply_axis_range(ax, xmin_var, xmax_var, ymin_var, ymax_var)` — apply user-typed limits; blank entries leave auto-computed limits in place
+- **Per-file save/restore**: `_save_active_state()` and `_restore_state()` cover `r_sol`, `e_ref`, `e_target`, `direction`, `window`, `threshold`, `x_col`, `y_col`, `cyc_col`, `custom_cv_title`, `cv_xmin/xmax/ymin/ymax`; cycle plot range vars are panel-global (NOT saved per-file by design — cycle plot overlays all files)
+- **Draggable legend + annotation**: `set_draggable(True)` on every legend; `set_in_layout(False)` so legend doesn't shrink axes; convergence-percentage annotation also calls `ann.draggable()`. Pan handler skips when click is inside legend bbox via `_event_on_legend(event)`
+- **CV legend gradient handling**: when `n_cyc <= 20` use `ax.legend(fontsize=fs_lgd, ncol=max(1, n_cyc//8))`; for >20 cycles fall back to a colorbar (Cycle # 1..N)
+- **Mouse interactions**: scroll = zoom centred on cursor, left-drag = pan, left-click = annotate nearest point (with cycling via `_CLICK_PX`), right-click clears annotation OR sets E_target (CV plot only, when no annotation active)
+- **Right-click annotation on CV** updates `e_target_var` to `event.xdata` and schedules replot — quickly retarget by clicking the curve
+- **Convergence logic** (`_check_convergence`): for cycle i with i >= window, `delta = |j_i − j_{i-window}| / max(|j_{i-window}|, 1e-12) × 100`; pass = `delta < threshold`; result tagged green ("Activated ✓") or red ("Not activated ✗") in the Results treeview
+
 ### EchemGUI (main window)
 - Inherits only `tk.Tk`
-- Creates `ttk.Notebook`, adds `gen_tab`, `multi_tab`, `multi2_tab`, `ecsa_tab`, `eis_tab`, `orr_tab`, `hupd_tab` frames in that order
-- Each tab instantiates its panel directly; no shared state
-- `self._panels = {"general": EchemPanel, "multi_echem": MultiEchemPanel, "multi_echem2": MultiEchem2Panel, "ecsa": ECSAPanel, "nyquist": EISPanel, "orr": ORRPanel, "hupd": HupdPanel}` assembled in `_build_ui()`; passed to `session_manager` for save/load
+- Two-row tab bar built in `_build_ui()`: `tabs_outer` Frame contains `row1` + `row2` (both `pack(fill=X)`); below it a single `content` Frame holds the active panel
+- Each panel built once with `content` as parent and stored in `self._panels[key]`; only one panel is `pack`'d at a time
+- `_select_tab(key)` — `pack_forget`s every panel, updates each button's `relief` (SUNKEN for active, RAISED for others), then packs the selected panel with `fill=BOTH, expand=True`
+- Tab buttons use `tk.Button(row, ..., command=lambda k=key: self._select_tab(k))` and `pack(side=LEFT, expand=True, fill=X)` so each row's 4 buttons divide the row width evenly (both rows are the same total width)
+- `self._panels = {"general": EchemPanel, "multi_echem": MultiEchemPanel, "multi_echem2": MultiEchem2Panel, "nyquist": EISPanel, "orr": ORRPanel, "hupd": HupdPanel, "ecsa": ECSAPanel, "cv_activation": CvActivationPanel}` assembled in `_build_ui()`; passed to `session_manager` for save/load
 - `_build_menubar()` — File menu with Load Session (Ctrl+O), Save Session (Ctrl+S), Save Session As, Exit; calls `_sm.save_session` / `_sm.load_session`
 - `_on_close()` — auto-saves via `_sm.autosave(self._panels)` then destroys the window; registered via `self.protocol("WM_DELETE_WINDOW", self._on_close)`
 - `_check_autosave_on_launch()` — called at end of `_build_ui()`; if autosave exists shows yes/no messagebox with file modification timestamp; calls `_sm.load_session` if confirmed
@@ -467,3 +512,8 @@ git rm --cached <file>      # unstage without deleting the local file
 - **ORR StringVar trace write-through** — the correction UI vars (`r_sol_n2_var`, `r_sol_o2_var`, `e_ref_var`, `area_var`) each have a `trace_add("write", ...)` that immediately writes the new value to `catalyst_corrections[active_catalyst][key]`; this is the correct way to avoid FocusOut race conditions where switching away from a UI widget can fire FocusOut after `active_sample` / `_active_catalyst` has already changed
 - **ORR legend/pan conflict** — `DraggableLegend` and the custom pan handler both listen on `button_press_event`; the pan handler must call `leg.contains(event)` first and bail if the click lands on the legend; without this check, dragging the legend also pans the plot
 - **ORR axis-label dblclick hit-testing** — `ax.xaxis.label.get_window_extent(renderer)` returns the label's bounding box in display (pixel) coordinates; `bbox.contains(event.x, event.y)` does the hit test; must call `event.canvas.get_renderer()` inside a try/except since `get_renderer()` can raise if the canvas has never been drawn; this check must occur before the `event.inaxes` guard because axis labels are outside the axes bounding box
+- **`constrained_layout=True` + `leg.set_in_layout(False)`** — constrained_layout auto-recomputes the axes box on every draw so titles/labels survive font and font-size changes, but it also tries to make room for the legend inside the figure bounds: a large legend will shrink the axes ("squish" the plot). Fix: after every `ax.legend(...)` call, call `leg.set_in_layout(False)` so layout ignores the legend and keeps axes at full size; the legend then overlays the plot area and can be moved out of the way via `leg.set_draggable(True)`. Applied in `attach_plot_assistant` (all ORR analysis windows) and CvActivationPanel `_replot_cv` / `_replot_cycle`.
+- **`re.match(r'^\[(\w+)\]', lbl)` vs `\[(\[^\]]+)\]`** — `\w` matches only `[A-Za-z0-9_]`. Catalyst names with `/`, space, hyphen, parentheses, or non-ASCII characters (e.g. `Ca800 10J/cm2`, `Pt/C`, `Pt-Ru/C`) silently fall through to the "no match" branch — symptoms include curves appearing as `"(no cat)"` in selectors and full-label `"100 rpm"` strings being mistakenly used as catalyst keys. Use `[^\]]+` (any char except closing bracket) to match any catalyst label exactly as the user typed it. Applied throughout orr_panel.py (14 `re.match` + 5 `re.sub`).
+- **List `or` shortcut bug** — `[var.set(...) for v in ids] or _schedule()` never calls `_schedule()` because a non-empty list `[None, None, ...]` is truthy and short-circuits the `or`. The list comprehension's side effects (the `.set()` calls) DO happen, but the trailing `or _schedule()` is dead code. Always use an explicit inline function: `def _toggle(...): for i in ids: v[i].set(bv.get()); _schedule()`. Was the root cause of "LC Compare doesn't update when I uncheck a sample".
+- **Per-analysis-window plot size + auto-fit toggle** — `attach_plot_assistant`'s W/H entries default to blank = auto-fit (canvas widget keeps `fill=BOTH, expand=True` and resizes with the window). When the user types numeric W/H values the helper switches the canvas widget to `pack_configure(fill=NONE, expand=False)` + `configure(width=w*dpi, height=h*dpi)` and calls `fig.set_size_inches(w, h, forward=False)`. Restoring blank/invalid values returns the widget to auto-fit. The `_pack_info` list captures the original pack settings lazily on first resize for any later teardown.
+- **Custom 2-row tab strip vs ttk.Notebook** — `ttk.Notebook` in Tk does NOT support multi-row tabs natively (no `wraplength`, no row count option). The app uses a custom `tk.Button` strip with two `ttk.Frame` rows, a shared `content` Frame, and `_select_tab(key)` to swap visibility via `pack_forget()`/`pack(fill=BOTH, expand=True)`. Buttons use `pack(side=LEFT, expand=True, fill=X)` so each row's 4 buttons divide the row width evenly — both rows render at identical total width. Active tab gets `relief=tk.SUNKEN`. All panels are instantiated at startup so swap is just a visibility flip; no widget recreation.

@@ -19,18 +19,21 @@ from collections import OrderedDict
 import re
 import os
 import math
+import colorsys
 
 import numpy as np
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
 
 import pandas as pd
+import matplotlib.colors as _mcolors
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 
 from .file_manager import _read_mpr, _PALETTE, _COLOR_NAMES, _COLOR_HEX
 from .plotting import (apply_grid, draw_reflines, copy_figure_to_clipboard,
-                        _cycle_colors, _scale_legend_spacing)
+                        _cycle_colors, _scale_legend_spacing,
+                        attach_plot_assistant)
 from .checklist import CheckableListbox
 from . import session_manager as _sm
 from .legend_editor import open_legend_editor
@@ -427,9 +430,10 @@ class ORRPanel(ttk.Frame):
         _cst = ttk.Frame(left)
         _cst.pack(fill=tk.X, padx=4, pady=(0, 2))
         ttk.Label(_cst, text="Color:").pack(side=tk.LEFT)
-        self._cat_color_var = tk.StringVar(value="")
-        _cat_color_e = ttk.Entry(_cst, textvariable=self._cat_color_var, width=9)
-        _cat_color_e.pack(side=tk.LEFT, padx=(2, 6))
+        self._cat_color_var = tk.StringVar(value="Blue")
+        _cat_color_cb = ttk.Combobox(_cst, textvariable=self._cat_color_var,
+                                      values=_COLOR_NAMES, state="readonly", width=12)
+        _cat_color_cb.pack(side=tk.LEFT, padx=(2, 6))
         ttk.Label(_cst, text="Style:").pack(side=tk.LEFT)
         self._cat_ls_var = tk.StringVar(value="solid")
         _cat_ls_cb = ttk.Combobox(_cst, textvariable=self._cat_ls_var,
@@ -447,9 +451,9 @@ class ORRPanel(ttk.Frame):
                                    state="readonly", width=6)
         _cat_mk_cb.pack(side=tk.LEFT, padx=(2, 0))
 
-        for _w in (_cat_color_e, _cat_lw_e):
-            _w.bind("<Return>",   lambda e: self._on_cat_style_change())
-            _w.bind("<FocusOut>", lambda e: self._on_cat_style_change())
+        _cat_lw_e.bind("<Return>",   lambda e: self._on_cat_style_change())
+        _cat_lw_e.bind("<FocusOut>", lambda e: self._on_cat_style_change())
+        _cat_color_cb.bind("<<ComboboxSelected>>", lambda e: self._on_cat_style_change())
         _cat_ls_cb.bind("<<ComboboxSelected>>", lambda e: self._on_cat_style_change())
         _cat_mk_cb.bind("<<ComboboxSelected>>", lambda e: self._on_cat_style_change())
 
@@ -1717,7 +1721,7 @@ class ORRPanel(ttk.Frame):
                 self.r_sol_o2_var.set("0")
                 self.e_ref_var.set("0")
                 self.area_var.set("")
-                self._cat_color_var.set("")
+                self._cat_color_var.set("Blue")
                 self._cat_ls_var.set("solid")
                 self._cat_lw_var.set("1.5")
                 self._cat_mk_var.set("none")
@@ -1741,7 +1745,11 @@ class ORRPanel(ttk.Frame):
         cs = sentry.get("catalyst_styles", {}).get(catalyst_id, {})
         self._switching_sample = True
         try:
-            self._cat_color_var.set(cs.get("color", ""))
+            # Stored color is hex (or empty); reverse-lookup to display name
+            _hex = (cs.get("color", "") or "").strip()
+            _name = next((n for n, h in _COLOR_HEX.items() if h.lower() == _hex.lower()),
+                         "Blue")
+            self._cat_color_var.set(_name)
             self._cat_ls_var.set(cs.get("linestyle", "solid"))
             self._cat_lw_var.set(cs.get("linewidth", "1.5"))
             self._cat_mk_var.set(cs.get("marker", "none"))
@@ -1766,7 +1774,10 @@ class ORRPanel(ttk.Frame):
         cs = sentry.setdefault("catalyst_styles", {})
         cat_cs = cs.setdefault(cat, {"color": "", "linestyle": "solid",
                                       "linewidth": "1.5", "marker": "none"})
-        cat_cs["color"]     = self._cat_color_var.get().strip()
+        # Convert color name → hex for storage (so existing color-resolution
+        # logic in _get_curves_for_sample / catalyst_styles continues to work).
+        _name = self._cat_color_var.get().strip()
+        cat_cs["color"]     = _COLOR_HEX.get(_name, _name)
         cat_cs["linestyle"] = self._cat_ls_var.get()
         cat_cs["linewidth"] = self._cat_lw_var.get()
         cat_cs["marker"]    = self._cat_mk_var.get()
@@ -2739,7 +2750,7 @@ class ORRPanel(ttk.Frame):
         if best_x is None or best_dist > 0.04:
             return
         # Switch catalyst correction display + highlight all lines for that catalyst
-        _cat_m = re.match(r'^\[(\w+)\]', best_label)
+        _cat_m = re.match(r'^\[([^\]]+)\]', best_label)
         _clicked_cat = _cat_m.group(1) if _cat_m else ""
         sentry["highlighted_cat"] = _clicked_cat
         self._apply_orr_highlight(sample_name)
@@ -2785,7 +2796,7 @@ class ORRPanel(ttk.Frame):
                 line.set_alpha(1.0)
                 line.set_zorder(2)
             else:
-                m = re.match(r'^\[(\w+)\]', lbl)
+                m = re.match(r'^\[([^\]]+)\]', lbl)
                 line_cat = m.group(1) if m else ""
                 if line_cat == hl_cat:
                     line.set_alpha(1.0)
@@ -2840,6 +2851,62 @@ class ORRPanel(ttk.Frame):
     # ════════════════════════════════════════════════════════════════
     # Analysis windows
     # ════════════════════════════════════════════════════════════════
+    @staticmethod
+    def _gradient_shades(base_hex, n):
+        """Return n shades of base_hex ordered dark→light (vary HSL lightness)."""
+        try:
+            r, g, b = _mcolors.to_rgb(base_hex)
+        except Exception:
+            return [base_hex] * max(n, 1)
+        h, l, s = colorsys.rgb_to_hls(r, g, b)
+        if n <= 1:
+            return [_mcolors.to_hex((r, g, b))]
+        out = []
+        for j in range(n):
+            t = j / max(n - 1, 1)
+            l_new = max(0.22, min(0.78, l - 0.22 + 0.46 * t))
+            s_new = max(0.0, min(1.0, s + (0.10 if t < 0.4 else 0.0)))
+            r2, g2, b2 = colorsys.hls_to_rgb(h, l_new, s_new)
+            out.append(_mcolors.to_hex((r2, g2, b2)))
+        return out
+
+    @classmethod
+    def _gradient_recolor(cls, curves, *, label_idx=3, color_idx=4,
+                          sort_idx=2, sn_idx=5):
+        """Re-color a list of curve tuples so that curves in the same
+        (sample, catalyst) group share a base color and vary by lightness
+        along *sort_idx* (usually RPM).
+
+        Curves with a unique (sample, catalyst) group keep their original colour.
+        Tuples must have length > max(label_idx, color_idx, sort_idx, sn_idx).
+        Returns a new list of tuples with updated colour at *color_idx*.
+        """
+        groups = {}
+        for i, c in enumerate(curves):
+            if not isinstance(c, tuple) or len(c) <= max(label_idx, color_idx,
+                                                          sort_idx, sn_idx):
+                continue
+            sn  = c[sn_idx]
+            lbl = c[label_idx]
+            m   = re.match(r'^\[([^\]]+)\]', lbl) if isinstance(lbl, str) else None
+            cat = m.group(1) if m else ""
+            groups.setdefault((sn, cat), []).append(i)
+
+        out = [list(c) for c in curves]
+        for key, idxs in groups.items():
+            n = len(idxs)
+            if n <= 1:
+                continue
+            try:
+                idxs.sort(key=lambda i: float(curves[i][sort_idx] or 0))
+            except (TypeError, ValueError):
+                pass
+            base   = curves[idxs[0]][color_idx]
+            shades = cls._gradient_shades(base, n)
+            for j, i in enumerate(idxs):
+                out[i][color_idx] = shades[j]
+        return [tuple(c) for c in out]
+
     def _get_curves_for_sample(self, sname):
         """Return list of (E_arr, J_arr, rpm_float, label, color) for a named sample."""
         sentry = self.samples.get(sname)
@@ -2885,6 +2952,7 @@ class ORRPanel(ttk.Frame):
 
     def _open_tafel_window(self):
         # Gather from ALL loaded samples
+        # (curves recoloured to share base colour per sample/catalyst group)
         all_curves = []  # (E_arr, J_arr, rpm, label, color, sname)
         for sn in self.samples:
             for E, J, rpm, lbl, col in self._get_curves_for_sample(sn):
@@ -2892,11 +2960,14 @@ class ORRPanel(ttk.Frame):
         if not all_curves:
             messagebox.showwarning("Tafel", "No processed curves in any sample.")
             return
+        all_curves = self._gradient_recolor(all_curves)
         ref = self.ref_electrode_var.get()
 
         win = tk.Toplevel(self)
         win.title("Tafel Analysis")
         win.geometry("820x720")
+        try: win.state('zoomed')
+        except Exception: pass
 
         # Debounce
         _recompute_id = [None]
@@ -2956,7 +3027,7 @@ class ORRPanel(ttk.Frame):
         for idx, (E_a, J_a, rpm, lbl, col, sn) in enumerate(all_curves):
             if sn not in _by_samp:
                 _by_samp[sn] = []; _samp_order.append(sn)
-            m = re.match(r'^\[(\w+)\]', lbl)
+            m = re.match(r'^\[([^\]]+)\]', lbl)
             cat = m.group(1) if m else ""
             _by_samp[sn].append((idx, E_a, J_a, rpm, lbl, col, cat))
 
@@ -2989,7 +3060,7 @@ class ORRPanel(ttk.Frame):
                 for idx, rpm, lbl, col in _by_cat[cat]:
                     bv = tk.BooleanVar(value=True)
                     _tsel_vars[idx] = bv
-                    display = re.sub(r'^\[\w+\]\s*', '', lbl)
+                    display = re.sub(r'^\[[^\]]+\]\s*', '',lbl)
                     tk.Checkbutton(cat_row, text=display, variable=bv).pack(
                         side=tk.LEFT, padx=3)
                     bv.trace_add("write", _schedule)
@@ -3009,13 +3080,21 @@ class ORRPanel(ttk.Frame):
         use_jk_var.trace_add("write", _schedule)
 
         # ── Figure — pack bottom items first ──────────────────────────
-        fig = Figure(figsize=(7.0, 4.0), dpi=100)
+        fig = Figure(figsize=(7.0, 4.0), dpi=100, constrained_layout=True)
         ax  = fig.add_subplot(111)
         cv  = FigureCanvasTkAgg(fig, master=win)
-        tb  = NavigationToolbar2Tk(cv, win, pack_toolbar=False)
+        _tb_row = ttk.Frame(win)
+        tb  = NavigationToolbar2Tk(cv, _tb_row, pack_toolbar=False)
+        tb.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        tk.Button(_tb_row, text="Copy",
+                  command=lambda f=fig: copy_figure_to_clipboard(f),
+                  relief=tk.RAISED, borderwidth=1, padx=6).pack(
+                      side=tk.LEFT, padx=(4, 2), pady=1)
+        _passist = attach_plot_assistant(win, fig, ax, cv)
+        _passist.pack(side=tk.TOP, fill=tk.X, padx=8, pady=(2, 0))
         res = tk.Text(win, height=5, state=tk.DISABLED, font=("Courier", 9), wrap=tk.WORD)
         _tres_handle = tk.Frame(win, height=6, bg="#888888", cursor="sb_v_double_arrow")
-        tb.pack(side=tk.BOTTOM, fill=tk.X, padx=8)
+        _tb_row.pack(side=tk.BOTTOM, fill=tk.X, padx=8)
         res.pack(side=tk.BOTTOM, fill=tk.X, padx=8)
         _tres_handle.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=(1, 1))
         cv.get_tk_widget().pack(fill=tk.BOTH, expand=True, padx=8)
@@ -3069,7 +3148,7 @@ class ORRPanel(ttk.Frame):
             ax.set_ylabel(f"E  (V vs {ref})")
             ax.set_title("Tafel Analysis")
             ax.legend(fontsize=7, frameon=True)
-            fig.tight_layout(pad=0.5); fig.set_layout_engine("none"); cv.draw()
+            cv.draw()
             res.configure(state=tk.NORMAL)
             res.delete("1.0", tk.END)
             res.insert(tk.END, "\n".join(lines))
@@ -3090,6 +3169,8 @@ class ORRPanel(ttk.Frame):
                 "KL Analysis",
                 "Need at least 2 RPM curves with numeric RPM values.")
             return
+        # NOTE: KL plots fitted lines per (group, e_val), not raw curves —
+        # so we apply gradient at plot time, not via _gradient_recolor here.
 
         ref   = self.ref_electrode_var.get()
         sname = self.active_sample or "ORR"
@@ -3097,6 +3178,8 @@ class ORRPanel(ttk.Frame):
         win = tk.Toplevel(self)
         win.title(f"Koutecky-Levich Analysis — {sname}")
         win.geometry("860x760")
+        try: win.state('zoomed')
+        except Exception: pass
 
         # ── Debounced auto-recompute ─────────────────────────────────
         _recompute_id = [None]
@@ -3127,7 +3210,7 @@ class ORRPanel(ttk.Frame):
         for idx, (E_a, J_a, rpm, lbl, col, sn) in enumerate(all_valid):
             if sn not in _by_samp:
                 _by_samp[sn] = []; _samp_order.append(sn)
-            m = re.match(r'^\[(\w+)\]', lbl)
+            m = re.match(r'^\[([^\]]+)\]', lbl)
             cat = m.group(1) if m else ""
             _by_samp[sn].append((idx, E_a, J_a, rpm, lbl, col, cat))
 
@@ -3158,7 +3241,7 @@ class ORRPanel(ttk.Frame):
                 for idx, rpm, lbl, col in _by_cat[cat]:
                     bv = tk.BooleanVar(value=True)
                     _ksel_vars[idx] = bv
-                    display = re.sub(r'^\[\w+\]\s*', '', lbl)
+                    display = re.sub(r'^\[[^\]]+\]\s*', '',lbl)
                     tk.Checkbutton(cat_row, text=display, variable=bv).pack(
                         side=tk.LEFT, padx=3)
                     bv.trace_add("write", _schedule)
@@ -3245,15 +3328,23 @@ class ORRPanel(ttk.Frame):
         e_vals_var.trace_add("write", _schedule)
 
         # ── Figure — bottom items packed first ────────────────────────
-        fig = Figure(figsize=(7.5, 4.0), dpi=100)
+        fig = Figure(figsize=(7.5, 4.0), dpi=100, constrained_layout=True)
         ax  = fig.add_subplot(111)
         cv  = FigureCanvasTkAgg(fig, master=win)
-        tb  = NavigationToolbar2Tk(cv, win, pack_toolbar=False)
+        _tb_row = ttk.Frame(win)
+        tb  = NavigationToolbar2Tk(cv, _tb_row, pack_toolbar=False)
+        tb.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        tk.Button(_tb_row, text="Copy",
+                  command=lambda f=fig: copy_figure_to_clipboard(f),
+                  relief=tk.RAISED, borderwidth=1, padx=6).pack(
+                      side=tk.LEFT, padx=(4, 2), pady=1)
+        _passist = attach_plot_assistant(win, fig, ax, cv)
+        _passist.pack(side=tk.TOP, fill=tk.X, padx=8, pady=(2, 0))
 
         res = tk.Text(win, height=6, state=tk.DISABLED, font=("Courier", 9),
                       wrap=tk.WORD)
         _kres_handle = tk.Frame(win, height=6, bg="#888888", cursor="sb_v_double_arrow")
-        tb.pack(side=tk.BOTTOM, fill=tk.X, padx=8)
+        _tb_row.pack(side=tk.BOTTOM, fill=tk.X, padx=8)
         res.pack(side=tk.BOTTOM, fill=tk.X, padx=8)
         _kres_handle.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=(1, 1))
         cv.get_tk_widget().pack(fill=tk.BOTH, expand=True, padx=8)
@@ -3288,7 +3379,7 @@ class ORRPanel(ttk.Frame):
             for idx, (E_a, J_a, rpm, lbl, col, sn) in enumerate(all_valid):
                 if not _ksel_vars.get(idx, tk.BooleanVar(value=True)).get():
                     continue
-                m = re.match(r'^\[(\w+)\]', lbl)
+                m = re.match(r'^\[([^\]]+)\]', lbl)
                 cat = m.group(1) if m else ""
                 key = (sn, cat)
                 if key not in sel_by_grp:
@@ -3302,14 +3393,19 @@ class ORRPanel(ttk.Frame):
 
             for gi, grp_key in enumerate(grp_order):
                 sn_g, cat_g = grp_key
-                grp_lbl = f"{sn_g}" + (f" [{cat_g}]" if cat_g else "")
+                grp_lbl = (f"[{cat_g}] {sn_g}" if cat_g else sn_g)
                 grp_ls  = _LS[gi % len(_LS)]
                 grp_mk  = _MK[gi % len(_MK)]
                 grp_curves = sel_by_grp[grp_key]
                 lines.append(f"── {grp_lbl} ──")
 
+                # All e_val lines for this group share the group's base colour
+                # (catalyst colour from first curve), distinguished by lightness.
+                _grp_base   = grp_curves[0][4] if grp_curves else _PALETTE[gi % len(_PALETTE)]
+                _grp_shades = self._gradient_shades(_grp_base, n_ev)
+
                 for ei, e_val in enumerate(e_vals):
-                    c_kl = _PALETTE[(gi * n_ev + ei) % len(_PALETTE)]
+                    c_kl = _grp_shades[ei]
                     inv_J = []; inv_sqw = []; rpm_labels = []
                     for E_arr, J_arr, rpm, label, _ in grp_curves:
                         if e_val < E_arr[0] or e_val > E_arr[-1]:
@@ -3320,7 +3416,7 @@ class ORRPanel(ttk.Frame):
                         omega = 2.0 * math.pi * rpm / 60.0
                         inv_J.append(1.0 / j_at_e)
                         inv_sqw.append(1.0 / math.sqrt(omega))
-                        rpm_labels.append(re.sub(r'^\[\w+\]\s*', '', label))
+                        rpm_labels.append(re.sub(r'^\[[^\]]+\]\s*', '',label))
                     if len(inv_J) < 2:
                         lines.append(f"  E={e_val:.3f} V: < 2 pts — skipped")
                         continue
@@ -3341,11 +3437,9 @@ class ORRPanel(ttk.Frame):
                         f"  E={e_val:.3f} V:  n = {n:.2f}  Jᵏ = {j_k:+.3f} mA")
 
             ax.set_xlabel(r"$\omega^{-1/2}$  (rad s$^{-1}$)$^{-1/2}$")
-            ax.set_ylabel("J⁻¹  (mA⁻¹ cm² or mA⁻¹)")
-            ax.set_title("Koutecky-Levich")
+            ax.set_ylabel(r"$|J|^{-1}$  (mA cm$^{-2}$)$^{-1}$")
+            ax.set_title("Koutecky-Levich  1/|J| vs 1/√ω")
             ax.legend(fontsize=7, frameon=True)
-            fig.tight_layout(pad=0.5)
-            fig.set_layout_engine("none")
             cv.draw()
             res.configure(state=tk.NORMAL)
             res.delete("1.0", tk.END)
@@ -3363,19 +3457,20 @@ class ORRPanel(ttk.Frame):
         if not all_curves:
             messagebox.showwarning("SA Analysis", "No processed curves in any sample.")
             return
+        all_curves = self._gradient_recolor(all_curves)
         ref = self.ref_electrode_var.get()
 
         # Collect unique catalysts across all samples
         _all_cats = []
         for _, _, _, lbl, _, _ in all_curves:
-            m = re.match(r'^\[(\w+)\]', lbl)
+            m = re.match(r'^\[([^\]]+)\]', lbl)
             cat = m.group(1) if m else ""
             if cat not in _all_cats:
                 _all_cats.append(cat)
         _cat_colors = {}
         for ci, cat in enumerate(_all_cats):
             for _, _, _, lbl, col, _ in all_curves:
-                m = re.match(r'^\[(\w+)\]', lbl)
+                m = re.match(r'^\[([^\]]+)\]', lbl)
                 if (m.group(1) if m else "") == cat:
                     _cat_colors[cat] = col; break
             if cat not in _cat_colors:
@@ -3384,6 +3479,8 @@ class ORRPanel(ttk.Frame):
         win = tk.Toplevel(self)
         win.title("Specific Activity (SA)")
         win.geometry("880x760")
+        try: win.state('zoomed')
+        except Exception: pass
 
         # Debounce
         _recompute_id = [None]
@@ -3456,7 +3553,7 @@ class ORRPanel(ttk.Frame):
         for idx, (E_a, J_a, rpm, lbl, col, sn) in enumerate(all_curves):
             if sn not in _by_samp:
                 _by_samp[sn] = []; _samp_order.append(sn)
-            m = re.match(r'^\[(\w+)\]', lbl)
+            m = re.match(r'^\[([^\]]+)\]', lbl)
             cat = m.group(1) if m else ""
             _by_samp[sn].append((idx, E_a, J_a, rpm, lbl, col, cat))
 
@@ -3487,7 +3584,7 @@ class ORRPanel(ttk.Frame):
                 for idx, rpm, lbl, col in _by_cat[cat]:
                     bv = tk.BooleanVar(value=True)
                     _ssel_vars[idx] = bv
-                    display = re.sub(r'^\[\w+\]\s*', '', lbl)
+                    display = re.sub(r'^\[[^\]]+\]\s*', '',lbl)
                     tk.Checkbutton(cat_row, text=display, variable=bv).pack(
                         side=tk.LEFT, padx=3)
 
@@ -3499,13 +3596,21 @@ class ORRPanel(ttk.Frame):
         ttk.Button(ectrl, text="Compute SA", command=lambda: _compute()).pack(side=tk.LEFT)
 
         # ── Figure — pack bottom items first ──────────────────────────
-        fig = Figure(figsize=(7.5, 3.8), dpi=100)
+        fig = Figure(figsize=(7.5, 3.8), dpi=100, constrained_layout=True)
         ax  = fig.add_subplot(111)
         cv  = FigureCanvasTkAgg(fig, master=win)
-        tb  = NavigationToolbar2Tk(cv, win, pack_toolbar=False)
+        _tb_row = ttk.Frame(win)
+        tb  = NavigationToolbar2Tk(cv, _tb_row, pack_toolbar=False)
+        tb.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        tk.Button(_tb_row, text="Copy",
+                  command=lambda f=fig: copy_figure_to_clipboard(f),
+                  relief=tk.RAISED, borderwidth=1, padx=6).pack(
+                      side=tk.LEFT, padx=(4, 2), pady=1)
+        _passist = attach_plot_assistant(win, fig, ax, cv)
+        _passist.pack(side=tk.TOP, fill=tk.X, padx=8, pady=(2, 0))
         res = tk.Text(win, height=7, state=tk.DISABLED, font=("Courier", 9), wrap=tk.WORD)
         _sres_handle = tk.Frame(win, height=6, bg="#888888", cursor="sb_v_double_arrow")
-        tb.pack(side=tk.BOTTOM, fill=tk.X, padx=8)
+        _tb_row.pack(side=tk.BOTTOM, fill=tk.X, padx=8)
         res.pack(side=tk.BOTTOM, fill=tk.X, padx=8)
         _sres_handle.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=(1, 1))
         cv.get_tk_widget().pack(fill=tk.BOTH, expand=True, padx=8)
@@ -3538,7 +3643,7 @@ class ORRPanel(ttk.Frame):
             for idx, (E_arr, J_arr, rpm, lbl, col, sn) in enumerate(all_curves):
                 if not _ssel_vars.get(idx, tk.BooleanVar(value=True)).get():
                     continue
-                m = re.match(r'^\[(\w+)\]', lbl)
+                m = re.match(r'^\[([^\]]+)\]', lbl)
                 cat = m.group(1) if m else ""
                 sel_curves.append((idx, E_arr, J_arr, rpm, lbl, col, cat))
 
@@ -3595,7 +3700,7 @@ class ORRPanel(ttk.Frame):
             else:
                 ax.text(0.5, 0.5, "No SA data (check ECSA inputs and E range)",
                         ha="center", va="center", transform=ax.transAxes)
-            fig.tight_layout(pad=0.5); fig.set_layout_engine("none"); cv.draw()
+            cv.draw()
             res.configure(state=tk.NORMAL)
             res.delete("1.0", tk.END)
             res.insert(tk.END, "\n".join(lines))
@@ -3614,11 +3719,15 @@ class ORRPanel(ttk.Frame):
             messagebox.showwarning("Levich Plot",
                                    "No curves with valid RPM values in any sample.")
             return
+        # NOTE: Levich plots one line per (group, e_val), not raw curves —
+        # gradient is applied at plot time, not via _gradient_recolor.
         ref = self.ref_electrode_var.get()
 
         win = tk.Toplevel(self)
         win.title("Levich Plot  |J| vs √RPM")
         win.geometry("820x680")
+        try: win.state('zoomed')
+        except Exception: pass
 
         _recompute_id = [None]
         def _schedule(*_):
@@ -3681,7 +3790,7 @@ class ORRPanel(ttk.Frame):
         for idx, (E_a, J_a, rpm, lbl, col, sn) in enumerate(all_curves):
             if sn not in _by_samp:
                 _by_samp[sn] = []; _samp_order.append(sn)
-            m = re.match(r'^\[(\w+)\]', lbl)
+            m = re.match(r'^\[([^\]]+)\]', lbl)
             cat = m.group(1) if m else ""
             _by_samp[sn].append((idx, E_a, J_a, rpm, lbl, col, cat))
 
@@ -3714,7 +3823,7 @@ class ORRPanel(ttk.Frame):
                 for idx, rpm, lbl, col in _by_cat[cat]:
                     bv = tk.BooleanVar(value=True)
                     _lsel_vars[idx] = bv
-                    display = re.sub(r'^\[\w+\]\s*', '', lbl)
+                    display = re.sub(r'^\[[^\]]+\]\s*', '',lbl)
                     tk.Checkbutton(cat_row, text=display, variable=bv).pack(
                         side=tk.LEFT, padx=3)
                     bv.trace_add("write", _schedule)
@@ -3730,13 +3839,21 @@ class ORRPanel(ttk.Frame):
         # ── Figure — bottom first ─────────────────────────────────────
         _LS = ['-', '--', '-.', ':']
         _MK = ['o', 's', '^', 'D', 'v', 'P']
-        fig = Figure(figsize=(7.5, 4.2), dpi=100)
+        fig = Figure(figsize=(7.5, 4.2), dpi=100, constrained_layout=True)
         ax  = fig.add_subplot(111)
         cv  = FigureCanvasTkAgg(fig, master=win)
-        tb  = NavigationToolbar2Tk(cv, win, pack_toolbar=False)
+        _tb_row = ttk.Frame(win)
+        tb  = NavigationToolbar2Tk(cv, _tb_row, pack_toolbar=False)
+        tb.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        tk.Button(_tb_row, text="Copy",
+                  command=lambda f=fig: copy_figure_to_clipboard(f),
+                  relief=tk.RAISED, borderwidth=1, padx=6).pack(
+                      side=tk.LEFT, padx=(4, 2), pady=1)
+        _passist = attach_plot_assistant(win, fig, ax, cv)
+        _passist.pack(side=tk.TOP, fill=tk.X, padx=8, pady=(2, 0))
         res = tk.Text(win, height=5, state=tk.DISABLED, font=("Courier", 9), wrap=tk.WORD)
         _handle = tk.Frame(win, height=5, bg="#aaaaaa", cursor="sb_v_double_arrow")
-        tb.pack(side=tk.BOTTOM, fill=tk.X, padx=8)
+        _tb_row.pack(side=tk.BOTTOM, fill=tk.X, padx=8)
         res.pack(side=tk.BOTTOM, fill=tk.X, padx=8)
         _handle.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=(1, 1))
         cv.get_tk_widget().pack(fill=tk.BOTH, expand=True, padx=8)
@@ -3760,7 +3877,7 @@ class ORRPanel(ttk.Frame):
             for idx, (E_a, J_a, rpm, lbl, col, sn) in enumerate(all_curves):
                 if not _lsel_vars.get(idx, tk.BooleanVar(value=True)).get():
                     continue
-                m = re.match(r'^\[(\w+)\]', lbl)
+                m = re.match(r'^\[([^\]]+)\]', lbl)
                 cat = m.group(1) if m else ""
                 key = (sn, cat)
                 if key not in sel_by_grp:
@@ -3772,13 +3889,17 @@ class ORRPanel(ttk.Frame):
 
             for gi, grp_key in enumerate(grp_order):
                 sn_g, cat_g = grp_key
-                grp_lbl = f"{sn_g}" + (f" [{cat_g}]" if cat_g else "")
+                grp_lbl = (f"[{cat_g}] {sn_g}" if cat_g else sn_g)
                 ls = _LS[gi % len(_LS)]; mk = _MK[gi % len(_MK)]
                 grp_curves = sel_by_grp[grp_key]
                 lines.append(f"── {grp_lbl} ──")
 
+                # Group base colour (catalyst color from first curve), gradient by e_val
+                _grp_base   = grp_curves[0][4] if grp_curves else _PALETTE[gi % len(_PALETTE)]
+                _grp_shades = self._gradient_shades(_grp_base, n_ev)
+
                 for ei, e_val in enumerate(e_vals):
-                    c_lev = _PALETTE[(gi * n_ev + ei) % len(_PALETTE)]
+                    c_lev = _grp_shades[ei]
                     pts = []
                     for E_arr, J_arr, rpm, _, _ in grp_curves:
                         if e_val < E_arr[0] or e_val > E_arr[-1]: continue
@@ -3803,7 +3924,7 @@ class ORRPanel(ttk.Frame):
             ax.set_ylabel(r"$|J|$  (mA cm$^{-2}$)")
             ax.set_title("Levich  |J| vs √RPM")
             ax.legend(fontsize=7, frameon=True)
-            fig.tight_layout(pad=0.5); fig.set_layout_engine("none"); cv.draw()
+            cv.draw()
             res.configure(state=tk.NORMAL)
             res.delete("1.0", tk.END)
             res.insert(tk.END, "\n".join(lines))
@@ -3829,10 +3950,15 @@ class ORRPanel(ttk.Frame):
                 "Lim. Current Compare",
                 "Need at least 2 RPM curves with numeric RPM values.")
             return
+        # Tuple shape here is (sn, lbl, col, rpm, sqrt_rpm, j_lim) — adjust indices
+        all_valid = self._gradient_recolor(
+            all_valid, label_idx=1, color_idx=2, sort_idx=3, sn_idx=0)
 
         win = tk.Toplevel(self)
         win.title("Limiting Current Comparison  |J_lim| vs √RPM")
         win.geometry("860x720")
+        try: win.state('zoomed')
+        except Exception: pass
 
         _recompute_id = [None]
         def _schedule(*_):
@@ -3921,43 +4047,60 @@ class ORRPanel(ttk.Frame):
             tk.Label(sn_row, text=f"  ▸ {sn}",
                      font=("TkDefaultFont", 8, "italic"), fg="#555555").pack(
                 side=tk.LEFT)
+            def _toggle_sn(ids=sn_idxs, bv=sn_bv):
+                for _i in ids:
+                    _lsel_vars[_i].set(bv.get())
+                _schedule()
             tk.Checkbutton(sn_row, text="(all)", variable=sn_bv,
-                           command=lambda ids=sn_idxs, bv=sn_bv: [
-                               _lsel_vars[i].set(bv.get()) for i in ids] or _schedule(),
+                           command=_toggle_sn,
                            font=("TkDefaultFont", 8, "bold")).pack(side=tk.LEFT)
-            # Unique catalysts within sample
+            # Unique catalysts within sample. When label has no "[cat]" prefix
+            # (e.g. when filename parsing didn't yield a catalyst), group all
+            # such curves into a single "(no cat)" bucket instead of treating
+            # each unique label (which includes the RPM) as its own catalyst.
+            def _label_cat(lbl):
+                m = re.match(r'^\[([^\]]+)\]', lbl)
+                return m.group(1) if m else "(no cat)"
             _seen_cat = []
             for idx in sn_idxs:
                 _, lbl, col, _, _, _ = all_valid[idx]
-                m = re.match(r'^\[(\w+)\]', lbl)
-                cat = m.group(1) if m else lbl
+                cat = _label_cat(lbl)
                 if cat not in _seen_cat:
                     _seen_cat.append(cat)
                     cat_idxs = [i for i in sn_idxs
-                                if (re.match(r'^\[(\w+)\]', all_valid[i][1]) or
-                                    type('', (), {'group': lambda s, n: all_valid[i][1]})).group(1) == cat]
+                                if _label_cat(all_valid[i][1]) == cat]
                     cat_bv = tk.BooleanVar(value=True)
                     cat_row = tk.Frame(_sel_inner); cat_row.pack(anchor=tk.W)
                     for i in cat_idxs:
                         _lsel_vars[i] = tk.BooleanVar(value=True)
+                    def _toggle_cat(idxs=cat_idxs, bv=cat_bv):
+                        for _i in idxs:
+                            _lsel_vars[_i].set(bv.get())
+                        _schedule()
                     tk.Checkbutton(cat_row, text=f"    [{cat}]", variable=cat_bv,
                                    font=("TkDefaultFont", 8),
-                                   command=lambda idxs=cat_idxs, bv=cat_bv: [
-                                       _lsel_vars[i].set(bv.get()) for i in idxs
-                                   ] or _schedule()).pack(side=tk.LEFT)
+                                   command=_toggle_cat).pack(side=tk.LEFT)
 
         # Fallback: any idx not yet in _lsel_vars
         for idx in range(len(all_valid)):
             _lsel_vars.setdefault(idx, tk.BooleanVar(value=True))
 
         # ── Figure — bottom-packed first ─────────────────────────────
-        fig = Figure(figsize=(7.5, 3.8), dpi=100)
+        fig = Figure(figsize=(7.5, 3.8), dpi=100, constrained_layout=True)
         ax  = fig.add_subplot(111)
         cv  = FigureCanvasTkAgg(fig, master=win)
-        tb  = NavigationToolbar2Tk(cv, win, pack_toolbar=False)
+        _tb_row = ttk.Frame(win)
+        tb  = NavigationToolbar2Tk(cv, _tb_row, pack_toolbar=False)
+        tb.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        tk.Button(_tb_row, text="Copy",
+                  command=lambda f=fig: copy_figure_to_clipboard(f),
+                  relief=tk.RAISED, borderwidth=1, padx=6).pack(
+                      side=tk.LEFT, padx=(4, 2), pady=1)
+        _passist = attach_plot_assistant(win, fig, ax, cv)
+        _passist.pack(side=tk.TOP, fill=tk.X, padx=8, pady=(2, 0))
         res = tk.Text(win, height=5, state=tk.DISABLED, font=("Courier", 9), wrap=tk.WORD)
         _hdl = tk.Frame(win, height=6, bg="#888888", cursor="sb_v_double_arrow")
-        tb.pack(side=tk.BOTTOM, fill=tk.X, padx=8)
+        _tb_row.pack(side=tk.BOTTOM, fill=tk.X, padx=8)
         res.pack(side=tk.BOTTOM, fill=tk.X, padx=8)
         _hdl.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=(1, 1))
         cv.get_tk_widget().pack(fill=tk.BOTH, expand=True, padx=8)
@@ -4009,13 +4152,15 @@ class ORRPanel(ttk.Frame):
             # (_process_pair divides I_net by area when area > 0)
             y_unit = "mA/cm²"
 
-            # Group selected points by sample→catalyst
+            # Group selected points by sample→catalyst. Curves whose labels
+            # have no "[cat]" prefix are grouped together under "(no cat)" so
+            # they form a single line rather than one isolated point per RPM.
             _grp = {}; _grp_order = []
             for idx, (sn, lbl, col, rpm, sq, jl) in enumerate(all_valid):
                 if not _lsel_vars.get(idx, tk.BooleanVar(value=True)).get():
                     continue
-                m = re.match(r'^\[(\w+)\]', lbl)
-                cat = m.group(1) if m else lbl
+                m = re.match(r'^\[([^\]]+)\]', lbl)
+                cat = m.group(1) if m else "(no cat)"
                 key = (sn, cat)
                 if key not in _grp: _grp[key] = []; _grp_order.append(key)
                 _grp[key].append((rpm, sq, abs(jl), col))
@@ -4033,14 +4178,27 @@ class ORRPanel(ttk.Frame):
                 ax.plot(sq_arr, jl_arr, marker=mk, ls='-', color=col,
                         lw=1.6, ms=5, label=lbl_txt)
                 # Levich predicted from lowest RPM — dashed
+                _slope_pred = None
                 if _show_pred_var.get() and pts[0][1] > 0:
                     _slope_pred = pts[0][2] / pts[0][1]   # J_0 / √RPM_0
                     x_pred = np.linspace(0, sq_arr.max() * 1.1, 60)
                     ax.plot(x_pred, _slope_pred * x_pred, ls="--", color=col,
                             lw=0.9, alpha=0.65, label="_nolegend_")
-                lines_out.append(
-                    f"[{cat}] {sn}: "
-                    + ", ".join(f"{int(t[0])} rpm→{t[2]:.3f} {y_unit}" for t in pts))
+                # Multi-line block per group (header + indented rpm rows + fit summary)
+                lines_out.append(f"── [{cat}] {sn} ──")
+                for t in pts:
+                    lines_out.append(
+                        f"  {int(t[0]):>5d} rpm   |J_lim| = {t[2]:.4f}  {y_unit}")
+                if len(pts) >= 2:
+                    _coeffs = np.polyfit(sq_arr, jl_arr, 1)
+                    lines_out.append(
+                        f"  Linear fit:   slope = {_coeffs[0]:.5f}  "
+                        f"intercept = {_coeffs[1]:+.5f}  {y_unit}")
+                if _slope_pred is not None:
+                    lines_out.append(
+                        f"  Pred. slope (from lowest RPM) = {_slope_pred:.5f}  "
+                        f"{y_unit}/rpm^0.5")
+                lines_out.append("")   # blank separator between groups
 
             # Theoretical baseline — always in mA/cm² (B × √ω)
             if _show_theory_var.get():
@@ -4065,9 +4223,9 @@ class ORRPanel(ttk.Frame):
                 except (ValueError, KeyError):
                     pass
 
-            ax.set_xlabel("√RPM  [rpm^0.5]", fontsize=9)
-            ax.set_ylabel(f"|J_lim|  ({y_unit})", fontsize=9)
-            ax.set_title("Limiting Current vs √RPM", fontsize=10)
+            ax.set_xlabel(r"$\sqrt{RPM}$  (rpm$^{0.5}$)", fontsize=9)
+            ax.set_ylabel(rf"$|J_{{lim}}|$  ({y_unit})", fontsize=9)
+            ax.set_title(r"Limiting Current  $|J_{lim}|$ vs $\sqrt{RPM}$", fontsize=10)
             ax.tick_params(labelsize=8)
             ax.legend(fontsize=7, frameon=True)
             ax.grid(True, alpha=0.3)
@@ -4078,8 +4236,6 @@ class ORRPanel(ttk.Frame):
                     ax.set_xlim(xlo, xhi)
             except ValueError:
                 pass
-            fig.tight_layout(pad=0.8)
-            fig.set_layout_engine("none")
             cv.draw_idle()
             res.configure(state=tk.NORMAL)
             res.delete("1.0", tk.END)
@@ -4171,7 +4327,7 @@ class ORRPanel(ttk.Frame):
 
         _by_cat = {}; _cat_order = []
         for idx, (E_arr, J_arr, rpm, lbl, col) in enumerate(curves):
-            m = re.match(r'^\[(\w+)\]', lbl)
+            m = re.match(r'^\[([^\]]+)\]', lbl)
             cat = m.group(1) if m else ""
             if cat not in _by_cat:
                 _by_cat[cat] = []; _cat_order.append(cat)
@@ -4181,11 +4337,20 @@ class ORRPanel(ttk.Frame):
         ref   = self.ref_electrode_var.get()
         _LS = ['-', '--', '-.', ':']
         _MK = ['o', 's', '^', 'D', 'v', 'P']
-        cat_colors = {cat: _PALETTE[i % len(_PALETTE)] for i, cat in enumerate(_cat_order)}
+        # Use catalyst's registered color (from catalyst_styles, exposed via
+        # _get_curves_for_sample). Fall back to _PALETTE if missing.
+        cat_colors = {}
+        for ci, cat in enumerate(_cat_order):
+            items = _by_cat.get(cat, [])
+            # Each item tuple is (idx, E_arr, J_arr, rpm, lbl, col) — col at idx 5
+            cat_colors[cat] = (items[0][5] if items and items[0][5]
+                               else _PALETTE[ci % len(_PALETTE)])
 
         win = tk.Toplevel(self)
         win.title(f"Sample Comparison — {sname}")
         win.geometry("940x720")
+        try: win.state('zoomed')
+        except Exception: pass
 
         # ── Global controls (E values only) ──────────────────────────
         _ctrl = ttk.Frame(win); _ctrl.pack(fill=tk.X, padx=8, pady=(6, 0))
@@ -4246,31 +4411,52 @@ class ORRPanel(ttk.Frame):
             value=_cat_order[1] if len(_cat_order) > 1 else _cat_order[0] if _cat_order else "")
         ttk.Combobox(_rctrl, textvariable=den_var, values=_cat_order,
                      state="readonly", width=16).pack(side=tk.LEFT, padx=(4, 10))
-        fig_r = Figure(figsize=(7.5, 4.2), dpi=100)
+        fig_r = Figure(figsize=(7.5, 4.2), dpi=100, constrained_layout=True)
         ax_r  = fig_r.add_subplot(111)
         cv_r  = FigureCanvasTkAgg(fig_r, master=tab_r)
-        NavigationToolbar2Tk(cv_r, tab_r, pack_toolbar=False).pack(
-            side=tk.BOTTOM, fill=tk.X)
+        _tbr_r = ttk.Frame(tab_r); _tbr_r.pack(side=tk.BOTTOM, fill=tk.X)
+        NavigationToolbar2Tk(cv_r, _tbr_r, pack_toolbar=False).pack(
+            side=tk.LEFT, fill=tk.X, expand=True)
+        tk.Button(_tbr_r, text="Copy",
+                  command=lambda f=fig_r: copy_figure_to_clipboard(f),
+                  relief=tk.RAISED, borderwidth=1, padx=6).pack(
+                      side=tk.LEFT, padx=(4, 2), pady=1)
+        attach_plot_assistant(tab_r, fig_r, ax_r, cv_r).pack(
+            side=tk.TOP, fill=tk.X, padx=4, pady=(2, 0))
         cv_r.get_tk_widget().pack(fill=tk.BOTH, expand=True)
         num_var.trace_add("write", lambda *_: _plot_ratio())
         den_var.trace_add("write", lambda *_: _plot_ratio())
 
         # ── Tab 2: Levich ─────────────────────────────────────────────
         tab_l = ttk.Frame(nb); nb.add(tab_l, text="Levich  |J| vs √RPM")
-        fig_l = Figure(figsize=(7.5, 4.2), dpi=100)
+        fig_l = Figure(figsize=(7.5, 4.2), dpi=100, constrained_layout=True)
         ax_l  = fig_l.add_subplot(111)
         cv_l  = FigureCanvasTkAgg(fig_l, master=tab_l)
-        NavigationToolbar2Tk(cv_l, tab_l, pack_toolbar=False).pack(
-            side=tk.BOTTOM, fill=tk.X)
+        _tbr_l = ttk.Frame(tab_l); _tbr_l.pack(side=tk.BOTTOM, fill=tk.X)
+        NavigationToolbar2Tk(cv_l, _tbr_l, pack_toolbar=False).pack(
+            side=tk.LEFT, fill=tk.X, expand=True)
+        tk.Button(_tbr_l, text="Copy",
+                  command=lambda f=fig_l: copy_figure_to_clipboard(f),
+                  relief=tk.RAISED, borderwidth=1, padx=6).pack(
+                      side=tk.LEFT, padx=(4, 2), pady=1)
+        attach_plot_assistant(tab_l, fig_l, ax_l, cv_l).pack(
+            side=tk.TOP, fill=tk.X, padx=4, pady=(2, 0))
         cv_l.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
         # ── Tab 3: KL ─────────────────────────────────────────────────
         tab_kl = ttk.Frame(nb); nb.add(tab_kl, text="KL  1/|J| vs 1/√ω")
-        fig_kl = Figure(figsize=(7.5, 4.2), dpi=100)
+        fig_kl = Figure(figsize=(7.5, 4.2), dpi=100, constrained_layout=True)
         ax_kl  = fig_kl.add_subplot(111)
         cv_kl  = FigureCanvasTkAgg(fig_kl, master=tab_kl)
-        NavigationToolbar2Tk(cv_kl, tab_kl, pack_toolbar=False).pack(
-            side=tk.BOTTOM, fill=tk.X)
+        _tbr_kl = ttk.Frame(tab_kl); _tbr_kl.pack(side=tk.BOTTOM, fill=tk.X)
+        NavigationToolbar2Tk(cv_kl, _tbr_kl, pack_toolbar=False).pack(
+            side=tk.LEFT, fill=tk.X, expand=True)
+        tk.Button(_tbr_kl, text="Copy",
+                  command=lambda f=fig_kl: copy_figure_to_clipboard(f),
+                  relief=tk.RAISED, borderwidth=1, padx=6).pack(
+                      side=tk.LEFT, padx=(4, 2), pady=1)
+        attach_plot_assistant(tab_kl, fig_kl, ax_kl, cv_kl).pack(
+            side=tk.TOP, fill=tk.X, padx=4, pady=(2, 0))
         cv_kl.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
         # ── Tab 4: Kinetic — ECSA inputs in tab ──────────────────────
@@ -4283,12 +4469,19 @@ class ORRPanel(ttk.Frame):
             ev = tk.StringVar(value="")
             _ecsa_vars[cat] = ev
             ttk.Entry(_kctrl, textvariable=ev, width=7).pack(side=tk.LEFT, padx=(2, 4))
-        fig_kin = Figure(figsize=(7.5, 4.2), dpi=100)
+        fig_kin = Figure(figsize=(7.5, 4.2), dpi=100, constrained_layout=True)
         ax_ta   = fig_kin.add_subplot(121)
         ax_sa   = fig_kin.add_subplot(122)
         cv_kin  = FigureCanvasTkAgg(fig_kin, master=tab_kin)
-        NavigationToolbar2Tk(cv_kin, tab_kin, pack_toolbar=False).pack(
-            side=tk.BOTTOM, fill=tk.X)
+        _tbr_kin = ttk.Frame(tab_kin); _tbr_kin.pack(side=tk.BOTTOM, fill=tk.X)
+        NavigationToolbar2Tk(cv_kin, _tbr_kin, pack_toolbar=False).pack(
+            side=tk.LEFT, fill=tk.X, expand=True)
+        tk.Button(_tbr_kin, text="Copy",
+                  command=lambda f=fig_kin: copy_figure_to_clipboard(f),
+                  relief=tk.RAISED, borderwidth=1, padx=6).pack(
+                      side=tk.LEFT, padx=(4, 2), pady=1)
+        attach_plot_assistant(tab_kin, fig_kin, [ax_ta, ax_sa], cv_kin).pack(
+            side=tk.TOP, fill=tk.X, padx=4, pady=(2, 0))
         cv_kin.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
         # ── Plot Ratio ────────────────────────────────────────────────
@@ -4296,7 +4489,9 @@ class ORRPanel(ttk.Frame):
             e_vals = _get_e_vals()
             if not e_vals: return
             num_cat = num_var.get(); den_cat = den_var.get()
-            e_colors = [_PALETTE[i % len(_PALETTE)] for i in range(len(e_vals))]
+            # Gradient of numerator catalyst's color across E values
+            _r_base = cat_colors.get(num_cat, _PALETTE[0])
+            e_colors = self._gradient_shades(_r_base, len(e_vals))
             ax_r.clear()
             for e_val, c_e in zip(e_vals, e_colors):
                 d_pts = _rpm_j(den_cat, e_val); n_pts = _rpm_j(num_cat, e_val)
@@ -4313,7 +4508,7 @@ class ORRPanel(ttk.Frame):
             ax_r.set_ylabel(f"|J[{num_cat}]| / |J[{den_cat}]|")
             ax_r.set_title(f"Current Ratio  [{num_cat}] / [{den_cat}]")
             ax_r.legend(fontsize=7, frameon=True)
-            fig_r.tight_layout(pad=0.5); fig_r.set_layout_engine("none"); cv_r.draw()
+            cv_r.draw()
 
         # ── Plot All (Levich + KL + Kinetic) ─────────────────────────
         def _plot_all():
@@ -4321,14 +4516,24 @@ class ORRPanel(ttk.Frame):
             if not e_vals:
                 messagebox.showerror("Comparison", "Invalid E values.", parent=win)
                 return
-            e_colors = [_PALETTE[i % len(_PALETTE)] for i in range(len(e_vals))]
             lev_ev = e_vals[:5]; kl_ev = e_vals[:4]
+            # Per-catalyst gradient shades (E values within a catalyst share base color)
+            lev_shades = {cat: self._gradient_shades(
+                              cat_colors.get(cat, _PALETTE[ci % len(_PALETTE)]),
+                              len(lev_ev))
+                          for ci, cat in enumerate(_cat_order)}
+            kl_shades  = {cat: self._gradient_shades(
+                              cat_colors.get(cat, _PALETTE[ci % len(_PALETTE)]),
+                              len(kl_ev))
+                          for ci, cat in enumerate(_cat_order)}
 
             # Levich
             ax_l.clear()
             for ci, cat in enumerate(_cat_order):
                 ls = _LS[ci % len(_LS)]; mk = _MK[ci % len(_MK)]
-                for e_val, c_e in zip(lev_ev, e_colors):
+                shades = lev_shades[cat]
+                for ei, e_val in enumerate(lev_ev):
+                    c_e = shades[ei]
                     pts = _rpm_j(cat, e_val)
                     if not pts: continue
                     x = [math.sqrt(r) for r, _ in pts]
@@ -4339,13 +4544,15 @@ class ORRPanel(ttk.Frame):
             ax_l.set_ylabel(r"$|J|$  (mA cm$^{-2}$)")
             ax_l.set_title("Levich  |J| vs √RPM")
             ax_l.legend(fontsize=6, frameon=True, ncol=max(1, len(_cat_order)))
-            fig_l.tight_layout(pad=0.5); fig_l.set_layout_engine("none"); cv_l.draw()
+            cv_l.draw()
 
             # KL
             ax_kl.clear()
             for ci, cat in enumerate(_cat_order):
                 ls = _LS[ci % len(_LS)]; mk = _MK[ci % len(_MK)]
-                for e_val, c_e in zip(kl_ev, e_colors):
+                shades = kl_shades[cat]
+                for ei, e_val in enumerate(kl_ev):
+                    c_e = shades[ei]
                     pts = _rpm_j(cat, e_val)
                     x = []; y = []
                     for r, j in pts:
@@ -4355,11 +4562,11 @@ class ORRPanel(ttk.Frame):
                     if len(x) < 2: continue
                     ax_kl.plot(x, y, mk + ls, color=c_e, linewidth=1.4, markersize=4,
                                label=f"[{cat}] {e_val:.2f} V")
-            ax_kl.set_xlabel(r"$\omega^{-1/2}$  (rad s$^{-1}$)$^{-\!1/2}$")
-            ax_kl.set_ylabel(r"$|J|^{-1}$")
-            ax_kl.set_title("Koutecky–Levich  1/|J| vs 1/√ω")
+            ax_kl.set_xlabel(r"$\omega^{-1/2}$  (rad s$^{-1}$)$^{-1/2}$")
+            ax_kl.set_ylabel(r"$|J|^{-1}$  (mA cm$^{-2}$)$^{-1}$")
+            ax_kl.set_title("Koutecky-Levich  1/|J| vs 1/√ω")
             ax_kl.legend(fontsize=6, frameon=True, ncol=max(1, len(_cat_order)))
-            fig_kl.tight_layout(pad=0.5); fig_kl.set_layout_engine("none"); cv_kl.draw()
+            cv_kl.draw()
 
             # Kinetic
             ax_ta.clear(); ax_sa.clear()
@@ -4426,7 +4633,6 @@ class ORRPanel(ttk.Frame):
                 ax_sa.text(0.5, 0.5, "Enter ECSA above for SA",
                            ha="center", va="center", transform=ax_sa.transAxes,
                            color="gray", fontsize=8)
-            fig_kin.tight_layout(pad=0.5); fig_kin.set_layout_engine("none")
             cv_kin.draw()
             _plot_ratio()
 
