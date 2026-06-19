@@ -387,7 +387,7 @@ class ORRPanel(ttk.Frame):
         _ptf.pack(fill=tk.X, padx=4, pady=2)
         self._pair_tbl_canvas = tk.Canvas(_ptf, background="#f5f5f5",
                                           highlightthickness=1, highlightbackground="#cccccc",
-                                          height=100)
+                                          height=180)
         _pt_vs = ttk.Scrollbar(_ptf, orient=tk.VERTICAL, command=self._pair_tbl_canvas.yview)
         self._pair_tbl_canvas.configure(yscrollcommand=_pt_vs.set)
         _pt_vs.pack(side=tk.RIGHT, fill=tk.Y)
@@ -433,7 +433,11 @@ class ORRPanel(ttk.Frame):
         self._cat_color_var = tk.StringVar(value="Blue")
         _cat_color_cb = ttk.Combobox(_cst, textvariable=self._cat_color_var,
                                       values=_COLOR_NAMES, state="readonly", width=12)
-        _cat_color_cb.pack(side=tk.LEFT, padx=(2, 6))
+        _cat_color_cb.pack(side=tk.LEFT, padx=(2, 4))
+        ttk.Label(_cst, text="Grad:").pack(side=tk.LEFT)
+        self._gradient_step_var = tk.StringVar(value="0.10")
+        _grad_e = ttk.Entry(_cst, textvariable=self._gradient_step_var, width=5)
+        _grad_e.pack(side=tk.LEFT, padx=(2, 6))
         ttk.Label(_cst, text="Style:").pack(side=tk.LEFT)
         self._cat_ls_var = tk.StringVar(value="solid")
         _cat_ls_cb = ttk.Combobox(_cst, textvariable=self._cat_ls_var,
@@ -456,6 +460,8 @@ class ORRPanel(ttk.Frame):
         _cat_color_cb.bind("<<ComboboxSelected>>", lambda e: self._on_cat_style_change())
         _cat_ls_cb.bind("<<ComboboxSelected>>", lambda e: self._on_cat_style_change())
         _cat_mk_cb.bind("<<ComboboxSelected>>", lambda e: self._on_cat_style_change())
+        _grad_e.bind("<Return>",   lambda e: self._on_gradient_change())
+        _grad_e.bind("<FocusOut>", lambda e: self._on_gradient_change())
 
         _cr1 = ttk.Frame(left)
         _cr1.pack(fill=tk.X, padx=4, pady=2)
@@ -1609,6 +1615,10 @@ class ORRPanel(ttk.Frame):
         g["label_pad"]       = self.label_pad_var.get()
         g["custom_title"]    = self.plot_title_var.get()
         g["show_half_wave"]  = self.show_half_wave_var.get()
+        try:
+            g["gradient_step"] = float(self._gradient_step_var.get())
+        except ValueError:
+            pass
 
     def _switch_active_sample(self, sample_name):
         self._switching_sample = True
@@ -1643,6 +1653,7 @@ class ORRPanel(ttk.Frame):
         g.setdefault("label_pad",       "4")
         g.setdefault("custom_title",    "")
         g.setdefault("show_half_wave",  True)
+        g.setdefault("gradient_step",   0.10)
         g.setdefault("reflines",        [])
         g.setdefault("custom_xlabel",   None)
         g.setdefault("custom_ylabel",   None)
@@ -1684,6 +1695,7 @@ class ORRPanel(ttk.Frame):
             self.label_pad_var.set(g["label_pad"])
             self.plot_title_var.set(g.get("custom_title", ""))
             self.show_half_wave_var.set(g.get("show_half_wave", True))
+            self._gradient_step_var.set(str(g.get("gradient_step", 0.10)))
             self._rebuild_pair_table(sample_name)
             self._refresh_reflines_lb()
         finally:
@@ -1783,6 +1795,18 @@ class ORRPanel(ttk.Frame):
         cat_cs["marker"]    = self._cat_mk_var.get()
         self._auto_replot()
 
+    def _on_gradient_change(self):
+        if getattr(self, "_switching_sample", False):
+            return
+        if not self.active_sample or self.active_sample not in self.samples:
+            return
+        try:
+            step = float(self._gradient_step_var.get())
+        except ValueError:
+            return
+        self.samples[self.active_sample]["gradient_step"] = step
+        self._auto_replot()
+
     # ════════════════════════════════════════════════════════════════
     # Correction trigger + per-sample immediate write
     # ════════════════════════════════════════════════════════════════
@@ -1878,12 +1902,21 @@ class ORRPanel(ttk.Frame):
                 pairs_by_cat[cat] = []
             pairs_by_cat[cat].append(pair)
 
+        try:
+            _gstep = float(sentry.get("gradient_step", 0.10))
+        except (ValueError, TypeError):
+            _gstep = 0.10
+
         for ci, cat in enumerate(catalyst_order):
-            base_col  = _PALETTE[ci % len(_PALETTE)]
+            _cat_st  = sentry.get("catalyst_styles", {}).get(cat, {})
+            _user_col = _cat_st.get("color", "").strip()
+            # User-set color becomes the gradient base; fall back to palette
+            base_col  = _user_col if _user_col else _PALETTE[ci % len(_PALETTE)]
             cat_pairs = sorted(pairs_by_cat[cat],
-                               key=lambda p: p.get("rpm_id", ""))
+                               key=lambda p: _safe_rpm_int(
+                                   p.get("rpm_val") or p.get("rpm_id", "")))
             n_cat = len(cat_pairs)
-            cat_colors = (_cycle_colors(base_col, n_cat, step=0.10, reverse=False)
+            cat_colors = (_cycle_colors(base_col, n_cat, step=_gstep, reverse=False)
                           if n_cat > 1 else [base_col])
             for j, pair in enumerate(cat_pairs):
                 if not pair.get("n2_short") or not pair.get("o2_short"):
@@ -1900,8 +1933,7 @@ class ORRPanel(ttk.Frame):
                 rpm_val = pair.get("rpm_val") or pair.get("rpm_id") or f"#{j+1}"
                 prefix  = f"[{cat}] " if cat else ""
                 label   = f"{prefix}{rpm_val} rpm"
-                _cat_st = sentry.get("catalyst_styles", {}).get(cat, {})
-                _col = _cat_st.get("color", "").strip() or cat_colors[j]
+                _col = cat_colors[j]
                 try:
                     _lw = float(_cat_st.get("linewidth", "1.5") or 1.5)
                 except (ValueError, TypeError):
@@ -2913,35 +2945,58 @@ class ORRPanel(ttk.Frame):
         if sentry is None:
             return []
         cat_corrections = sentry.get("catalyst_corrections", {})
-        curves = []
-        for i, pair in enumerate(sentry.get("pairs", [])):
+
+        # Build per-catalyst ordered pair lists (enabled only)
+        _cat_order: list = []
+        _pairs_by_cat: dict = {}
+        for pair in sentry.get("pairs", []):
             if not pair.get("n2_short") or not pair.get("o2_short"):
                 continue
             if not pair.get("enabled", True):
                 continue
             cat = pair.get("catalyst_id", "")
-            _cc = cat_corrections.get(cat, {})
-            try:
-                r_n2  = float(_cc.get("r_sol_n2", 0) or 0)
-                r_o2  = float(_cc.get("r_sol_o2", 0) or 0)
-                e_ref = float(_cc.get("e_ref", 0) or 0)
-                area  = float(_cc.get("area", "") or 0)
-            except (ValueError, TypeError):
-                r_n2 = r_o2 = e_ref = area = 0.0
-            result = _process_pair(pair, r_n2, r_o2, e_ref, area)
-            if result is None:
-                continue
-            E_arr, J_arr = result
-            try:
-                rpm = float(pair.get("rpm_val") or pair.get("rpm_id") or 0)
-            except (ValueError, TypeError):
-                rpm = 0.0
-            prefix = f"[{cat}] " if cat else ""
-            rpm_v = pair.get('rpm_val') or pair.get('rpm_id') or f'#{i+1}'
-            label = f"{prefix}{rpm_v} rpm"
-            _auto_col = _PALETTE[i % len(_PALETTE)]
-            color = sentry.get("catalyst_styles", {}).get(cat, {}).get("color", "").strip() or _auto_col
-            curves.append((E_arr, J_arr, rpm, label, color))
+            if cat not in _cat_order:
+                _cat_order.append(cat)
+                _pairs_by_cat[cat] = []
+            _pairs_by_cat[cat].append(pair)
+
+        try:
+            _gstep = float(sentry.get("gradient_step", 0.10))
+        except (ValueError, TypeError):
+            _gstep = 0.10
+
+        curves = []
+        for ci, cat in enumerate(_cat_order):
+            _cat_st   = sentry.get("catalyst_styles", {}).get(cat, {})
+            _user_col = _cat_st.get("color", "").strip()
+            base_col  = _user_col if _user_col else _PALETTE[ci % len(_PALETTE)]
+            cat_pairs = sorted(_pairs_by_cat[cat],
+                               key=lambda p: _safe_rpm_int(
+                                   p.get("rpm_val") or p.get("rpm_id", "")))
+            n_cat = len(cat_pairs)
+            cat_colors = (_cycle_colors(base_col, n_cat, step=_gstep, reverse=False)
+                          if n_cat > 1 else [base_col])
+            for j, pair in enumerate(cat_pairs):
+                _cc = cat_corrections.get(cat, {})
+                try:
+                    r_n2  = float(_cc.get("r_sol_n2", 0) or 0)
+                    r_o2  = float(_cc.get("r_sol_o2", 0) or 0)
+                    e_ref = float(_cc.get("e_ref", 0) or 0)
+                    area  = float(_cc.get("area", "") or 0)
+                except (ValueError, TypeError):
+                    r_n2 = r_o2 = e_ref = area = 0.0
+                result = _process_pair(pair, r_n2, r_o2, e_ref, area)
+                if result is None:
+                    continue
+                E_arr, J_arr = result
+                try:
+                    rpm = float(pair.get("rpm_val") or pair.get("rpm_id") or 0)
+                except (ValueError, TypeError):
+                    rpm = 0.0
+                prefix = f"[{cat}] " if cat else ""
+                rpm_v  = pair.get("rpm_val") or pair.get("rpm_id") or f"#{j+1}"
+                label  = f"{prefix}{rpm_v} rpm"
+                curves.append((E_arr, J_arr, rpm, label, cat_colors[j]))
         return curves
 
     def _get_active_curves(self):
