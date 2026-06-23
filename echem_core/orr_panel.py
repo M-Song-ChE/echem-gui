@@ -505,6 +505,17 @@ class ORRPanel(ttk.Frame):
         _area_e.bind("<Return>",   lambda ev: self._on_correction_change())
         _area_e.bind("<FocusOut>", lambda ev: self._on_correction_change())
 
+        _cr4 = ttk.Frame(left)
+        _cr4.pack(fill=tk.X, padx=4, pady=(0, 2))
+        ttk.Label(_cr4, text="ECSA_Hupd (cm²):").pack(side=tk.LEFT)
+        self.ecsa_var = tk.StringVar(value="")
+        _ecsa_hupd_e = ttk.Entry(_cr4, textvariable=self.ecsa_var, width=8)
+        _ecsa_hupd_e.pack(side=tk.LEFT, padx=(4, 6))
+        ttk.Label(_cr4, text="(from Hupd panel; used for SA in report)",
+                  foreground="gray", font=("", 8)).pack(side=tk.LEFT)
+        _ecsa_hupd_e.bind("<Return>",   lambda ev: self._on_correction_change())
+        _ecsa_hupd_e.bind("<FocusOut>", lambda ev: self._on_correction_change())
+
         # Traces: immediately write any change to the active sample's dict so that
         # FocusOut events firing after a sample switch never overwrite the wrong sample.
         for _ck, _cv in [("r_sol_n2", self.r_sol_n2_var),
@@ -514,6 +525,8 @@ class ORRPanel(ttk.Frame):
                           lambda *_a, k=_ck, v=_cv: self._on_corr_var_trace(k, v))
         self.area_var.trace_add("write",
                                 lambda *_a: self._on_corr_var_trace("area", self.area_var))
+        self.ecsa_var.trace_add("write",
+                                lambda *_a: self._on_corr_var_trace("ecsa", self.ecsa_var))
 
         ttk.Label(left, text="(auto-applied on Enter / focus change)",
                   foreground="gray", font=("", 8)).pack(anchor=tk.W, padx=4)
@@ -781,6 +794,10 @@ class ORRPanel(ttk.Frame):
                    command=self._open_comparison_window).pack(side=tk.LEFT, padx=(0, 4))
         ttk.Button(_an_row2, text="Lim. Current Compare",
                    command=self._open_lc_comparison_window).pack(side=tk.LEFT)
+        _an_row3 = ttk.Frame(left)
+        _an_row3.pack(fill=tk.X, padx=4, pady=(1, 2))
+        ttk.Button(_an_row3, text="Extract Report",
+                   command=self._open_report_window).pack(side=tk.LEFT)
 
         # ══ EXPORT ══════════════════════════════════════════════════
         ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
@@ -1223,7 +1240,7 @@ class ORRPanel(ttk.Frame):
             batch_paired.add(o2_short)
             cc = sentry.setdefault("catalyst_corrections", {})
             cc.setdefault(cat_label, {"r_sol_n2": 0.0, "r_sol_o2": 0.0,
-                                      "e_ref": 0.0, "area": ""})
+                                      "e_ref": 0.0, "area": "", "ecsa": ""})
             cs = sentry.setdefault("catalyst_styles", {})
             cs.setdefault(cat_label, {"color": "", "linestyle": "solid",
                                       "linewidth": "1.5", "marker": "none"})
@@ -1285,7 +1302,7 @@ class ORRPanel(ttk.Frame):
             all_existing_paths.add(path)
             cc = sentry.setdefault("catalyst_corrections", {})
             cc.setdefault(cat_label, {"r_sol_n2": 0.0, "r_sol_o2": 0.0,
-                                      "e_ref": 0.0, "area": ""})
+                                      "e_ref": 0.0, "area": "", "ecsa": ""})
             cs = sentry.setdefault("catalyst_styles", {})
             cs.setdefault(cat_label, {"color": "", "linestyle": "solid",
                                       "linewidth": "1.5", "marker": "none"})
@@ -1733,6 +1750,7 @@ class ORRPanel(ttk.Frame):
                 self.r_sol_o2_var.set("0")
                 self.e_ref_var.set("0")
                 self.area_var.set("")
+                self.ecsa_var.set("")
                 self._cat_color_var.set("Blue")
                 self._cat_ls_var.set("solid")
                 self._cat_lw_var.set("1.5")
@@ -1750,6 +1768,7 @@ class ORRPanel(ttk.Frame):
             self.r_sol_o2_var.set(str(cc.get("r_sol_o2", 0.0)))
             self.e_ref_var.set(str(cc.get("e_ref", 0.0)))
             self.area_var.set(cc.get("area", ""))
+            self.ecsa_var.set(cc.get("ecsa", ""))
         finally:
             self._switching_sample = False
         self._active_catalyst = catalyst_id
@@ -1821,13 +1840,13 @@ class ORRPanel(ttk.Frame):
         sentry = self.samples[self.active_sample]
         cc = sentry.setdefault("catalyst_corrections", {})
         cat_cc = cc.setdefault(cat, {"r_sol_n2": 0.0, "r_sol_o2": 0.0,
-                                      "e_ref": 0.0, "area": ""})
+                                      "e_ref": 0.0, "area": "", "ecsa": ""})
         try:
             raw = var.get()
         except tk.TclError:
             return
-        if key == "area":
-            cat_cc["area"] = raw
+        if key in ("area", "ecsa"):
+            cat_cc[key] = raw
         else:
             try:
                 cat_cc[key] = float(raw or 0)
@@ -3503,6 +3522,164 @@ class ORRPanel(ttk.Frame):
 
         _compute()
 
+    def _open_report_window(self):
+        """Extract J@E, SA@E, JL for all visible plotted samples — copy-to-Excel TSV."""
+        RPMS = [400, 900, 1600, 2500]
+        ref = self.ref_electrode_var.get()
+
+        win = tk.Toplevel(self)
+        win.title("ORR Report")
+        win.geometry("1200x460")
+        try: win.state('zoomed')
+        except Exception: pass
+
+        ctrl = ttk.Frame(win)
+        ctrl.pack(fill=tk.X, padx=8, pady=(6, 2))
+        ttk.Label(ctrl, text=f"E value (V vs {ref}):").pack(side=tk.LEFT)
+        e_var = tk.StringVar(value="0.90")
+        _ev_entry = ttk.Entry(ctrl, textvariable=e_var, width=6)
+        _ev_entry.pack(side=tk.LEFT, padx=(2, 10))
+
+        _copy_data = [None]
+
+        def _copy_tsv():
+            if _copy_data[0]:
+                win.clipboard_clear()
+                win.clipboard_append(_copy_data[0])
+
+        def _compute_and_fill():
+            try:
+                e_tgt = float(e_var.get())
+            except ValueError:
+                messagebox.showerror("Report", "Invalid E value.", parent=win)
+                return
+
+            rows = []
+            for sn, sentry in self.samples.items():
+                if sentry.get("hidden", False):
+                    continue
+                if "ax" not in sentry:
+                    continue
+                cat_corrections = sentry.get("catalyst_corrections", {})
+                curves = self._get_curves_for_sample(sn)
+                if not curves:
+                    continue
+
+                cat_order = []
+                curves_by_cat_rpm = {}
+                for E_arr, J_arr, rpm, label, color in curves:
+                    m = re.match(r'^\[([^\]]+)\]', label)
+                    cat = m.group(1) if m else ""
+                    if cat not in cat_order:
+                        cat_order.append(cat)
+                    rpm_r = int(round(rpm))
+                    curves_by_cat_rpm[(cat, rpm_r)] = (E_arr, J_arr)
+
+                for cat in cat_order:
+                    cc = cat_corrections.get(cat, {})
+                    try: area = float(cc.get("area", "") or 0)
+                    except ValueError: area = 0.0
+                    try: ecsa = float(cc.get("ecsa", "") or 0)
+                    except ValueError: ecsa = 0.0
+
+                    row_j = []; row_sa = []; row_jl = []
+
+                    for rpm_t in RPMS:
+                        best = None
+                        for (c, r), data in curves_by_cat_rpm.items():
+                            if c != cat:
+                                continue
+                            dist = abs(r - rpm_t)
+                            if dist <= 50 and (best is None or dist < best[0]):
+                                best = (dist, data)
+
+                        if best is None:
+                            row_j.append(""); row_sa.append(""); row_jl.append("")
+                            continue
+
+                        E_arr, J_arr = best[1]
+                        j_lim = float(np.min(J_arr))
+
+                        if e_tgt < E_arr[0] or e_tgt > E_arr[-1]:
+                            j_at_e = None
+                        else:
+                            j_at_e = float(np.interp(e_tgt, E_arr, J_arr))
+
+                        # J at E (mA)
+                        if j_at_e is not None:
+                            j_ma = j_at_e * area if area > 0 else j_at_e
+                            row_j.append(f"{j_ma:.4f}")
+                        else:
+                            row_j.append("N/A")
+
+                        # JL (mA/cm² if area set, else mA)
+                        row_jl.append(f"{j_lim:.4f}")
+
+                        # SA (mA/cm²_ECSA)
+                        if (j_at_e is not None and j_lim < 0 and j_at_e < 0
+                                and abs(j_lim - j_at_e) > 1e-12 and ecsa > 0):
+                            j_k = j_at_e * j_lim / (j_lim - j_at_e)
+                            row_sa.append(f"{abs(j_k) / ecsa:.4f}")
+                        else:
+                            row_sa.append("" if ecsa <= 0 else "N/A")
+
+                    rows.append((sn, cat, row_j, row_sa, row_jl))
+
+            e = e_tgt
+            col_hdrs = (
+                ["Sample", "Catalyst"]
+                + [f"I at {e:.2f}V ({r} rpm) (mA)"         for r in RPMS]
+                + [f"SA at {e:.2f}V ({r} rpm) (mA/cm2)"    for r in RPMS]
+                + [f"JL ({r} rpm) (mA/cm2)"                  for r in RPMS]
+            )
+            keys_order = (
+                ["Sample", "Catalyst"]
+                + [f"J_{r}" for r in RPMS]
+                + [f"SA_{r}" for r in RPMS]
+                + [f"JL_{r}" for r in RPMS]
+            )
+
+            # Build TSV (for Excel copy)
+            tsv_lines = ["\t".join(col_hdrs)]
+            for sn, cat, row_j, row_sa, row_jl in rows:
+                tsv_lines.append("\t".join([sn, cat] + row_j + row_sa + row_jl))
+            _copy_data[0] = "\n".join(tsv_lines)
+
+            # Build display (aligned columns)
+            col_w = [max(len(h), 8) for h in col_hdrs]
+            disp_lines = ["  ".join(h.ljust(w) for h, w in zip(col_hdrs, col_w))]
+            disp_lines.append("-" * sum(w + 2 for w in col_w))
+            for sn, cat, row_j, row_sa, row_jl in rows:
+                vals = [sn, cat] + row_j + row_sa + row_jl
+                disp_lines.append("  ".join(v.ljust(w) for v, w in zip(vals, col_w)))
+            if not rows:
+                disp_lines.append("(No visible plotted samples with data)")
+
+            txt.configure(state=tk.NORMAL)
+            txt.delete("1.0", tk.END)
+            txt.insert(tk.END, "\n".join(disp_lines))
+            txt.configure(state=tk.DISABLED)
+
+        ttk.Button(ctrl, text="Compute", command=_compute_and_fill).pack(
+            side=tk.LEFT, padx=(0, 6))
+        ttk.Button(ctrl, text="Copy TSV (→ Excel)", command=_copy_tsv).pack(
+            side=tk.LEFT, padx=(0, 6))
+        ttk.Label(ctrl, text="(visible plotted samples only; ECSA_Hupd required for SA)",
+                  foreground="gray", font=("", 8)).pack(side=tk.LEFT, padx=(6, 0))
+        _ev_entry.bind("<Return>", lambda e: _compute_and_fill())
+
+        txt_fr = ttk.Frame(win)
+        txt_fr.pack(fill=tk.BOTH, expand=True, padx=8, pady=(2, 8))
+        txt = tk.Text(txt_fr, font=("Courier", 9), wrap=tk.NONE, state=tk.DISABLED)
+        sb_y = ttk.Scrollbar(txt_fr, orient=tk.VERTICAL,   command=txt.yview)
+        sb_x = ttk.Scrollbar(txt_fr, orient=tk.HORIZONTAL, command=txt.xview)
+        txt.configure(yscrollcommand=sb_y.set, xscrollcommand=sb_x.set)
+        sb_y.pack(side=tk.RIGHT, fill=tk.Y)
+        sb_x.pack(side=tk.BOTTOM, fill=tk.X)
+        txt.pack(fill=tk.BOTH, expand=True)
+
+        _compute_and_fill()
+
     def _open_sa_window(self):
         """ECSA-normalised specific activity — all samples, sample-grouped selector."""
         all_curves = []  # (E_arr, J_arr, rpm, label, color, sname)
@@ -3576,6 +3753,12 @@ class ORRPanel(ttk.Frame):
                       anchor=tk.W).grid(row=_r, column=_c+1, sticky=tk.W, padx=(0,16), pady=2)
 
         # ── ECSA inputs per unique catalyst ───────────────────────────
+        _stored_ecsa = {}
+        for _sn_ec, _se_ec in self.samples.items():
+            for _cid, _cc_ec in _se_ec.get("catalyst_corrections", {}).items():
+                _ev = _cc_ec.get("ecsa", "")
+                if _ev and _cid not in _stored_ecsa:
+                    _stored_ecsa[_cid] = _ev
         _ecsa_fr = ttk.LabelFrame(win, text="ECSA (cm²) per catalyst")
         _ecsa_fr.pack(fill=tk.X, padx=8, pady=(2, 0))
         _ecsa_row = ttk.Frame(_ecsa_fr); _ecsa_row.pack(fill=tk.X, padx=6, pady=3)
@@ -3583,7 +3766,7 @@ class ORRPanel(ttk.Frame):
         for cat in _all_cats:
             ttk.Label(_ecsa_row, text=f"[{cat}]:" if cat else "(no cat):").pack(
                 side=tk.LEFT, padx=(0, 2))
-            _ecv = tk.StringVar(value="")
+            _ecv = tk.StringVar(value=_stored_ecsa.get(cat, ""))
             _ecsa_vars[cat] = _ecv
             ttk.Entry(_ecsa_row, textvariable=_ecv, width=8).pack(
                 side=tk.LEFT, padx=(0, 12))
@@ -4519,9 +4702,15 @@ class ORRPanel(ttk.Frame):
         _kctrl = ttk.Frame(tab_kin); _kctrl.pack(fill=tk.X, padx=6, pady=(4, 0))
         ttk.Label(_kctrl, text="ECSA (cm²) per catalyst:").pack(side=tk.LEFT)
         _ecsa_vars = {}
+        _stored_ecsa_cmp = {}
+        for _sn_ec2, _se_ec2 in self.samples.items():
+            for _cid2, _cc_ec2 in _se_ec2.get("catalyst_corrections", {}).items():
+                _ev2 = _cc_ec2.get("ecsa", "")
+                if _ev2 and _cid2 not in _stored_ecsa_cmp:
+                    _stored_ecsa_cmp[_cid2] = _ev2
         for cat in _cat_order:
             ttk.Label(_kctrl, text=f" [{cat}]:").pack(side=tk.LEFT)
-            ev = tk.StringVar(value="")
+            ev = tk.StringVar(value=_stored_ecsa_cmp.get(cat, ""))
             _ecsa_vars[cat] = ev
             ttk.Entry(_kctrl, textvariable=ev, width=7).pack(side=tk.LEFT, padx=(2, 4))
         fig_kin = Figure(figsize=(7.5, 4.2), dpi=100, constrained_layout=True)

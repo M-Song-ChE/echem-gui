@@ -258,6 +258,7 @@ The **RPM Pairs** section lists all matched N2/O2 pairs for the active sample:
 - **E_ref (V vs RHE)** — shared reference electrode offset: `E_RHE = E_corr + E_ref`.
 - **Ref** — reference electrode label shown in the axis label.
 - **Area (cm²)** — electrode area; leave blank for I (mA), enter a value for J (mA cm⁻²).
+- **ECSA_Hupd (cm²)** — electrochemical surface area from the Hupd Calc tab. Enter to enable specific activity (SA) calculation in the Extract Report window. Stored per catalyst; also auto-fills the ECSA input in the Specific Activity and Comparison windows.
 
 All corrections are applied automatically on Enter / focus change.
 
@@ -293,7 +294,24 @@ All controls in the left panel apply to the **active sample** only. Each sample 
 - **Drag the ⠿ header** to reorder samples.
 - **Uncheck** a sample in the list to hide its subplot without deleting it.
 
-### 8.9 Plot Size
+### 8.9 Extract Report
+Click **Extract Report** in the Analysis section to open a report window that tabulates key ORR metrics for all currently visible (plotted) samples.
+
+**Controls:**
+- **E value (V vs Ref)** — target potential for the J@E and SA@E columns (default 0.90 V). Press Enter or click Compute to update.
+- **Compute** — fills the table for all visible samples at RPMs 400, 900, 1600, 2500.
+- **Copy TSV (→ Excel)** — copies the table as tab-separated values to the clipboard for direct paste into Excel.
+
+**Columns extracted (per RPM):**
+| Column | Description |
+|--------|-------------|
+| **I at E (mA)** | Current at the target potential × electrode area (if Area is set) |
+| **SA at E (mA/cm²_ECSA)** | Kinetic current density normalised by ECSA_Hupd: `j_k = J@E × J_lim / (J_lim − J@E)`, then `SA = |j_k| / ECSA_Hupd`. Requires ECSA_Hupd to be entered in the correction panel. |
+| **JL (mA/cm²)** | Limiting (diffusion) current — minimum current density on the curve |
+
+The closest available RPM within ±50 rpm of each target is used; cells show blank or "N/A" when data or ECSA is missing.
+
+### 8.10 Plot Size
 **W [__] H [__] inches** — figure size for all sample subplots. Scrollbars appear automatically for oversized grids.
 
 ---
