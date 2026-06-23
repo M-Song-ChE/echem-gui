@@ -19,7 +19,7 @@ from .export import ExportMixin
 from .ecsa_panel import ECSAPanel
 from .multi_echem_panel import MultiEchemPanel
 from .multi_echem2_panel import MultiEchem2Panel
-from .eis_panel import EISPanel
+from .ocv_ru_panel import OcvRuPanel
 from .orr_panel import ORRPanel
 from .hupd_panel import HupdPanel
 from .cv_activation_panel import CvActivationPanel
@@ -1349,7 +1349,7 @@ class EchemGUI(tk.Tk):
                               lambda p: EchemPanel(p, show_ecsa=False, show_log=True)),
             ("multi_echem",   "Multi E.Chem",   row1, MultiEchemPanel),
             ("multi_echem2",  "Multi E.Chem 2", row1, MultiEchem2Panel),
-            ("nyquist",       "Nyquist Plot",   row1, EISPanel),
+            ("ocv_ru",        "OCV/Ru Extractor", row1, OcvRuPanel),
             ("orr",           "ORR Analysis",   row2, ORRPanel),
             ("hupd",          "ECSA_Hupd",      row2, HupdPanel),
             ("ecsa",          "ECSA_Cdl",       row2, ECSAPanel),

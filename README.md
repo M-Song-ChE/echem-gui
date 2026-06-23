@@ -7,7 +7,7 @@
 4. [Multi E.Chem Tab](#4-multi-echem-tab)
 5. [Multi E.Chem 2 Tab](#5-multi-echem-2-tab)
 6. [ECSA Calc Tab](#6-ecsa-calc-tab)
-7. [Nyquist Plot Tab](#7-nyquist-plot-tab)
+7. [OCV/Ru Extractor Tab](#7-ocvru-extractor-tab)
 8. [ORR Analysis Tab](#8-orr-analysis-tab)
 9. [Hupd Calc Tab](#9-hupd-calc-tab)
 10. [Common Controls (All Tabs)](#10-common-controls-all-tabs)
@@ -41,7 +41,7 @@ The app has six tabs at the top:
 | **Multi E.Chem** | View one plot per file simultaneously in a 2-column grid |
 | **Multi E.Chem 2** | Group files into named groups; overlay all groups on one plot each |
 | **ECSA Calc** | Extract electrochemical surface area (ECSA) from CV data |
-| **Nyquist Plot** | Plot EIS impedance data as a Nyquist diagram |
+| **OCV/Ru Extractor** | Group OCV + EIS files per sample; auto-extract stable OCV and Ru; one Nyquist + one OCV plot per sample |
 | **ORR Analysis** | Background-subtracted RDE polarization curves (N2/O2, per RPM, per sample) |
 | **Hupd Calc** | Hupd-based ECSA calculation from CV data — Q_H integration, ECSA, and roughness factor |
 
@@ -289,33 +289,57 @@ Double-click the title strip on either the CV or Cdl plot to rename it.
 
 ---
 
-## 7. Nyquist Plot Tab
+## 7. OCV/Ru Extractor Tab
 
-Use this tab to visualize **electrochemical impedance spectroscopy (EIS)** data as a Nyquist diagram (Re(Z) vs. −Im(Z)).
+Use this tab to **bundle each sample's OCV and EIS files together** and let the app automatically extract two numbers per sample:
+- **OCV (V)** — the last voltage value from the OCV time-series (stable open-circuit potential).
+- **Ru (Ω)** — the real-impedance value at the row where `|Im(Z)|` is closest to zero (restricted to Re(Z) > 0) — i.e. where the high-frequency end of the Nyquist curve crosses the real axis.
 
 ### 7.1 Loading Files
-Load `.mpr` or `.txt` files that contain impedance columns (e.g. `Re(Z)/Ohm` and `-Im(Z)/Ohm`).
+1. Click **Load New Sample…** and multi-select **all** OCV and EIS files for one sample (1 or 2 OCV files + any number of EIS files).
+2. Files are auto-classified by filename: `OCV` → OCV file, `EIS` / `PEIS` / `GEIS` / `SEIS` → EIS file. Unrecognised files are skipped with a dialog.
+3. The app derives the **sample name** from the Bio-Logic-style filename pattern `Pn_TYPE_<name>_<electrode/electrolyte…>`. Example: `P1_OCV1_LTS-BDRDE_04(Pt)_RE3_vs_RHE2_…` → sample name `LTS-BDRDE_04(Pt)`.
+4. Use **Add to Selected…** to append more files to the currently active sample.
 
-### 7.2 Axis Settings
-- Select which columns to use for X and Y using the dropdowns.
-- Adjust units with the unit comboboxes (Ω, kΩ, MΩ).
+### 7.2 Loaded Samples List
+Each loaded sample appears as a row in the **Samples** list with a checkbox and a `⠿` drag handle:
+- **Checkbox** — show/hide that sample's plots (the row disappears from the right panel without losing data).
+- **⠿ drag handle** — drag up/down to reorder samples.
+- **Click a row** — activates that sample (highlights its plot row, scrolls into view).
 
-### 7.3 Display Options
-- **Connect lines** — draws a line connecting the data points in frequency order.
-- **Show markers** — shows point markers at each data point.
+### 7.3 Extracted Values Table
+Below the sample list, a read-only table lists every sample with columns:
 
-### 7.4 Multiple Files
-All loaded files are overlaid on the same Nyquist plot. Each file is automatically assigned a **distinct color** and a **unique marker shape** so they can be told apart even without a legend. Use the **checkbox** next to each filename to hide or show individual traces without losing any settings. Drag the **⠿** handle to reorder files.
+| Sample | OCV (V) | Ru1 (Ω) | Ru2 (Ω) | … |
+|--------|---------|---------|---------|---|
+| LTS-BDRDE_04(Pt) | 0.3616 | 40.857 | 40.084 | … |
 
-### 7.5 Axis Orientation
-- **Flip X / Flip Y** — invert the direction of either axis (e.g. flip -Im(Z) to run downward).
-- **⇄ Swap X↔Y** — swap the X and Y axes (column, unit, range, and flip state) in one click.
+`Ru1` / `Ru2` columns are added dynamically based on the largest EIS-file count across samples. Click a row to activate that sample. **Export CSV** dumps this whole table.
 
-### 7.6 Editable Plot Title
-Double-click the title strip to rename the plot.
+### 7.4 Per-Sample Plots (Right Panel)
+Each visible sample gets its **own row** in the right panel containing two independent matplotlib figures side by side:
+- **Left** — OCV (Time vs E). A ⭐ marker indicates the last-row OCV value.
+- **Right** — Nyquist (Re(Z) vs −Im(Z)). A ⭐ marker indicates the Ru point.
 
-### 7.7 Plot Size
-- **W [__] H [__] inches** — set the figure size. Default is W=21.0, H=12.5. Maximum is 50 inches.
+Each axis has its own matplotlib toolbar + **Copy** button.
+
+### 7.5 Plot Interactions (per axis)
+- **Scroll wheel** — zoom in / out around the cursor.
+- **Left-drag** — pan.
+- **Left-click (no drag)** — annotate the curve point nearest the click with `x`, `y`, and label. Click again within a few pixels to cycle through overlapping candidates.
+- **Right-click** — clear the annotation.
+- **Click anywhere on a sample's row** — that sample becomes active (also reorders the active border highlight and syncs the left-panel selection).
+
+### 7.6 Reordering Plot Rows
+Each sample row has a **⠿ + colour box + title** header strip you can drag vertically to reorder rows. A blue drop indicator shows where the row will land. The Samples list, the values table, and the plot order all stay in sync.
+
+### 7.7 Per-Sample Controls
+The **Selected sample** section in the left panel lets you change the active sample's **colour** (rotating default palette assigned on load) and shows a file breakdown listbox with each file's filename + extracted value.
+
+Use **Rename…** to give a sample any name you like; use **Remove** to delete it; use **Export CSV** to save the entire values table to disk.
+
+### 7.8 Plot Size
+- **W [__] H [__] inches** — figure size **per plot** (each row has an OCV figure W×H and a Nyquist figure W×H side by side). Default is W=7.0, H=4.5. Maximum is 50 inches.
 
 ---
 
@@ -528,5 +552,5 @@ The app can save the complete state of all five tabs — loaded files, groups, a
 | **Multi E.Chem** | All loaded files with the same per-file settings as above; grid column count; active file |
 | **Multi E.Chem 2** | All loaded files and group definitions; per-group axis/legend/refline settings; per-(group, file) cycle and correction state; grid column count; active group and file |
 | **ECSA Calc** | All loaded files with per-file scan rate tables, E_std, Cs, extracted Cdl/ECSA results, CV/Cdl reference lines, and zoom state for both plots |
-| **Nyquist Plot** | All loaded files with per-file display options (connect lines, markers, colors), axis settings, reflines, and zoom state |
+| **OCV/Ru Extractor** | All loaded samples (each bundles its OCV + EIS files), per-sample color, show/hide state, sample order, extracted OCV / Ru values, and plot size |
 | **ORR Analysis** | All loaded files, sample definitions, N2/O2 pair tables with RPM values, per-sample correction (R_sol N2/O2, E_ref, area) and all plot settings |

@@ -7,7 +7,7 @@
 4. [Multi E.Chem Tab](#4-multi-echem-tab)
 5. [Multi E.Chem 2 Tab](#5-multi-echem-2-tab)
 6. [ECSA Calc Tab](#6-ecsa-calc-tab)
-7. [Nyquist Plot Tab](#7-nyquist-plot-tab)
+7. [OCV/Ru Extractor Tab](#7-ocvru-extractor-tab)
 8. [ORR Analysis Tab](#8-orr-analysis-tab)
 9. [Hupd Calc Tab](#9-hupd-calc-tab)
 10. [Common Controls (All Tabs)](#10-common-controls-all-tabs)
@@ -41,7 +41,7 @@ The app has five tabs at the top:
 | **Multi E.Chem** | View one plot per file simultaneously in a 2-column grid |
 | **Multi E.Chem 2** | Group files into named groups; overlay all files in each group on one plot |
 | **ECSA Calc** | Extract electrochemical surface area (ECSA) from CV data |
-| **Nyquist Plot** | Plot EIS impedance data as a Nyquist diagram |
+| **OCV/Ru Extractor** | Group OCV + EIS files per sample; auto-extract stable OCV and Ru; one Nyquist + one OCV plot per sample |
 | **ORR Analysis** | Background-subtracted RDE polarization curves (N2/O2, per RPM, per sample) |
 | **Hupd Calc** | Hupd-based ECSA calculation from CV data — Q_H integration, ECSA, and roughness factor |
 
@@ -205,20 +205,36 @@ cdl_mF = slope × 1000;  ECSA = cdl_mF / Cs  [cm²]
 
 ---
 
-## 7. Nyquist Plot Tab
+## 7. OCV/Ru Extractor Tab
 
-Use this tab to visualize EIS data as a Nyquist diagram (Re(Z) vs. −Im(Z)).
+Bundle each sample's OCV + EIS files into one entry and let the app auto-extract two numbers per sample:
+- **OCV (V)** — last voltage value from the OCV time-series (stable open-circuit potential).
+- **Ru (Ω)** — `Re(Z)` at the row where `|Im(Z)|` is closest to zero (restricted to `Re(Z) > 0`).
 
-### 7.1 Loading and Display
-Load `.mpr` or `.txt` files with impedance columns. All files are overlaid on one plot, each with a distinct color and marker.
+### 7.1 Loading
+1. Click **Load New Sample…** and multi-select all OCV + EIS files for one sample.
+2. Files are auto-classified by filename keywords (`OCV`, `EIS` / `PEIS` / `GEIS` / `SEIS`); unrecognised files are skipped.
+3. Sample name is derived from the Bio-Logic pattern `Pn_TYPE_<name>_…` — e.g. `P1_OCV1_LTS-BDRDE_04(Pt)_…` → `LTS-BDRDE_04(Pt)`.
+4. Use **Add to Selected…** to append more files to the active sample.
 
-### 7.2 Options
-- **Connect lines / Show markers** — toggle connecting lines and markers.
-- **Flip X / Flip Y** and **⇄ Swap X↔Y** — axis orientation controls.
-- **Unit dropdowns** — Ω, kΩ, MΩ.
+### 7.2 Samples List
+- `⠿` drag handle → reorder samples (also reorders the plot rows and the values table).
+- Checkbox → show/hide that sample's plots.
+- Click row → activate sample.
 
-### 7.3 Plot Size
-- **W [__] H [__] inches** — Default W=21.0, H=12.5. Maximum 50 inches.
+### 7.3 Extracted Values Table
+Read-only table with columns **Sample · OCV (V) · Ru1 (Ω) · Ru2 (Ω) · …** dynamically sized to the largest EIS count. Click a row to activate. Use **Export CSV** to save the whole table.
+
+### 7.4 Per-Sample Plots (Right Panel)
+Each visible sample gets its own row: **OCV (Time vs E)** on the left, **Nyquist (Re vs −Im)** on the right. A ⭐ marks the extracted OCV / Ru point.
+- **Scroll** = zoom around cursor.
+- **Left-drag** = pan.
+- **Left-click** = annotate nearest curve point (cycles on repeat click).
+- **Right-click** = clear annotation.
+- **Drag the ⠿ + title header strip** = reorder plot rows.
+
+### 7.5 Plot Size
+- **W [__] H [__] inches** — figure size **per plot** (each sample row has an OCV + Nyquist figure of W×H each). Default W=7.0, H=4.5. Maximum 50 inches.
 
 ---
 

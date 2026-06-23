@@ -17,7 +17,8 @@ echem_gui/
     multi_echem_panel.py    ← MultiEchemPanel class (Multi E.Chem tab)
     multi_echem2_panel.py   ← MultiEchem2Panel class (Multi E.Chem 2 tab — group-based overlay)
     ecsa_panel.py           ← ECSAPanel class (dedicated ECSA Calc tab)
-    eis_panel.py            ← EISPanel class (Nyquist Plot tab)
+    ocv_ru_panel.py         ← OcvRuPanel class (OCV/Ru Extractor tab — sample-based; auto-extracts OCV + Ru; one Nyquist + one OCV plot per sample)
+    eis_panel.py            ← EISPanel class (legacy; retained on disk but no longer wired into the UI)
     orr_panel.py            ← ORRPanel class (ORR Analysis tab — N2/O2 background subtraction, per-RPM, per-sample)
     hupd_panel.py           ← HupdPanel class (Hupd Calc tab — Hupd-based ECSA from last CV cycle)
     file_manager.py         ← FileManagerMixin: load/remove/switch files; data-type-aware _default_xcol/_default_ycol; column-type predicates (_is_voltage_col, _is_current_col, _is_time_col, _is_impedance_col); _on_file_visibility_change; _on_file_reorder; _MPR_DESIRED frozenset; _read_mpr(path) with retry loop for unknown galvani column IDs (tries <f4>/<f8>/<u4>/<u2> until buffer size matches)
@@ -32,7 +33,7 @@ echem_gui/
 
 ## Architecture
 The app uses an **8-tab 2-row tab strip** at the top level (custom `tk.Button` strip + shared content `ttk.Frame`; `ttk.Notebook` is not used because Tk does not support multi-row tabs natively). Tabs in this order:
-- **Row 1**: General E.Chem · Multi E.Chem · Multi E.Chem 2 · Nyquist Plot
+- **Row 1**: General E.Chem · Multi E.Chem · Multi E.Chem 2 · OCV/Ru Extractor
 - **Row 2**: ORR Analysis · ECSA_Hupd · ECSA_Cdl · CV Activation
 
 Each row uses `pack(side=tk.LEFT, expand=True, fill=tk.X)` for buttons so both rows are equal width (symmetric). `EchemGUI._select_tab(key)` shows the matching panel and `pack_forget()`s the others; selected button gets `relief=tk.SUNKEN`. All panels are instantiated once at startup (parented to the shared `content` Frame) so each panel keeps its own state independent of which tab is currently visible.
@@ -41,7 +42,7 @@ Panel classes (instance type ↔ tab key):
 - **`EchemPanel(ttk.Frame + all mixins)`** ↔ `"general"`, `show_log=True`
 - **`MultiEchemPanel(ttk.Frame + FileManagerMixin + CorrectionMixin)`** ↔ `"multi_echem"`
 - **`MultiEchem2Panel(ttk.Frame + FileManagerMixin + CorrectionMixin)`** ↔ `"multi_echem2"` — group-based overlay; each group has its own figure
-- **`EISPanel(ttk.Frame + FileManagerMixin)`** ↔ `"nyquist"`
+- **`OcvRuPanel(ttk.Frame)`** ↔ `"ocv_ru"` — sample-based bundle (1-2 OCV + N EIS files); auto-extracts OCV (last voltage) and Ru (Re(Z) at min |Im(Z)|, Re(Z)>0); per-sample independent OCV + Nyquist plot rows; CheckableListbox for samples + read-only Treeview for extracted values
 - **`ORRPanel(ttk.Frame)`** ↔ `"orr"` — sample-based; N2/O2 CV pairs by RPM; per-catalyst correction
 - **`HupdPanel(ttk.Frame)`** ↔ `"hupd"` — Hupd-based ECSA from last CV cycle
 - **`ECSAPanel(ttk.Frame + FileManagerMixin + CorrectionMixin)`** ↔ `"ecsa"` — Cdl method
@@ -198,7 +199,7 @@ Each panel is fully **independent**: its own `files` dict, `active_file`, figure
 - Each panel built once with `content` as parent and stored in `self._panels[key]`; only one panel is `pack`'d at a time
 - `_select_tab(key)` — `pack_forget`s every panel, updates each button's `relief` (SUNKEN for active, RAISED for others), then packs the selected panel with `fill=BOTH, expand=True`
 - Tab buttons use `tk.Button(row, ..., command=lambda k=key: self._select_tab(k))` and `pack(side=LEFT, expand=True, fill=X)` so each row's 4 buttons divide the row width evenly (both rows are the same total width)
-- `self._panels = {"general": EchemPanel, "multi_echem": MultiEchemPanel, "multi_echem2": MultiEchem2Panel, "nyquist": EISPanel, "orr": ORRPanel, "hupd": HupdPanel, "ecsa": ECSAPanel, "cv_activation": CvActivationPanel}` assembled in `_build_ui()`; passed to `session_manager` for save/load
+- `self._panels = {"general": EchemPanel, "multi_echem": MultiEchemPanel, "multi_echem2": MultiEchem2Panel, "ocv_ru": OcvRuPanel, "orr": ORRPanel, "hupd": HupdPanel, "ecsa": ECSAPanel, "cv_activation": CvActivationPanel}` assembled in `_build_ui()`; passed to `session_manager` for save/load. The old `"nyquist"` key (EISPanel) is no longer wired — sessions with `nyquist.json` are silently ignored on restore.
 - `_build_menubar()` — File menu with Load Session (Ctrl+O), Save Session (Ctrl+S), Save Session As, Exit; calls `_sm.save_session` / `_sm.load_session`
 - `_on_close()` — auto-saves via `_sm.autosave(self._panels)` then destroys the window; registered via `self.protocol("WM_DELETE_WINDOW", self._on_close)`
 - `_check_autosave_on_launch()` — called at end of `_build_ui()`; if autosave exists shows yes/no messagebox with file modification timestamp; calls `_sm.load_session` if confirmed
@@ -273,7 +274,7 @@ Each panel is fully **independent**: its own `files` dict, `active_file`, figure
 19. **Editable plot title** — default text is **blank**; type in the left-panel title entry or double-click anywhere in the title strip above the plot; both update in sync; persists across replots
 20. **Editable axis labels** (General tab) — double-click the X or Y axis label text on the plot to rename it via a dialog; entering a blank string reverts to the auto-generated label (column + unit); custom label persists across parameter changes until explicitly cleared; stored as `_custom_xlabel` / `_custom_ylabel` on the panel instance
 21. **Label/title spacing** — "Spacing (pt): Title [__] Label [__]" row in the Font section (all tabs); Title pad controls gap between axes frame and title (default 6 pt); Label pad controls gap between tick numbers and axis labels (default 4 pt); stored as `title_pad_var` / `label_pad_var`; applied via `ax.set_title(..., pad=N)` and `ax.set_xlabel(..., labelpad=N)`
-22. **Plot size controls (all tabs)** — **W [__] H [__] inches** fields in the Font/Size section; resize the matplotlib figure and the canvas widget (`fig.set_size_inches(w, h)` + `canvas.get_tk_widget().config(width=int(w*dpi), height=int(h*dpi))`); maximum 50 inches in either direction; right panel is a scrollable `tk.Canvas` (`_plot_sc`) with both horizontal and vertical `ttk.Scrollbar`s; `_apply_plot_size()` updates `scrollregion` via `after(50, ...)` after `draw_idle()`; defaults: General E.Chem W=21.0/H=12.5, ECSA W=21.0/H=6.0, Nyquist W=21.0/H=12.5, Multi E.Chem 1&2 W=10.5/H=5.5; ECSA `_apply_plot_size()` iterates over both `(fig_cv, canvas_cv)` and `(fig_cdl, canvas_cdl)`; reference stored as `self._plot_sc`
+22. **Plot size controls (all tabs)** — **W [__] H [__] inches** fields in the Font/Size section; resize the matplotlib figure and the canvas widget (`fig.set_size_inches(w, h)` + `canvas.get_tk_widget().config(width=int(w*dpi), height=int(h*dpi))`); maximum 50 inches in either direction; right panel is a scrollable `tk.Canvas` (`_plot_sc`) with both horizontal and vertical `ttk.Scrollbar`s; `_apply_plot_size()` updates `scrollregion` via `after(50, ...)` after `draw_idle()`; defaults: General E.Chem W=21.0/H=12.5, ECSA W=21.0/H=6.0, OCV/Ru Extractor W=7.0/H=4.5 (per-plot — each sample row has both an OCV and a Nyquist figure of this size), Multi E.Chem 1&2 W=10.5/H=5.5; ECSA `_apply_plot_size()` iterates over both `(fig_cv, canvas_cv)` and `(fig_cdl, canvas_cdl)`; reference stored as `self._plot_sc`
 23. **Copy to clipboard** — "Copy" text button added next to each tab's toolbar (all tabs); copies the current figure to the Windows clipboard as CF_DIB so it can be pasted into Word/PowerPoint; requires Pillow; previous clipboard crash fixed by setting correct `restype=ctypes.c_void_p` on all 64-bit Win32 API calls
 
 ### Multi E.Chem tab
@@ -337,16 +338,23 @@ Each panel is fully **independent**: its own `files` dict, `active_file`, figure
 16. **Flip X / Flip Y** — `x_flip_var` / `y_flip_var` on CV plot; applied in `_apply_cv_range()`; fire `_plot_cv()` on toggle
 17. **Swap X↔Y** — `_swap_xy` closure swaps all CV axis state; calls `_refresh_unit_opts` + `_plot_cv()`
 
-### Nyquist Plot tab
-1. **EIS / impedance data** — loads tab-separated `.txt` files with Re(Z) and -Im(Z) columns; CheckableListbox checkbox hides/shows individual file traces; ⠿ drag handle reorders files
-2. **Axis selectors + unit dropdowns** — X and Y each independently configurable
-3. **Multi-file overlay** — all loaded files shown on a single Nyquist plot; each file uses its auto-assigned palette color and unique marker shape from `entry["color"]` / `entry["marker"]`
-4. **Connect lines toggle** — show/hide connecting line between data points
-5. **Show markers toggle** — show/hide point markers
-6. **Per-file zoom/pan preservation** — same mechanism as other tabs
-7. **Editable plot title** — double-click the title strip to rename
-8. **Flip X / Flip Y** — `x_flip_var` / `y_flip_var`; applied in `_apply_range()`; fire `self._plot()` on toggle
-9. **Swap X↔Y** — `_swap_xy` closure; no unit-refresh needed (both axes use ohm-family units); calls `self._plot()` directly
+### OCV/Ru Extractor tab (replaces Nyquist Plot)
+1. **Data model** — `self.samples = OrderedDict[name, dict]`; each sample dict carries `{name, color, hidden, ocv_files: list, eis_files: list}` where each file entry is `{path, filename, df, ocv_value | ru_value, ru_y}`. There is no `active_file` — only `self.active_sample`.
+2. **File classification** — `_classify_file(name)` returns `'ocv' | 'eis' | 'unknown'` via regex on the basename (`OCV\d*` vs `P?EIS\d* / GEIS\d* / SEIS\d*`); unknown files are surfaced in a Skipped dialog.
+3. **Sample-name derivation** — `_derive_sample_name(paths)`: each basename matched against `^[Pp]\d+_[A-Za-z]+\d*_(.+)$` (Bio-Logic `Pn_TYPE_<name>_…`); the captured group is cut at `\s+vs\s+ | _RE\d | _CE\d | _NN_PEIS|GEIS|SEIS | _C\d+$` to drop electrode/electrolyte tail. When all files agree → single name. When the pattern doesn't match → falls back to LCS of basenames with OCV/EIS markers stripped. Example: `LTS-BDRDE_04(Pt)`.
+4. **Value extraction (called on load)**
+   - `_extract_ocv_value(df)` → last value of voltage column (`Ewe/V` etc.) after `dropna()`.
+   - `_extract_ru_value(df)` → finds `Re(Z)` column and `-Im(Z) | Im(Z)` column, filters to `Re(Z) > 0`, takes the row with min `|Im(Z)|`, returns `(Re(Z), y_for_plot)`. Y is converted to `-Im` regardless of source-column sign convention so the Nyquist plot is uniform.
+5. **Left panel** — `CheckableListbox` (sample list: checkbox = show/hide, ⠿ = drag-reorder, click = activate); read-only `Treeview` below for extracted values (columns `OCV (V) | Ru1 (Ω) | Ru2 (Ω) | …` sized to max EIS count; click row = activate sample). Detail panel shows colour combobox + file breakdown.
+6. **Right panel** — one row frame per visible sample. Each row has a header strip (⠿ handle + colour box + sample name, drag = reorder), and a `plots_row` containing two separately built matplotlib canvases side by side: OCV (Time vs E) on the left, Nyquist (Re vs −Im) on the right. Each canvas has its own `NavigationToolbar2Tk` + `Copy` button.
+7. **Per-sample frame registry** — `self._sample_frames: dict[name, sf]` where `sf = {row, hdr, title, color_box, handle, ocv: ax_state, eis: ax_state}`; `ax_state = {fig, ax, canvas, inner, kind, panning, pan_start, pan_moved, ann, ann_dot, ann_last, ann_idx, auto_xlim, auto_ylim}`. `_create_sample_frame(name)` builds it; `_destroy_sample_frame(name)` tears it down; `_plot()` is the coordinator that adds/removes/reorders frames to match `self.samples`.
+8. **Mouse interactions (per axis)** — `_on_scroll` zooms around cursor (scale 0.8/1.25); `_on_press/_on_motion/_on_release` handle left-drag pan + click-annotate (1px click → cycle nearest line endpoint). Right-click clears annotation. Any press on the axes also `_select_sample(name)`. Logic ported wholesale from `eis_panel`'s click-annotate.
+9. **Drag-to-reorder** — two layers, both reuse existing patterns:
+   - **Sample list**: `CheckableListbox.on_reorder=new_texts` → `_on_sample_reorder(new_texts)` rebuilds `self.samples` OrderedDict and replots.
+   - **Plot row headers**: `_on_header_press/_drag/_release` mirrors `multi_echem2_panel`'s `_on_frame_press/_drag/_release` — drag activates at >6 px movement, blue drop indicator (`self._drop_line = tk.Frame(_plots_frame, bg="#1a73e8", height=3)`) shown above/below target. Click without drag = activate sample. `_reorder_samples_by_drag(from, to, before)` rebuilds the OrderedDict and calls `_refresh_sample_list()` + `_plot()`.
+10. **Plot size** — `plot_w_var` / `plot_h_var` are **per-plot** (OCV and Nyquist each get W×H). Defaults W=7.0, H=4.5. `_apply_plot_size()` iterates `self._sample_frames` and resizes every figure + canvas widget.
+11. **Active-sample highlight** — `_refresh_sample_frame_chrome(name)` sets the outer row `tk.Frame`'s background to `_ACTIVE_BORDER = "#1a73e8"` or `_INACTIVE_BORDER = "#cccccc"` based on `self.active_sample`. `_select_sample` updates two previous-vs-current frames (no full replot) and scrolls the active row into view via `_plot_sc.yview_moveto()`.
+12. **Session save/restore** — tab key is `"ocv_ru"`. `get_session_state` serialises each sample as `{name, color, hidden, ocv_files: [{path, filename, data_hash, ocv_value}], eis_files: [{path, filename, data_hash, ru_value, ru_y}]}`. DataFrames go into the shared `data_store` by `_sm.df_hash`. `restore_session_state` clears existing state, restores samples in order, rebuilds the listbox+table, then calls `_apply_plot_size()` + `_plot()`.
 
 ### Session Save/Restore
 1. **`.echemsession` ZIP format** — archive contains: `manifest.json` (SESSION_VERSION + tab key list), `preview.png` (thumbnail of General tab figure), `data/{sha256}.csv` (deduplicated raw DataFrames — same file loaded in multiple tabs stored only once, identified by first-20-chars of SHA-256 hash of CSV bytes), `{tab_key}_state.json` (full per-tab serialised state)
@@ -455,7 +463,7 @@ git rm --cached <file>      # unstage without deleting the local file
 - **`_clear_plot` hook** — `FileManagerMixin._remove_file` calls `self._clear_plot()` when the last file is removed; base implementation is a no-op; override in each panel to clear canvases
 - `canvas.draw()` (not `draw_idle()`) needed for legend resize to show frame changes in real-time
 - `set_draggable(True)` called after every `ax.legend(...)` call; old legend ref becomes stale after `ax.clear()` so reset to `None` before clearing
-- **Legend must not affect axes layout** — `_apply_font_to_ax` is called after the legend is placed; it calls `tight_layout()` which would otherwise shrink the axes to fit an overflowing legend. Fix: temporarily hide the legend (`_leg.set_visible(False)`) around every `tight_layout()` call in `_apply_font_to_ax`, then restore it. Applied in all four panels (`app.py`, `eis_panel.py`, `ecsa_panel.py`, `multi_echem_panel.py`).
+- **Legend must not affect axes layout** — `_apply_font_to_ax` is called after the legend is placed; it calls `tight_layout()` which would otherwise shrink the axes to fit an overflowing legend. Fix: temporarily hide the legend (`_leg.set_visible(False)`) around every `tight_layout()` call in `_apply_font_to_ax`, then restore it. Applied in `app.py`, `ecsa_panel.py`, `multi_echem_panel.py` (the legacy `eis_panel.py` is no longer wired into the UI).
 - **`set_layout_engine('none')` after tight_layout** — matplotlib ≥ 3.5 installs a persistent `TightLayoutEngine` on the figure the first time `tight_layout()` is called; it re-runs on every `canvas.draw()`. Fix: immediately call `fig.set_layout_engine('none')` after each `tight_layout()` call so the engine is removed and layout is frozen. Applied wherever `tight_layout()` is used across all panels.
 - **Annotation must not affect layout** — the point-info annotation box (`ax.annotate(...)`) is included in `tight_layout`'s bounding-box calculation by default, causing the axes to shrink whenever a point is clicked. Fix: call `ann.set_in_layout(False)` immediately after creating the annotation artist. Applied in `PlottingMixin._annotate` (plotting.py) and `_annotate` in ME2 and EIS panels.
 - **Proxy handle problem** — `legend.legend_handles` returns proxy Line2D icon objects drawn *inside* the legend box, NOT the original data Line2D objects. Any dict lookup of `proxy_handle` against a `{data_line: key}` dict always returns `None`. Never try to save legend order or labels by iterating `legend.legend_handles` against a data-line map. Instead, capture the key order from the real data handles *before* calling `ax.legend()`: `legend_key_order = [handle_to_key.get(h) for h in _lh]` where `_lh` comes from `ax.get_legend_handles_labels()`. After `ax.legend()`, `legend.legend_handles` has new proxy objects.
