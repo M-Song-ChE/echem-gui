@@ -27,10 +27,10 @@ from .checklist import CheckableListbox
 
 # ── defaults ────────────────────────────────────────────────────────────────
 _DEF = dict(
-    scan_rate="50",
+    scan_rate="20",
     dl_lo="0.40",
     dl_hi="0.50",
-    e1="0.05",
+    e1="0.025",
     e2="0.40",
     q_ref="210",
     geo_area="0.1963",
