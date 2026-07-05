@@ -42,9 +42,11 @@ from .legend_editor import open_legend_editor
 _SAMPLE_HDR_BG     = "#d1c4e9"   # light purple — distinct from ME1 blue / ME2 green
 _SAMPLE_HDR_ACTIVE = "#ffd54f"   # gold  (matches other tabs)
 
-# Extracts catalyst label from parentheses plus optional dataset suffix,
-# e.g. "Sample_03(Pt) vs …" → "Pt", "Sample_03(Pt)_2 vs …" → "Pt_2"
-_CATALYST_PAT = re.compile(r'\((\w+)\)(_\d+)?')
+# Extracts sample name from between the CV-type prefix and "vs RE" in the filename.
+# e.g. "P6_CVn2_Pt_disk vs RE3…"          → "Pt_disk"
+#      "P8_CVo2_LTS-BDRDE_34(Pt) vs REa…" → "LTS-BDRDE_34(Pt)"
+#      "P6_CVn2_LTS-BDRDE_34(Pt)_r vs RE…"→ "LTS-BDRDE_34(Pt)_r"
+_SAMPLE_NAME_PAT = re.compile(r'_CV[a-zA-Z0-9]+_(.+?)\s+vs\s+RE', re.IGNORECASE)
 
 # Runtime-only keys stripped before JSON serialisation
 _SAMPLE_RUNTIME = frozenset({
@@ -111,33 +113,13 @@ def _extract_rpm_id(stem: str) -> str:
 
 
 def _detect_catalyst(stem: str) -> str:
-    """Extract catalyst label including optional dataset suffix.
+    """Extract sample name from between the CV-type prefix and 'vs RE' in the filename."""
+    m = _SAMPLE_NAME_PAT.search(stem)
+    return m.group(1) if m else ""
 
-    'LTS-BDRDE_22(Pt) vs …'   → 'Pt'
-    'LTS-BDRDE_22(Pt)_2 vs …' → 'Pt_2'
-    """
-    m = _CATALYST_PAT.search(stem)
-    if not m:
-        return ""
-    return m.group(1) + (m.group(2) or "")
-
-
-_GROUP_KEY_PAT = re.compile(r'[-_](\d+)\((\w+)\)(_\d+)?')
 
 def _detect_group_key(stem: str) -> str:
-    """Return a treeview grouping key that includes the experiment number.
-
-    'LTS-BDRDE_22(Pt) vs …'   → 'Pt_22'
-    'LTS-BDRDE_26(Pt) vs …'   → 'Pt_26'
-    'LTS-BDRDE_22(Pt)_2 vs …' → 'Pt_22_2'
-    Falls back to _detect_catalyst if no number prefix is found.
-    """
-    m = _GROUP_KEY_PAT.search(stem)
-    if m:
-        num    = m.group(1)
-        cat    = m.group(2)
-        suffix = m.group(3) or ""
-        return f"{cat}_{num}{suffix}"
+    """Treeview grouping key — same as the sample name extracted from the filename."""
     return _detect_catalyst(stem)
 
 
