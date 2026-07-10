@@ -42,11 +42,16 @@ from .legend_editor import open_legend_editor
 _SAMPLE_HDR_BG     = "#d1c4e9"   # light purple — distinct from ME1 blue / ME2 green
 _SAMPLE_HDR_ACTIVE = "#ffd54f"   # gold  (matches other tabs)
 
-# Extracts sample name from between the CV-type prefix and "vs RE" in the filename.
-# e.g. "P6_CVn2_Pt_disk vs RE3…"          → "Pt_disk"
-#      "P8_CVo2_LTS-BDRDE_34(Pt) vs REa…" → "LTS-BDRDE_34(Pt)"
-#      "P6_CVn2_LTS-BDRDE_34(Pt)_r vs RE…"→ "LTS-BDRDE_34(Pt)_r"
-_SAMPLE_NAME_PAT = re.compile(r'_CV[a-zA-Z0-9]+_(.+?)\s+vs\s+RE', re.IGNORECASE)
+# Extracts sample name from between the CV-type prefix and the "vs R…"
+# reference in the filename. Handles both the old "vs RE3" form and the newer
+# "vs RHEa" form, and strips a trailing "_RE<x>" working-/reference-electrode
+# label when present.
+# e.g. "P6_CVn2_Pt_disk vs RE3…"              → "Pt_disk"
+#      "P8_CVo2_LTS-BDRDE_34(Pt) vs REa…"     → "LTS-BDRDE_34(Pt)"
+#      "P6_CVn2_Pt_disk_M5_REa vs RHEa…"      → "Pt_disk_M5"
+#      "P8_CVo2_LTS-BDRDE_40(Pt)_REa vs RHEa…"→ "LTS-BDRDE_40(Pt)"
+_SAMPLE_NAME_PAT = re.compile(
+    r'_CV[a-zA-Z0-9]+_(.+?)(?:_RE\w*)?\s+vs\s+R', re.IGNORECASE)
 
 # Runtime-only keys stripped before JSON serialisation
 _SAMPLE_RUNTIME = frozenset({
