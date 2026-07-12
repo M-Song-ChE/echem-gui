@@ -2945,8 +2945,23 @@ class ORRPanel(ttk.Frame):
                 out[i][color_idx] = shades[j]
         return [tuple(c) for c in out]
 
-    def _get_curves_for_sample(self, sname):
-        """Return list of (E_arr, J_arr, rpm_float, label, color) for a named sample."""
+    def _build_curve_records(self, sname):
+        """Return the fully-processed, background-subtracted curves for a sample.
+
+        Single source of truth shared by the plot (`_get_curves_for_sample`) and
+        the Excel export. Only enabled pairs are included; per-catalyst
+        corrections (r_sol, e_ref, area, ECSA_Hupd) are applied via
+        `_process_pair`; pairs are ordered per catalyst by ascending RPM.
+
+        Each record is a dict:
+            E, J          np.ndarray  (J already ÷ area when area > 0)
+            rpm           float       (numeric, for sorting/plotting)
+            rpm_v         str         (raw RPM label as shown)
+            label, color              (plot label / gradient colour)
+            catalyst                  (catalyst_id)
+            r_n2, r_o2, e_ref, area   float  (corrections actually applied)
+            ecsa                      (ECSA_Hupd, raw string/'' if unset)
+        """
         sentry = self.samples.get(sname)
         if sentry is None:
             return []
@@ -2971,7 +2986,7 @@ class ORRPanel(ttk.Frame):
         except (ValueError, TypeError):
             _gstep = 0.10
 
-        curves = []
+        records = []
         for ci, cat in enumerate(_cat_order):
             _cat_st   = sentry.get("catalyst_styles", {}).get(cat, {})
             _user_col = _cat_st.get("color", "").strip()
@@ -2982,15 +2997,16 @@ class ORRPanel(ttk.Frame):
             n_cat = len(cat_pairs)
             cat_colors = (_cycle_colors(base_col, n_cat, step=_gstep, reverse=False)
                           if n_cat > 1 else [base_col])
+            _cc = cat_corrections.get(cat, {})
+            try:
+                r_n2  = float(_cc.get("r_sol_n2", 0) or 0)
+                r_o2  = float(_cc.get("r_sol_o2", 0) or 0)
+                e_ref = float(_cc.get("e_ref", 0) or 0)
+                area  = float(_cc.get("area", "") or 0)
+            except (ValueError, TypeError):
+                r_n2 = r_o2 = e_ref = area = 0.0
+            ecsa = _cc.get("ecsa", "")
             for j, pair in enumerate(cat_pairs):
-                _cc = cat_corrections.get(cat, {})
-                try:
-                    r_n2  = float(_cc.get("r_sol_n2", 0) or 0)
-                    r_o2  = float(_cc.get("r_sol_o2", 0) or 0)
-                    e_ref = float(_cc.get("e_ref", 0) or 0)
-                    area  = float(_cc.get("area", "") or 0)
-                except (ValueError, TypeError):
-                    r_n2 = r_o2 = e_ref = area = 0.0
                 result = _process_pair(pair, r_n2, r_o2, e_ref, area)
                 if result is None:
                     continue
@@ -3002,8 +3018,18 @@ class ORRPanel(ttk.Frame):
                 prefix = f"[{cat}] " if cat else ""
                 rpm_v  = pair.get("rpm_val") or pair.get("rpm_id") or f"#{j+1}"
                 label  = f"{prefix}{rpm_v} rpm"
-                curves.append((E_arr, J_arr, rpm, label, cat_colors[j]))
-        return curves
+                records.append({
+                    "E": E_arr, "J": J_arr, "rpm": rpm, "rpm_v": rpm_v,
+                    "label": label, "color": cat_colors[j], "catalyst": cat,
+                    "r_n2": r_n2, "r_o2": r_o2, "e_ref": e_ref, "area": area,
+                    "ecsa": ecsa,
+                })
+        return records
+
+    def _get_curves_for_sample(self, sname):
+        """Return list of (E_arr, J_arr, rpm_float, label, color) for a named sample."""
+        return [(r["E"], r["J"], r["rpm"], r["label"], r["color"])
+                for r in self._build_curve_records(sname)]
 
     def _get_active_curves(self):
         """Return list of (E_arr, J_arr, rpm_float, label, color) for the active sample."""
@@ -4872,25 +4898,34 @@ class ORRPanel(ttk.Frame):
     # ════════════════════════════════════════════════════════════════
     # Excel export
     # ════════════════════════════════════════════════════════════════
+    @staticmethod
+    def _sanitize_sheet_name(name: str) -> str:
+        """Excel sheet names: ≤31 chars, none of []:*?/\\, non-empty."""
+        cleaned = re.sub(r'[\[\]:*?/\\]', "_", str(name)).strip()
+        return (cleaned[:31] or "Sample")
+
     def _export_sample_excel(self):
+        """Export the ACTIVE sample to a single Excel sheet.
+
+        Only pairs currently enabled/active in the plot are written, using the
+        exact same processed curves as the plot (`_build_curve_records`, which
+        applies per-catalyst iR, N2-subtraction, RHE conversion and current
+        density). RPMs are laid out left→right as (E, J) column pairs.
+        """
         if not self.active_sample or self.active_sample not in self.samples:
             messagebox.showwarning("ORR Export", "Select a sample first.")
             return
-        sentry = self.samples[self.active_sample]
-        pairs  = sentry.get("pairs", [])
-        if not pairs:
-            messagebox.showwarning("ORR Export", "No pairs in active sample.")
+
+        records = self._build_curve_records(self.active_sample)
+        if not records:
+            messagebox.showwarning(
+                "ORR Export",
+                "No enabled pairs in the active sample could be processed.\n"
+                "(Only pairs currently active in the plot are exported.)")
             return
-        try:
-            r_n2  = float(self.r_sol_n2_var.get() or 0)
-            r_o2  = float(self.r_sol_o2_var.get() or 0)
-            e_ref = float(self.e_ref_var.get() or 0)
-            area  = float(self.area_var.get() or 0)
-        except ValueError:
-            r_n2 = r_o2 = e_ref = area = 0.0
-        ref   = self.ref_electrode_var.get()
-        e_col = f"E (V vs {ref})"
-        y_col = "J (mA cm⁻²)" if area > 0 else "I_net (mA)"
+
+        ref   = self.ref_electrode_var.get() or "RHE"
+        e_hdr = f"E (V vs {ref})"
 
         path = filedialog.asksaveasfilename(
             title="Export ORR Sample to Excel",
@@ -4904,35 +4939,46 @@ class ORRPanel(ttk.Frame):
         try:
             from openpyxl import Workbook
             wb = Workbook()
-            wb.remove(wb.active)
-            has_data = False
-            for i, pair in enumerate(pairs):
-                rpm_val    = pair.get("rpm_val") or pair.get("rpm_id") or f"#{i+1}"
-                sheet_name = f"{rpm_val} rpm"[:31]
-                ws = wb.create_sheet(title=sheet_name)
-                ws.append([e_col, y_col,
-                           "N2 short", "O2 short",
-                           "R_sol_N2 (ohm)", "R_sol_O2 (ohm)",
-                           "E_ref (V)", "Area (cm2)"])
-                result = _process_pair(pair, r_n2, r_o2, e_ref, area)
-                if result is not None:
-                    E_pl, Y_pl = result
-                    for j, (e_v, y_v) in enumerate(zip(E_pl, Y_pl)):
-                        row = [float(e_v), float(y_v)]
-                        if j == 0:
-                            row += [pair.get("n2_short", ""),
-                                    pair.get("o2_short", ""),
-                                    r_n2, r_o2, e_ref,
-                                    area if area > 0 else ""]
-                        ws.append(row)
-                    has_data = True
-                else:
-                    ws.append(["Processing failed for this pair."])
-            if not has_data:
-                messagebox.showwarning("ORR Export", "No pairs could be processed.")
-                return
+            ws = wb.active
+            ws.title = self._sanitize_sheet_name(self.active_sample)
+
+            # ── Metadata / header block (column A = labels) ──────────────
+            ws.cell(1, 1, "Sample")
+            ws.cell(1, 2, self.active_sample)
+            ws.cell(2, 1, "R_sol_N2 (Ω)")
+            ws.cell(3, 1, "R_sol_O2 (Ω)")
+            ws.cell(4, 1, f"E_ref → {ref} (V)")
+            ws.cell(5, 1, "Area (cm²)")
+            ws.cell(6, 1, "ECSA_Hupd (cm²)")
+            # row 7 blank
+            ws.cell(8, 1, "RPM")
+            # row 9 = E/J sub-headers ; data from row 10
+
+            DATA_ROW0 = 10
+            for idx, rec in enumerate(records):
+                c_e = 2 + 2 * idx        # E column for this RPM
+                c_j = c_e + 1            # J column for this RPM
+                area = rec["area"]
+                j_hdr = "J (mA cm⁻²)" if area > 0 else "I_net (mA)"
+
+                ws.cell(2, c_e, rec["r_n2"])
+                ws.cell(3, c_e, rec["r_o2"])
+                ws.cell(4, c_e, rec["e_ref"])
+                ws.cell(5, c_e, area if area > 0 else "")
+                _ecsa = rec.get("ecsa", "")
+                ws.cell(6, c_e, _ecsa if _ecsa not in (None, "") else "")
+                ws.cell(8, c_e, rec["label"])
+                ws.cell(9, c_e, e_hdr)
+                ws.cell(9, c_j, j_hdr)
+
+                E_arr, J_arr = rec["E"], rec["J"]
+                for k in range(len(E_arr)):
+                    ws.cell(DATA_ROW0 + k, c_e, float(E_arr[k]))
+                    ws.cell(DATA_ROW0 + k, c_j, float(J_arr[k]))
+
             wb.save(path)
-            self._log(f"Exported '{self.active_sample}' → {os.path.basename(path)}")
+            self._log(f"Exported '{self.active_sample}' "
+                      f"({len(records)} RPM) → {os.path.basename(path)}")
             messagebox.showinfo("ORR Export", f"Saved:\n{path}", parent=self)
         except Exception as exc:
             messagebox.showerror("ORR Export", f"Export failed:\n{exc}", parent=self)
