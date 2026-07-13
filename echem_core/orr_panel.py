@@ -75,6 +75,9 @@ _ANN_DOT_LABEL = "_orr_dot"
 
 _RPM_DEFAULTS = [400, 900, 1600, 2500]
 
+# Default geometric electrode area (cm²) — 5 mm-dia glassy-carbon RDE tip.
+_DEFAULT_AREA = 0.1963
+
 # Electrolyte parameters for Levich / limiting-current theoretical lines
 # (n, D_O2 cm²/s, ν cm²/s, C_O2 mol/cm³)
 _ELECTROLYTES = {
@@ -126,6 +129,68 @@ def _detect_catalyst(stem: str) -> str:
 def _detect_group_key(stem: str) -> str:
     """Treeview grouping key — same as the sample name extracted from the filename."""
     return _detect_catalyst(stem)
+
+
+def _is_orr_cv_file(name: str) -> bool:
+    """True for an ORR N2/O2 per-RPM CV data file.
+
+    Matches e.g. 'P6_CVn2_..._04_CV_C02.mpr' / 'P8_CVo2_..._16_CV_C02.mpr':
+    a readable data file (.mpr/.txt) whose name carries an N2/O2 gas tag and a
+    '_NN_CV_' RPM segment. Excludes CA/Cdl/CVa/CVh/EIS runs and .mgr/.sta/.mps.
+    """
+    ext = os.path.splitext(name)[1].lower()
+    if ext not in (".mpr", ".txt"):
+        return False
+    stem = os.path.splitext(name)[0]
+    return _detect_gas(stem) in ("n2", "o2") and _RPM_PAT.search(stem) is not None
+
+
+def _extract_folder_corrections(folder: str) -> dict:
+    """Scan a folder's top level for OCV / EIS files and derive ORR corrections.
+
+    Reuses the OCV/Ru Extractor helpers:
+      • OCV file  → e_ref (RHE conversion) = stable OCV (last voltage)
+      • EIS1 file → r_sol_n2  (N2-background iR: Ru at |Im(Z)| min, Re(Z) > 0)
+      • EIS2 file → r_sol_o2  (O2-run iR)
+    Returns a dict with only the keys that were successfully extracted.
+    """
+    from .ocv_ru_panel import (_read_file_df, _extract_ocv_value,
+                               _extract_ru_value, _classify_file)
+    out: dict = {}
+    try:
+        names = sorted(os.listdir(folder))
+    except OSError:
+        return out
+    for n in names:
+        if os.path.splitext(n)[1].lower() not in (".mpr", ".txt"):
+            continue
+        full = os.path.join(folder, n)
+        if not os.path.isfile(full):
+            continue
+        kind = _classify_file(n)
+        if kind == "ocv":
+            if "e_ref" in out:
+                continue
+            try:
+                v = _extract_ocv_value(_read_file_df(full))
+            except Exception:
+                v = None
+            if v is not None:
+                out["e_ref"] = round(float(v), 5)
+        elif kind == "eis":
+            m = re.search(r'eis0*(\d+)', n.lower())
+            idx = int(m.group(1)) if m else None
+            key = ("r_sol_n2" if idx == 1
+                   else "r_sol_o2" if idx == 2 else None)
+            if key is None or key in out:
+                continue
+            try:
+                ru, _ = _extract_ru_value(_read_file_df(full))
+            except Exception:
+                ru = None
+            if ru is not None:
+                out[key] = round(float(ru), 4)
+    return out
 
 
 def _extract_anodic(E: np.ndarray, I: np.ndarray):
@@ -246,6 +311,9 @@ class ORRPanel(ttk.Frame):
         self._loaded_keys   = []             # ordered list of short names (mirrors listbox)
         self.samples        = OrderedDict()  # sample_name → sample_entry
         self.active_sample  = None
+        # catalyst_base → {e_ref, r_sol_n2, r_sol_o2, ...} staged from folder
+        # loads (OCV/EIS auto-extraction); consumed when pairs are created.
+        self._folder_corrections = {}
         self._suppress_replot = False
         self._loading        = False
         self._drag                = None
@@ -292,6 +360,7 @@ class ORRPanel(ttk.Frame):
         _fb = ttk.Frame(left)
         _fb.pack(fill=tk.X, padx=4)
         ttk.Button(_fb, text="Load Files", command=self._load_files).pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Button(_fb, text="Load Folder", command=self._load_folder).pack(side=tk.LEFT, padx=(0, 4))
         ttk.Button(_fb, text="Remove",     command=self._remove_loaded_file).pack(side=tk.LEFT)
 
         _gb = ttk.Frame(left)
@@ -881,6 +950,69 @@ class ORRPanel(ttk.Frame):
             filetypes=[("EC-Lab files", "*.mpr *.txt"), ("All files", "*.*")])
         if not paths:
             return
+        self._report_load(*self._add_paths(paths))
+
+    def _load_folder(self):
+        """Pick a folder → auto-load the N2/O2 CV data files at its top level.
+
+        Only the selected folder's immediate files are scanned; nested
+        sub-folders (e.g. 'reverse') are intentionally skipped.
+        """
+        folder = filedialog.askdirectory(
+            title="Load ORR Folder (top-level N2/O2 CV files only)")
+        if not folder:
+            return
+        try:
+            names = sorted(os.listdir(folder))
+        except OSError as exc:
+            messagebox.showerror("Load Error", str(exc))
+            return
+        paths = [os.path.join(folder, n) for n in names
+                 if _is_orr_cv_file(n)
+                 and os.path.isfile(os.path.join(folder, n))]
+        if not paths:
+            messagebox.showwarning(
+                "ORR",
+                "No N2/O2 CV data files found at the top level of:\n"
+                f"{folder}")
+            return
+        added, errors = self._add_paths(paths)
+
+        # Auto-extract OCV (RHE conversion) + EIS1/EIS2 (iR) from the same
+        # folder and stage them per catalyst so pairing pre-populates them.
+        fcorr = _extract_folder_corrections(folder)
+        if fcorr:
+            cats = {self.loaded_files[os.path.basename(p)]["catalyst"]
+                    for p in paths
+                    if os.path.basename(p) in self.loaded_files}
+            for cat in cats:
+                self._folder_corrections.setdefault(cat, {}).update(fcorr)
+            self._log(
+                "Auto-corrections "
+                f"[{', '.join(sorted(c for c in cats if c)) or 'no-catalyst'}]: "
+                f"e_ref={fcorr.get('e_ref', '—')} V, "
+                f"Ru_N2={fcorr.get('r_sol_n2', '—')} Ω, "
+                f"Ru_O2={fcorr.get('r_sol_o2', '—')} Ω")
+
+        self._report_load(added, errors)
+
+    def _initial_corrections(self, cat_base: str) -> dict:
+        """Initial catalyst_corrections dict for a newly created pair/catalyst.
+
+        Pulls OCV/EIS values staged by `_load_folder` (if any) and always
+        defaults the area to `_DEFAULT_AREA`. ECSA_Hupd stays blank (manual).
+        """
+        fc = self._folder_corrections.get(cat_base, {})
+        return {
+            "r_sol_n2": fc.get("r_sol_n2", 0.0),
+            "r_sol_o2": fc.get("r_sol_o2", 0.0),
+            "e_ref":    fc.get("e_ref", 0.0),
+            "area":     fc.get("area", _DEFAULT_AREA),
+            "ecsa":     "",
+        }
+
+    def _add_paths(self, paths):
+        """Load each path into loaded_files + treeview. Returns (added, errors)."""
         added, errors = [], []
         for path in paths:
             stem  = os.path.splitext(os.path.basename(path))[0]
@@ -911,7 +1043,9 @@ class ORRPanel(ttk.Frame):
                                   text=f"    ({gas_tag})  {short}",
                                   tags=(gas or "unk",))
             added.append(short)
+        return added, errors
 
+    def _report_load(self, added, errors):
         if errors:
             messagebox.showerror("Load Error", "\n".join(errors[:5]))
         if added:
@@ -1226,8 +1360,7 @@ class ORRPanel(ttk.Frame):
             batch_paired.add(n2_short)
             batch_paired.add(o2_short)
             cc = sentry.setdefault("catalyst_corrections", {})
-            cc.setdefault(cat_label, {"r_sol_n2": 0.0, "r_sol_o2": 0.0,
-                                      "e_ref": 0.0, "area": "", "ecsa": ""})
+            cc.setdefault(cat_label, self._initial_corrections(cat_base))
             cs = sentry.setdefault("catalyst_styles", {})
             cs.setdefault(cat_label, {"color": "", "linestyle": "solid",
                                       "linewidth": "1.5", "marker": "none"})
@@ -1288,8 +1421,7 @@ class ORRPanel(ttk.Frame):
             sentry["pairs"].append(new_pair)
             all_existing_paths.add(path)
             cc = sentry.setdefault("catalyst_corrections", {})
-            cc.setdefault(cat_label, {"r_sol_n2": 0.0, "r_sol_o2": 0.0,
-                                      "e_ref": 0.0, "area": "", "ecsa": ""})
+            cc.setdefault(cat_label, self._initial_corrections(catalyst))
             cs = sentry.setdefault("catalyst_styles", {})
             cs.setdefault(cat_label, {"color": "", "linestyle": "solid",
                                       "linewidth": "1.5", "marker": "none"})
