@@ -1052,20 +1052,65 @@ class ORRPanel(ttk.Frame):
             self._log(f"Loaded {len(added)} file(s).")
 
     def _remove_loaded_file(self):
-        sel = [iid for iid in self.loaded_tv.selection()
-               if not iid.startswith("_cat_:")]
-        if not sel:
+        # Expand any selected catalyst headers into all their child files, so
+        # removing a header removes every loaded file under it.
+        shorts: list = []
+        for iid in self.loaded_tv.selection():
+            if iid.startswith("_cat_:"):
+                shorts.extend(self.loaded_tv.get_children(iid))
+            else:
+                shorts.append(iid)
+        shorts = [s for s in dict.fromkeys(shorts) if s in self.loaded_files]
+        if not shorts:
             return
-        for short in sel:
-            if short not in self.loaded_files:
-                continue
+
+        removed = set()
+        for short in shorts:
             parent = self.loaded_tv.parent(short)
-            self.loaded_tv.delete(short)
+            if self.loaded_tv.exists(short):
+                self.loaded_tv.delete(short)
             self.loaded_files.pop(short, None)
             if short in self._loaded_keys:
                 self._loaded_keys.remove(short)
-            if parent and not self.loaded_tv.get_children(parent):
+            removed.add(short)
+            if parent and self.loaded_tv.exists(parent) \
+                    and not self.loaded_tv.get_children(parent):
                 self.loaded_tv.delete(parent)
+
+        # Cascade: drop pairs referencing removed files from every sample,
+        # prune now-empty catalysts, refresh pair table / selector / plots.
+        self._purge_files_from_samples(removed)
+
+    def _prune_empty_catalysts(self, sentry):
+        """Drop catalyst_corrections / catalyst_styles entries that no longer
+        have any pair referencing them."""
+        live = {p.get("catalyst_id", "") for p in sentry.get("pairs", [])}
+        for store in ("catalyst_corrections", "catalyst_styles"):
+            d = sentry.get(store, {})
+            for cat in [c for c in d if c not in live]:
+                d.pop(cat, None)
+
+    def _purge_files_from_samples(self, shorts):
+        """Remove pairs that reference any of *shorts* from all samples, then
+        prune empty catalysts and refresh the UI for affected samples."""
+        shorts = set(shorts)
+        if not shorts:
+            return
+        affected = []
+        for sname, sentry in self.samples.items():
+            pairs = sentry.get("pairs", [])
+            kept = [p for p in pairs
+                    if p.get("n2_short") not in shorts
+                    and p.get("o2_short") not in shorts]
+            if len(kept) != len(pairs):
+                sentry["pairs"] = kept
+                self._prune_empty_catalysts(sentry)
+                affected.append(sname)
+        for sname in affected:
+            if sname == self.active_sample:
+                self._rebuild_pair_table(sname)
+                self._update_catalyst_selector(sname)
+            self._plot_sample(sname)
 
     def _on_loaded_tv_dblclick(self, event):
         """Double-click on a catalyst header → rename it."""
@@ -1581,7 +1626,9 @@ class ORRPanel(ttk.Frame):
                         self.samples[sn]["pairs"].remove(p)
                     except ValueError:
                         pass
+                    self._prune_empty_catalysts(self.samples[sn])
                     self._rebuild_pair_table(sn)
+                    self._update_catalyst_selector(sn)
                     self._auto_replot()
 
             # Remove button right-anchored so filename labels get all remaining space
