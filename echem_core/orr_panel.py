@@ -952,30 +952,76 @@ class ORRPanel(ttk.Frame):
             return
         self._report_load(*self._add_paths(paths))
 
-    def _load_folder(self):
-        """Pick a folder → auto-load the N2/O2 CV data files at its top level.
-
-        Only the selected folder's immediate files are scanned; nested
-        sub-folders (e.g. 'reverse') are intentionally skipped.
-        """
-        folder = filedialog.askdirectory(
-            title="Load ORR Folder (top-level N2/O2 CV files only)")
-        if not folder:
-            return
+    @staticmethod
+    def _folder_cv_paths(folder):
+        """Top-level ORR N2/O2 CV data file paths in *folder* (non-recursive)."""
         try:
             names = sorted(os.listdir(folder))
-        except OSError as exc:
-            messagebox.showerror("Load Error", str(exc))
+        except OSError:
+            return []
+        return [os.path.join(folder, n) for n in names
+                if _is_orr_cv_file(n)
+                and os.path.isfile(os.path.join(folder, n))]
+
+    def _load_folder(self):
+        """Pick a folder (a single sample, or a parent of sample folders) and
+        load the N2/O2 CV data files.
+
+        • If the picked folder has CV files at its top level → treat it as one
+          sample and load just those (nested sub-folders like 'reverse' skipped).
+        • Otherwise → treat it as a parent: offer its immediate sub-folders that
+          contain CV files in a checkbox dialog for multi-select loading.
+        In every case each sample folder is scanned top-level only.
+        """
+        parent = filedialog.askdirectory(
+            title="Load ORR Folder (a sample folder, or a parent of them)")
+        if not parent:
             return
-        paths = [os.path.join(folder, n) for n in names
-                 if _is_orr_cv_file(n)
-                 and os.path.isfile(os.path.join(folder, n))]
-        if not paths:
+
+        if self._folder_cv_paths(parent):
+            candidates = [parent]          # single sample; never descend
+        else:
+            try:
+                children = sorted(os.listdir(parent))
+            except OSError as exc:
+                messagebox.showerror("Load Error", str(exc))
+                return
+            candidates = [os.path.join(parent, n) for n in children
+                          if os.path.isdir(os.path.join(parent, n))
+                          and self._folder_cv_paths(os.path.join(parent, n))]
+
+        if not candidates:
             messagebox.showwarning(
                 "ORR",
-                "No N2/O2 CV data files found at the top level of:\n"
-                f"{folder}")
+                "No N2/O2 CV data files found in the selected folder or its "
+                "immediate sub-folders.")
             return
+
+        if len(candidates) == 1:
+            chosen = candidates
+        else:
+            chosen = self._choose_folders_dialog(parent, candidates)
+            if not chosen:
+                return
+
+        total_added, all_errors, n_folders = 0, [], 0
+        for folder in chosen:
+            added, errors = self._load_one_folder(folder)
+            total_added += len(added)
+            all_errors.extend(errors)
+            if added:
+                n_folders += 1
+        if all_errors:
+            messagebox.showerror("Load Error", "\n".join(all_errors[:8]))
+        if total_added:
+            self._log(f"Loaded {total_added} file(s) from {n_folders} folder(s).")
+
+    def _load_one_folder(self, folder):
+        """Load one sample folder's top-level CV files + stage its OCV/EIS
+        auto-corrections. Returns (added, errors)."""
+        paths = self._folder_cv_paths(folder)
+        if not paths:
+            return [], []
         added, errors = self._add_paths(paths)
 
         # Auto-extract OCV (RHE conversion) + EIS1/EIS2 (iR) from the same
@@ -993,8 +1039,64 @@ class ORRPanel(ttk.Frame):
                 f"e_ref={fcorr.get('e_ref', '—')} V, "
                 f"Ru_N2={fcorr.get('r_sol_n2', '—')} Ω, "
                 f"Ru_O2={fcorr.get('r_sol_o2', '—')} Ω")
+        return added, errors
 
-        self._report_load(added, errors)
+    def _choose_folders_dialog(self, parent, candidates):
+        """Modal checkbox picker for multiple sample folders. Returns the list
+        of chosen folder paths (empty list if cancelled)."""
+        dlg = tk.Toplevel(self)
+        dlg.title("Select folders to load")
+        dlg.transient(self.winfo_toplevel())
+        ttk.Label(dlg, text="Select sample folders to load:",
+                  font=("", 9, "bold")).pack(anchor=tk.W, padx=8, pady=(8, 4))
+
+        frame = ttk.Frame(dlg)
+        frame.pack(fill=tk.BOTH, expand=True, padx=8)
+        canvas = tk.Canvas(frame, highlightthickness=0, width=540, height=360)
+        sb = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=canvas.yview)
+        inner = ttk.Frame(canvas)
+        inner.bind("<Configure>",
+                   lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=inner, anchor=tk.NW)
+        canvas.configure(yscrollcommand=sb.set)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+        canvas.bind("<MouseWheel>",
+                    lambda e: canvas.yview_scroll(-1 * (e.delta // 120), "units"))
+
+        vars_ = []
+        for folder in candidates:
+            n_cv = len(self._folder_cv_paths(folder))
+            disp = os.path.basename(folder.rstrip("/\\")) or folder
+            v = tk.BooleanVar(value=True)
+            tk.Checkbutton(inner, variable=v, anchor=tk.W,
+                           text=f"{disp}   ({n_cv} CV files)").pack(
+                               fill=tk.X, anchor=tk.W)
+            vars_.append((v, folder))
+
+        sel = ttk.Frame(dlg)
+        sel.pack(fill=tk.X, padx=8, pady=(4, 0))
+        ttk.Button(sel, text="Select All",
+                   command=lambda: [v.set(True) for v, _ in vars_]).pack(side=tk.LEFT)
+        ttk.Button(sel, text="Deselect All",
+                   command=lambda: [v.set(False) for v, _ in vars_]).pack(
+                       side=tk.LEFT, padx=4)
+
+        result = {"folders": []}
+        act = ttk.Frame(dlg)
+        act.pack(fill=tk.X, padx=8, pady=8)
+
+        def _ok():
+            result["folders"] = [f for v, f in vars_ if v.get()]
+            dlg.destroy()
+
+        ttk.Button(act, text="Load", command=_ok).pack(side=tk.RIGHT)
+        ttk.Button(act, text="Cancel", command=dlg.destroy).pack(
+            side=tk.RIGHT, padx=(0, 4))
+
+        dlg.grab_set()
+        self.wait_window(dlg)
+        return result["folders"]
 
     def _initial_corrections(self, cat_base: str) -> dict:
         """Initial catalyst_corrections dict for a newly created pair/catalyst.
@@ -1037,7 +1139,7 @@ class ORRPanel(ttk.Frame):
             if not self.loaded_tv.exists(cat_iid):
                 self.loaded_tv.insert("", tk.END, iid=cat_iid,
                                       text=f"  ▸ {cat_label}",
-                                      tags=("hdr",), open=True)
+                                      tags=("hdr",), open=False)
             gas_tag = gas.upper() if gas else "??"
             self.loaded_tv.insert(cat_iid, tk.END, iid=short,
                                   text=f"    ({gas_tag})  {short}",
