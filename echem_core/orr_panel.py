@@ -65,8 +65,21 @@ _SAMPLE_RUNTIME = frozenset({
 })
 _PAIR_RUNTIME = frozenset({"df_n2", "df_o2"})
 
-# Matches  _NN_CV_   or   _NNN_CV_   in a filename
-_RPM_PAT = re.compile(r'_(\d{2,4})_CV_', re.IGNORECASE)
+# Matches the file's OWN trailing technique segment — the '_NN_TECH' that sits
+# just before the final '_C0N' counter, e.g. '..._04_CV_C02' → ('04', 'CV').
+# We must read the LAST segment, not the first '_NN_CV_' anywhere in the name:
+# BioLogic re-runs carry the starting-point context of a prior step embedded in
+# every downstream filename (e.g. '..._08_CV_03_CA_C02'), so a first-match search
+# wrongly treats CA/EIS files as CVs and collapses every RPM id onto that context.
+_TECH_TAIL_PAT = re.compile(r'_(\d{2,4})_([A-Za-z]{1,6})(?:_C\d+)?$', re.IGNORECASE)
+
+
+def _tech_tail(stem: str):
+    """Return (seq, tech_lower) from the trailing technique segment, or (None, "")."""
+    m = _TECH_TAIL_PAT.search(stem)
+    if not m:
+        return None, ""
+    return m.group(1), m.group(2).lower()
 
 _GRID_STYLE_MAP = {
     "dashed": "--", "dotted": ":", "solid": "-", "dash-dot": "-."}
@@ -116,8 +129,8 @@ def _detect_gas(stem: str) -> str:
 
 
 def _extract_rpm_id(stem: str) -> str:
-    m = _RPM_PAT.search(stem)
-    return m.group(1) if m else ""
+    seq, tech = _tech_tail(stem)
+    return seq if (seq is not None and tech == "cv") else ""
 
 
 def _detect_catalyst(stem: str) -> str:
@@ -135,14 +148,17 @@ def _is_orr_cv_file(name: str) -> bool:
     """True for an ORR N2/O2 per-RPM CV data file.
 
     Matches e.g. 'P6_CVn2_..._04_CV_C02.mpr' / 'P8_CVo2_..._16_CV_C02.mpr':
-    a readable data file (.mpr/.txt) whose name carries an N2/O2 gas tag and a
-    '_NN_CV_' RPM segment. Excludes CA/Cdl/CVa/CVh/EIS runs and .mgr/.sta/.mps.
+    a readable data file (.mpr/.txt) whose name carries an N2/O2 gas tag and
+    whose OWN trailing technique segment is CV. Excludes CA/Cdl/CVa/CVh/EIS runs
+    and .mgr/.sta/.mps — even when a prior '_NN_CV_' step is embedded earlier in
+    the filename (BioLogic re-run context), because we read the last segment only.
     """
     ext = os.path.splitext(name)[1].lower()
     if ext not in (".mpr", ".txt"):
         return False
     stem = os.path.splitext(name)[0]
-    return _detect_gas(stem) in ("n2", "o2") and _RPM_PAT.search(stem) is not None
+    _, tech = _tech_tail(stem)
+    return _detect_gas(stem) in ("n2", "o2") and tech == "cv"
 
 
 def _extract_folder_corrections(folder: str) -> dict:
