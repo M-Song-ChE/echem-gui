@@ -365,6 +365,14 @@ Use this tab to calculate the electrochemically active surface area (ECSA) and r
 
 Click **Load Files** to load one or more `.mpr` or `.txt` CV files. Each file appears in the file list on the left. Use the **Cycle** combobox below the list to select which cycle to analyse; the default is the last cycle.
 
+**Load Folder** picks the CVh file out of a measurement folder for you and fills in the corrections automatically:
+
+- Select **one sample folder** and its CVh file is loaded straight away. Select a **parent folder** instead and every immediate sub-folder containing a CVh file is offered in a checkbox list, so a whole experiment series loads in one go.
+- Only the top level of each sample folder is scanned — nested folders such as `reverse` are never touched.
+- A CVh run writes both a `_NN_CA` pre-step and a `_NN_CV` sweep; only the CV sweep is loaded. `CVa`, `Cdl`, `CVn2`, `CVo2`, and EIS runs in the same folder are ignored.
+- **R_sol** and **E_ref** are read from that same folder: the **OCV** file gives E_ref (RHE offset) and the **EIS1** file gives R_sol (Ru at minimum |Im(Z)|). Each sample folder gets its own values. They are entered as normal per-file corrections, so you can still edit them afterwards.
+- A grey status line under the buttons reports how many files loaded and which values were detected.
+
 ### 9.2 Per-File Correction
 
 Each file has independent correction values entered in the **Correction** section:

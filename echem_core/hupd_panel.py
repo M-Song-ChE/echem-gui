@@ -11,6 +11,7 @@ Workflow per file:
 """
 
 import os
+import re
 from collections import OrderedDict
 
 import numpy as np
@@ -45,6 +46,47 @@ def _read_one(path: str) -> pd.DataFrame:
     df = pd.read_csv(path, sep="\t", encoding="latin-1", on_bad_lines="skip")
     df.columns = [c.strip().replace("<", "").replace(">", "") for c in df.columns]
     return df.reset_index(drop=True)
+
+
+# 'CVh' as a standalone filename token, e.g. 'P4_CVh_LTS-BDRDE_29(Pt) …'.
+# Guarded on both sides so 'CVh2'/'xCVh' style names don't match by accident.
+_CVH_PAT = re.compile(r'(?<![a-z0-9])cvh(?![a-z0-9])', re.IGNORECASE)
+
+
+def _is_hupd_cv_file(name: str) -> bool:
+    """True for the CV data file produced by a CVh (Hupd) technique run.
+
+    A CVh run writes both a '_NN_CA' pre-step and the '_NN_CV' sweep we want,
+    so we require the file's OWN trailing technique segment to be CV (read via
+    the ORR panel's `_tech_tail`, which reads the LAST '_NN_TECH' segment —
+    BioLogic re-runs embed a prior step's context earlier in the name).
+    """
+    ext = os.path.splitext(name)[1].lower()
+    if ext not in (".mpr", ".txt"):
+        return False
+    stem = os.path.splitext(name)[0]
+    if not _CVH_PAT.search(stem):
+        return False
+    from .orr_panel import _tech_tail
+    return _tech_tail(stem)[1] == "cv"
+
+
+def _folder_corrections(folder: str) -> dict:
+    """Derive Hupd corrections from a sample folder's OCV / EIS1 files.
+
+    Reuses the ORR panel's folder scan:
+      • OCV file  → e_ref (RHE offset)
+      • EIS1 file → r_sol (iR compensation; ORR's N2-background Ru)
+    Returns a dict with only the keys that were successfully extracted.
+    """
+    from .orr_panel import _extract_folder_corrections
+    fc = _extract_folder_corrections(folder)
+    out = {}
+    if "e_ref" in fc:
+        out["e_ref"] = fc["e_ref"]
+    if "r_sol_n2" in fc:
+        out["r_sol"] = fc["r_sol_n2"]
+    return out
 
 
 def _fmt_cycle(c) -> str:
@@ -202,8 +244,14 @@ class HupdPanel(ttk.Frame):
 
         bf = ttk.Frame(ff)
         bf.pack(fill=tk.X, padx=4, pady=(4, 2))
-        ttk.Button(bf, text="Load Files", command=self._load).pack(side=tk.LEFT)
-        ttk.Button(bf, text="Remove",     command=self._remove).pack(side=tk.LEFT, padx=4)
+        ttk.Button(bf, text="Load Files",  command=self._load).pack(side=tk.LEFT)
+        ttk.Button(bf, text="Load Folder", command=self._load_folder).pack(
+            side=tk.LEFT, padx=4)
+        ttk.Button(bf, text="Remove",      command=self._remove).pack(side=tk.LEFT)
+
+        self._status = ttk.Label(ff, text="", foreground="gray", font=("", 7),
+                                 anchor=tk.W, wraplength=300, justify=tk.LEFT)
+        self._status.pack(fill=tk.X, padx=4, pady=(0, 2))
 
         self._lb = CheckableListbox(ff, height=5, show_checkboxes=False,
                                     on_reorder=self._on_hupd_lb_reorder)
@@ -476,12 +524,17 @@ class HupdPanel(ttk.Frame):
         self._leg_resizing    = False
 
     # ── File operations ──────────────────────────────────────────────────────
-    def _load(self):
-        paths = filedialog.askopenfilenames(
-            title="Load CV files (Hupd)",
-            filetypes=[("Data files", "*.mpr *.txt"), ("All files", "*.*")])
-        if not paths:
-            return
+    def _log(self, msg: str):
+        self._status.config(text=msg)
+
+    def _add_paths(self, paths, corr=None):
+        """Load each path into files + listbox. Returns (added, errors).
+
+        *corr* optionally pre-fills each new entry's r_sol / e_ref (used by
+        the folder loader's OCV/EIS auto-extraction).
+        """
+        corr = corr or {}
+        added, errors = [], []
         for path in paths:
             short = os.path.basename(path)
             base, ext = os.path.splitext(short)
@@ -490,27 +543,184 @@ class HupdPanel(ttk.Frame):
                 short = f"{base}_{n}{ext}"; n += 1
             try:
                 df     = _read_one(path)
-                cycles = _get_cycles(df)
-                sel_c  = cycles[-1] if cycles else None
-                df_lc  = _get_cycle(df, sel_c)
-                self.files[short] = {"path": path, "df": df,
-                                     "df_lc": df_lc, "result": None,
-                                     "r_sol": 0.0, "e_ref": 0.0,
-                                     "cycles": cycles, "sel_cycle": sel_c,
-                                     "scan_rate": _DEF["scan_rate"],
-                                     "dl_lo":     _DEF["dl_lo"],
-                                     "dl_hi":     _DEF["dl_hi"],
-                                     "e1":        _DEF["e1"],
-                                     "e2":        _DEF["e2"],
-                                     "q_ref":     _DEF["q_ref"],
-                                     "geo_area":  _DEF["geo_area"]}
-                self._keys.append(short)
-                self._lb.insert(tk.END, short)
             except Exception as ex:
-                messagebox.showerror("Load error", f"{short}:\n{ex}")
+                errors.append(f"{os.path.basename(path)}: {ex}")
+                continue
+            cycles = _get_cycles(df)
+            sel_c  = cycles[-1] if cycles else None
+            df_lc  = _get_cycle(df, sel_c)
+            self.files[short] = {"path": path, "df": df,
+                                 "df_lc": df_lc, "result": None,
+                                 "r_sol": float(corr.get("r_sol", 0.0)),
+                                 "e_ref": float(corr.get("e_ref", 0.0)),
+                                 "cycles": cycles, "sel_cycle": sel_c,
+                                 "scan_rate": _DEF["scan_rate"],
+                                 "dl_lo":     _DEF["dl_lo"],
+                                 "dl_hi":     _DEF["dl_hi"],
+                                 "e1":        _DEF["e1"],
+                                 "e2":        _DEF["e2"],
+                                 "q_ref":     _DEF["q_ref"],
+                                 "geo_area":  _DEF["geo_area"]}
+            self._keys.append(short)
+            self._lb.insert(tk.END, short)
+            added.append(short)
+        return added, errors
+
+    def _finish_load(self):
+        """Select the first file if nothing is active yet."""
         if not self.active_file and self._keys:
             self._lb.selection_set(0)
             self._on_lb()
+
+    def _load(self):
+        paths = filedialog.askopenfilenames(
+            title="Load CV files (Hupd)",
+            filetypes=[("Data files", "*.mpr *.txt"), ("All files", "*.*")])
+        if not paths:
+            return
+        added, errors = self._add_paths(paths)
+        if errors:
+            messagebox.showerror("Load error", "\n".join(errors[:5]))
+        if added:
+            self._log(f"Loaded {len(added)} file(s).")
+        self._finish_load()
+
+    @staticmethod
+    def _folder_cvh_paths(folder):
+        """Top-level CVh CV data file paths in *folder* (non-recursive)."""
+        try:
+            names = sorted(os.listdir(folder))
+        except OSError:
+            return []
+        return [os.path.join(folder, n) for n in names
+                if _is_hupd_cv_file(n)
+                and os.path.isfile(os.path.join(folder, n))]
+
+    def _load_folder(self):
+        """Pick a folder (a single sample, or a parent of sample folders) and
+        load its CVh files, auto-filling R_sol / E_ref from OCV + EIS1.
+
+        • If the picked folder has CVh files at its top level → treat it as one
+          sample and load just those (nested sub-folders are never scanned).
+        • Otherwise → treat it as a parent: offer its immediate sub-folders that
+          contain CVh files in a checkbox dialog for multi-select loading.
+        """
+        parent = filedialog.askdirectory(
+            title="Load Hupd Folder (a sample folder, or a parent of them)")
+        if not parent:
+            return
+
+        if self._folder_cvh_paths(parent):
+            candidates = [parent]          # single sample; never descend
+        else:
+            try:
+                children = sorted(os.listdir(parent))
+            except OSError as exc:
+                messagebox.showerror("Load error", str(exc))
+                return
+            candidates = [os.path.join(parent, n) for n in children
+                          if os.path.isdir(os.path.join(parent, n))
+                          and self._folder_cvh_paths(os.path.join(parent, n))]
+
+        if not candidates:
+            messagebox.showwarning(
+                "Hupd",
+                "No CVh CV data files found in the selected folder or its "
+                "immediate sub-folders.")
+            return
+
+        if len(candidates) == 1:
+            chosen = candidates
+        else:
+            chosen = self._choose_folders_dialog(candidates)
+            if not chosen:
+                return
+
+        total, all_errors, n_folders, notes = 0, [], 0, []
+        for folder in chosen:
+            added, errors, corr = self._load_one_folder(folder)
+            total += len(added)
+            all_errors.extend(errors)
+            if added:
+                n_folders += 1
+                disp = os.path.basename(folder.rstrip("/\\")) or folder
+                notes.append(f"{disp}: E_ref={corr.get('e_ref', '—')} V, "
+                             f"R_sol={corr.get('r_sol', '—')} Ω")
+        if all_errors:
+            messagebox.showerror("Load error", "\n".join(all_errors[:8]))
+        if total:
+            head = f"Loaded {total} file(s) from {n_folders} folder(s).  "
+            self._log(head + " | ".join(notes[:3])
+                      + ("  …" if len(notes) > 3 else ""))
+        self._finish_load()
+
+    def _load_one_folder(self, folder):
+        """Load one sample folder's top-level CVh files, pre-filled with the
+        OCV/EIS1 corrections from that same folder. Returns (added, errors, corr)."""
+        paths = self._folder_cvh_paths(folder)
+        if not paths:
+            return [], [], {}
+        corr = _folder_corrections(folder)
+        added, errors = self._add_paths(paths, corr)
+        return added, errors, corr
+
+    def _choose_folders_dialog(self, candidates):
+        """Modal checkbox picker for multiple sample folders. Returns the list
+        of chosen folder paths (empty list if cancelled)."""
+        dlg = tk.Toplevel(self)
+        dlg.title("Select folders to load")
+        dlg.transient(self.winfo_toplevel())
+        ttk.Label(dlg, text="Select sample folders to load:",
+                  font=("", 9, "bold")).pack(anchor=tk.W, padx=8, pady=(8, 4))
+
+        frame = ttk.Frame(dlg)
+        frame.pack(fill=tk.BOTH, expand=True, padx=8)
+        canvas = tk.Canvas(frame, highlightthickness=0, width=540, height=360)
+        sb = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=canvas.yview)
+        inner = ttk.Frame(canvas)
+        inner.bind("<Configure>",
+                   lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=inner, anchor=tk.NW)
+        canvas.configure(yscrollcommand=sb.set)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+        canvas.bind("<MouseWheel>",
+                    lambda e: canvas.yview_scroll(-1 * (e.delta // 120), "units"))
+
+        vars_ = []
+        for folder in candidates:
+            n_cv = len(self._folder_cvh_paths(folder))
+            disp = os.path.basename(folder.rstrip("/\\")) or folder
+            v = tk.BooleanVar(value=True)
+            tk.Checkbutton(inner, variable=v, anchor=tk.W,
+                           text=f"{disp}   ({n_cv} CVh file"
+                                f"{'s' if n_cv != 1 else ''})").pack(
+                               fill=tk.X, anchor=tk.W)
+            vars_.append((v, folder))
+
+        sel = ttk.Frame(dlg)
+        sel.pack(fill=tk.X, padx=8, pady=(4, 0))
+        ttk.Button(sel, text="Select All",
+                   command=lambda: [v.set(True) for v, _ in vars_]).pack(side=tk.LEFT)
+        ttk.Button(sel, text="Deselect All",
+                   command=lambda: [v.set(False) for v, _ in vars_]).pack(
+                       side=tk.LEFT, padx=4)
+
+        result = {"folders": []}
+        act = ttk.Frame(dlg)
+        act.pack(fill=tk.X, padx=8, pady=8)
+
+        def _ok():
+            result["folders"] = [f for v, f in vars_ if v.get()]
+            dlg.destroy()
+
+        ttk.Button(act, text="Load", command=_ok).pack(side=tk.RIGHT)
+        ttk.Button(act, text="Cancel", command=dlg.destroy).pack(
+            side=tk.RIGHT, padx=(0, 4))
+
+        dlg.grab_set()
+        self.wait_window(dlg)
+        return result["folders"]
 
     def _remove(self):
         sel = self._lb.curselection()
