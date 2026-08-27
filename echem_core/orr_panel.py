@@ -3597,7 +3597,9 @@ class ORRPanel(ttk.Frame):
         ttk.Entry(ctrl, textvariable=e_lo_var, width=6).pack(side=tk.LEFT, padx=(2, 0))
         ttk.Label(ctrl, text="to").pack(side=tk.LEFT, padx=3)
         ttk.Entry(ctrl, textvariable=e_hi_var, width=6).pack(side=tk.LEFT, padx=(0, 10))
-        use_jk_var = tk.BooleanVar(value=False)
+        # Default ON: a Tafel slope read off raw J is RPM-dependent and
+        # therefore meaningless — one line per catalyst, not one per RPM.
+        use_jk_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(ctrl, text="Mass-transport-correct J → Jᵏ  (KL, multi-RPM)",
                         variable=use_jk_var).pack(side=tk.LEFT, padx=(0, 10))
         e_lo_var.trace_add("write", _schedule)
@@ -3692,6 +3694,16 @@ class ORRPanel(ttk.Frame):
                     with np.errstate(divide="ignore", invalid="ignore"):
                         log_j = np.log10(np.abs(J_arr[mask]))
                     _fit_and_plot(log_j, E_arr[mask], color, label)
+            if not ax.get_lines():
+                ax.text(0.5, 0.5,
+                        ("No catalyst has ≥ 2 RPMs in this E range, so Jᵏ cannot "
+                         "be extrapolated.\nUncheck the correction to plot the raw "
+                         "J instead — but note its\nTafel slope is RPM-dependent "
+                         "and not a kinetic quantity.")
+                        if use_jk_var.get() else
+                        "No curves selected, or none with ≥ 3 points in this E range.",
+                        ha="center", va="center", transform=ax.transAxes,
+                        fontsize=9, color="gray")
             j_lbl = "Jᵏ" if use_jk_var.get() else "J"
             ax.set_xlabel(f"log₁₀|{j_lbl}|  (mA cm⁻² or mA)")
             ax.set_ylabel(f"E  (V vs {ref})")

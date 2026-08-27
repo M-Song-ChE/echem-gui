@@ -444,6 +444,8 @@ SA = |Jᵏ| / ECSA_Hupd     [mA cm⁻²_ECSA]
 
 This is used everywhere Jᵏ or SA appears: **SA Analysis**, **Extract Report**, **Sample Comparison → Kinetic tab**, and the Tafel window's mass-transport correction.
 
+**Tafel plots.** The Tafel window's **"Mass-transport-correct J → Jᵏ (KL, multi-RPM)"** box is **on by default**, and draws **one line per catalyst**. Unchecking it plots the raw J instead, which necessarily splits each catalyst into one line per RPM — with a different slope on each, because raw J still contains the diffusion limitation. Those per-RPM slopes are not kinetic quantities; only the corrected line has a slope worth quoting.
+
 **A minimum of two distinct RPMs per catalyst is required.** There is no single-curve substitute, so with fewer than two rotation rates the app reports "N/A (< 2 RPM)" rather than a number.
 
 > **Changed in the 2026-08 release.** Earlier versions estimated Jᵏ from a *single* curve as `Jᵏ = J·J_lim/(J_lim − J)` with `J_lim = min(J)`. That silently inherits every defect in that one curve's plateau. Against synthetic data obeying the KL equation exactly, a single 8 % noise spike in the plateau biased the old SA by **−90 % at 0.80 V** and **−16 % at 0.90 V**; a plateau tilted 15 % by film resistance biased it by **−92 % / −22 %**. The KL fit stayed within 4 % in both cases. Tafel slopes show the same thing: uncorrected, they came out RPM-dependent (−278 to −161 mV/dec for one dataset); KL-corrected they collapse onto the true −60 mV/dec. **Jᵏ and SA numbers produced by earlier versions should be recomputed.**
