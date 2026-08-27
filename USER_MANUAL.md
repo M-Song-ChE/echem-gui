@@ -348,6 +348,8 @@ Used by **SA Analysis**, **Extract Report**, **Sample Comparison → Kinetic**, 
 
 In the Tafel window the **"Mass-transport-correct J → Jᵏ (KL, multi-RPM)"** box is **on by default** and gives **one line per catalyst**. Unchecking it plots raw J, which splits each catalyst into one line per RPM with a different slope on each — those are not kinetic slopes.
 
+The per-RPM checkboxes in the SA / Tafel / KL windows now feed the fit itself: unchecking an RPM changes the reported Jᵏ, SA, and slope. Check **KL R²** after dropping a run — a poor R² means the points are not on a KL line and Jᵏ is unreliable. R² is blank with exactly 2 RPMs (two points always fit a line perfectly); 3+ makes it meaningful.
+
 > **Changed 2026-08:** earlier versions estimated Jᵏ from a single curve as `Jᵏ = J·J_lim/(J_lim − J)` with `J_lim = min(J)`, which is not the accepted method and is badly biased by any plateau defect (a single 8 % noise spike shifted SA by −90 % at 0.80 V in testing). **Recompute any Jᵏ or SA values produced by an earlier version.**
 
 ### 8.11 Plot Size

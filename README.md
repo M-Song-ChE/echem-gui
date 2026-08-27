@@ -448,6 +448,8 @@ This is used everywhere Jᵏ or SA appears: **SA Analysis**, **Extract Report**,
 
 **A minimum of two distinct RPMs per catalyst is required.** There is no single-curve substitute, so with fewer than two rotation rates the app reports "N/A (< 2 RPM)" rather than a number.
 
+**The RPM checkboxes now change the numbers.** In the SA, Tafel, and KL windows, unchecking one RPM removes it from the *fit*, not just from the drawing — the reported Jᵏ, SA, and Tafel slope all move. Use this to drop a bad run, and check the **KL R²** afterwards: a poor R² means the points do not lie on a KL line, so the extrapolated Jᵏ should not be trusted. R² is blank with exactly 2 RPMs, because any two points define a perfect line and tell you nothing about fit quality — three or more is what makes the number meaningful.
+
 > **Changed in the 2026-08 release.** Earlier versions estimated Jᵏ from a *single* curve as `Jᵏ = J·J_lim/(J_lim − J)` with `J_lim = min(J)`. That silently inherits every defect in that one curve's plateau. Against synthetic data obeying the KL equation exactly, a single 8 % noise spike in the plateau biased the old SA by **−90 % at 0.80 V** and **−16 % at 0.90 V**; a plateau tilted 15 % by film resistance biased it by **−92 % / −22 %**. The KL fit stayed within 4 % in both cases. Tafel slopes show the same thing: uncorrected, they came out RPM-dependent (−278 to −161 mV/dec for one dataset); KL-corrected they collapse onto the true −60 mV/dec. **Jᵏ and SA numbers produced by earlier versions should be recomputed.**
 
 ---
