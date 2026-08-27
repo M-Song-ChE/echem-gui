@@ -274,7 +274,7 @@ The **RPM Pairs** section lists all matched N2/O2 pairs for the active sample:
 - **E_ref (V vs RHE)** — shared reference electrode offset: `E_RHE = E_corr + E_ref`.
 - **Ref** — reference electrode label shown in the axis label.
 - **Area (cm²)** — electrode area; leave blank for I (mA), enter a value for J (mA cm⁻²).
-- **ECSA_Hupd (cm²)** — electrochemical surface area from the Hupd Calc tab. Enter to enable specific activity (SA) calculation in the Extract Report window. Stored per catalyst; also auto-fills the ECSA input in the Specific Activity and Comparison windows.
+- **ECSA_Hupd (cm²)** — electrochemical surface area from the Hupd Calc tab. Enter to enable specific activity (SA) calculation in the Extract Report window. Stored per catalyst; also auto-fills the ECSA input in the Specific Activity and Comparison windows. Not carried over automatically from the Hupd Calc tab — copy it in by hand.
 
 All corrections are applied automatically on Enter / focus change.
 
@@ -314,20 +314,41 @@ All controls in the left panel apply to the **active sample** only. Each sample 
 Click **Extract Report** in the Analysis section to open a report window that tabulates key ORR metrics for all currently visible (plotted) samples.
 
 **Controls:**
-- **E value (V vs Ref)** — target potential for the J@E and SA@E columns (default 0.90 V). Press Enter or click Compute to update.
+- **E value (V vs Ref)** — target potential for the I@E, Jᵏ, and SA columns (default 0.90 V). Press Enter or click Compute to update.
 - **Compute** — fills the table for all visible samples at RPMs 400, 900, 1600, 2500.
 - **Copy TSV (→ Excel)** — copies the table as tab-separated values to the clipboard for direct paste into Excel.
 
-**Columns extracted (per RPM):**
+**Per-RPM columns:**
 | Column | Description |
 |--------|-------------|
 | **I at E (mA)** | Current at the target potential × electrode area (if Area is set) |
-| **SA at E (mA/cm²_ECSA)** | Kinetic current density normalised by ECSA_Hupd: `j_k = J@E × J_lim / (J_lim − J@E)`, then `SA = |j_k| / ECSA_Hupd`. Requires ECSA_Hupd to be entered in the correction panel. |
 | **JL (mA/cm²)** | Limiting (diffusion) current — minimum current density on the curve |
 
-The closest available RPM within ±50 rpm of each target is used; cells show blank or "N/A" when data or ECSA is missing.
+**Per-catalyst columns** (one Koutecky-Levich fit over all of that catalyst's RPMs):
+| Column | Description |
+|--------|-------------|
+| **Jk at E (mA/cm², KL)** | Mass-transport-free kinetic current density — y-intercept of `1/\|J\|` vs `ω^-½`. Not a per-RPM number. |
+| **SA at E (mA/cm²_ECSA, KL)** | `SA = \|Jᵏ\| / ECSA_Hupd`. Requires ECSA_Hupd in the correction panel. |
+| **KL R²** | KL fit quality. Blank with only 2 RPMs. |
+| **n_RPM** | Number of distinct rotation rates in the fit. |
 
-### 8.10 Plot Size
+The closest available RPM within ±50 rpm of each target is used for the per-RPM columns; cells show blank or "N/A" when data or ECSA is missing.
+
+### 8.10 Kinetic current (Jᵏ) and specific activity (SA)
+
+Jᵏ is the current with oxygen transport removed. It is obtained by measuring the same electrode at several rotation rates and extrapolating to infinite rotation (Koutecky-Levich):
+
+```
+1/|J| = 1/|Jᵏ| + 1/(B·ω^½)      ω = 2π·RPM/60
+|Jᵏ| = 1 / (y-intercept of 1/|J| vs ω^-½)
+SA   = |Jᵏ| / ECSA_Hupd          [mA cm⁻²_ECSA]
+```
+
+Used by **SA Analysis**, **Extract Report**, **Sample Comparison → Kinetic**, and the Tafel window's mass-transport correction. **At least two distinct RPMs per catalyst are required** — with fewer, the app reports "N/A (< 2 RPM)" instead of guessing.
+
+> **Changed 2026-08:** earlier versions estimated Jᵏ from a single curve as `Jᵏ = J·J_lim/(J_lim − J)` with `J_lim = min(J)`, which is not the accepted method and is badly biased by any plateau defect (a single 8 % noise spike shifted SA by −90 % at 0.80 V in testing). **Recompute any Jᵏ or SA values produced by an earlier version.**
+
+### 8.11 Plot Size
 **W [__] H [__] inches** — figure size for all sample subplots. Scrollbars appear automatically for oversized grids.
 
 ---

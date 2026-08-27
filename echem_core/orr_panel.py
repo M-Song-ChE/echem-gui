@@ -13,6 +13,11 @@ Processing per pair:
 
 Multiple samples are displayed in a scrollable grid of subplots (configurable columns),
 mirroring the layout of the Multi E.Chem 2 tab.
+
+Kinetic current (Jᵏ) and specific activity (SA) are ALWAYS obtained by
+Koutecky-Levich extrapolation across rotation rates — see _kl_fit_at_E.
+A single polarization curve cannot yield Jᵏ, so those numbers are reported as
+N/A for any catalyst with fewer than two distinct RPMs.
 """
 
 from collections import OrderedDict
@@ -247,6 +252,139 @@ def _find_half_wave(E: np.ndarray, J: np.ndarray):
     e_half = (e0 + (j_half - j0) / (j1 - j0) * (e1 - e0)
               if j1 != j0 else (e0 + e1) / 2.0)
     return float(e_half), float(j_half)
+
+
+# ── Koutecky-Levich kinetic current ─────────────────────────────────────
+#
+# The mass-transport-free kinetic current is obtained by extrapolating a set
+# of measurements at DIFFERENT rotation rates to infinite rotation:
+#
+#     1/J = 1/Jᵏ + 1/(B·ω^½)        ω = 2π·RPM/60
+#
+# Plotting 1/|J| against ω^-½ gives a straight line whose y-intercept is
+# 1/|Jᵏ| and whose slope is 1/B (→ electron count n).  This requires at
+# least two distinct rotation rates; there is no single-curve substitute
+# that is quantitatively defensible, so a fit is simply refused below that.
+#
+# NOTE (2026-08): earlier versions estimated Jᵏ from ONE curve using
+#     Jᵏ = J·J_lim/(J_lim − J)   with   J_lim = min(J)
+# which silently inherits every error in that curve's plateau (noise spikes,
+# non-flat plateau, film resistance) and is NOT the accepted method.  All Jᵏ
+# and SA numbers now go through _kl_fit_at_E / _kl_kinetic_curve below.
+
+# |intercept| below this means |Jᵏ| > 1e6 mA/cm² — kinetics unresolvable.
+_KL_MIN_INTERCEPT = 1e-6
+
+
+def _kl_fit_at_E(curves, e_val):
+    """Koutecky-Levich fit at one potential across several rotation rates.
+
+    curves : iterable of (E_arr, J_arr, rpm) — E ascending, J signed (cathodic
+             negative), in mA/cm² when an electrode area is set, else mA.
+
+    Fits  y = 1/|J|  vs  x = ω^-½  and returns a dict:
+        j_k_abs  |Jᵏ| = 1/intercept            (mA/cm², positive)
+        j_k      signed cathodic Jᵏ = −j_k_abs (matches the sign of J)
+        j_k_se   1σ of |Jᵏ| propagated from the intercept (nan when n < 3)
+        slope, intercept, r2, npts, rpms, x, y, note
+
+    Returns None when fewer than two DISTINCT rotation rates yield a usable
+    cathodic current at *e_val* — a KL extrapolation is undefined there.
+    `j_k`/`j_k_abs` come back as nan (with `note` set) when the fit itself is
+    unphysical, e.g. a non-positive intercept.
+    """
+    x = []; y = []; rpms = []
+    for E_arr, J_arr, rpm in curves:
+        try:
+            rpm = float(rpm)
+        except (TypeError, ValueError):
+            continue
+        if rpm <= 0 or len(E_arr) < 2:
+            continue
+        if e_val < E_arr[0] or e_val > E_arr[-1]:
+            continue
+        j = float(np.interp(e_val, E_arr, J_arr))
+        if not np.isfinite(j) or j >= 0:      # cathodic current required
+            continue
+        omega = 2.0 * math.pi * rpm / 60.0
+        if omega <= 0:
+            continue
+        x.append(omega ** -0.5)
+        y.append(1.0 / abs(j))
+        rpms.append(rpm)
+
+    if len(x) < 2 or len(set(rpms)) < 2:
+        return None
+
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    slope, intercept = (float(v) for v in np.polyfit(x, y, 1))
+
+    y_hat  = slope * x + intercept
+    ss_res = float(np.sum((y - y_hat) ** 2))
+    ss_tot = float(np.sum((y - y.mean()) ** 2))
+    r2 = (1.0 - ss_res / ss_tot) if ss_tot > 0 else float("nan")
+
+    # Standard error of the intercept (needs ≥ 3 points for a residual df)
+    n = len(x)
+    se_int = float("nan")
+    if n > 2:
+        sxx = float(np.sum((x - x.mean()) ** 2))
+        if sxx > 0:
+            se_int = math.sqrt((ss_res / (n - 2)) * (1.0 / n + x.mean() ** 2 / sxx))
+
+    note = ""
+    if not np.isfinite(intercept) or intercept <= _KL_MIN_INTERCEPT:
+        j_k_abs = float("nan")
+        note = "KL intercept ≤ 0 — Jᵏ not resolvable (mass transport dominates)"
+    else:
+        j_k_abs = 1.0 / intercept
+    j_k_se = (se_int / intercept ** 2) if (np.isfinite(se_int)
+                                          and np.isfinite(j_k_abs)) else float("nan")
+
+    # `rpms` stays aligned element-wise with x/y (x = ω^-½ *decreases* with
+    # RPM, so never re-sort one without the others); `rpms_sorted` is for display.
+    return dict(j_k_abs=j_k_abs, j_k=-j_k_abs, j_k_se=j_k_se,
+                slope=slope, intercept=intercept, r2=r2, npts=n,
+                rpms=rpms, rpms_sorted=sorted(rpms), x=x, y=y, note=note)
+
+
+def _kl_n_electrons(slope, b_factor):
+    """Electrons per O₂ from a KL slope:  n = 1 / (|slope| · B_factor)."""
+    if not np.isfinite(slope) or slope == 0 or not b_factor:
+        return float("nan")
+    return 1.0 / (abs(slope) * b_factor)
+
+
+def _kl_kinetic_curve(curves, e_lo, e_hi, n_grid=60):
+    """Mass-transport-free Jᵏ(E) over [e_lo, e_hi] — one KL fit per grid point.
+
+    Returns (E_used, Jk_abs, n_rpm) where *n_rpm* is the number of distinct
+    rotation rates available, or (None, None, n_rpm) when the grid is empty or
+    fewer than two rotation rates are present.
+    """
+    usable = [(E, J, r) for E, J, r in curves
+              if r and float(r) > 0 and len(E) >= 2]
+    n_rpm = len({float(r) for _, _, r in usable})
+    if n_rpm < 2:
+        return None, None, n_rpm
+
+    # Grid limited to the overlap of every curve's potential window
+    lo = max([e_lo] + [float(E[0])  for E, _, _ in usable])
+    hi = min([e_hi] + [float(E[-1]) for E, _, _ in usable])
+    if not np.isfinite(lo) or not np.isfinite(hi) or lo >= hi:
+        return None, None, n_rpm
+
+    E_grid = np.linspace(lo, hi, int(n_grid))
+    E_ok = []; jk_ok = []
+    for e_val in E_grid:
+        fit = _kl_fit_at_E(usable, float(e_val))
+        if fit is None or not np.isfinite(fit["j_k_abs"]):
+            continue
+        E_ok.append(float(e_val)); jk_ok.append(fit["j_k_abs"])
+    if len(E_ok) < 3:
+        return None, None, n_rpm
+    return np.asarray(E_ok), np.asarray(jk_ok), n_rpm
 
 
 def _process_pair(pair: dict, r_sol_n2: float, r_sol_o2: float,
@@ -3367,7 +3505,10 @@ class ORRPanel(ttk.Frame):
         _th_g = ttk.Frame(_th); _th_g.pack(fill=tk.X, padx=6, pady=3)
         for _r, (_hd, _bd) in enumerate([
             ("Tafel equation:",       "E = a + b · log₁₀|J|   (b = Tafel slope, mV/dec)"),
-            ("Diffusion correction:", "Jᵏ = J · J_lim / (J_lim − J)   (Koutecky, optional)")
+            ("Mass-transport corr.:", "|Jᵏ|(E) from a Koutecky-Levich fit at each E "
+                                      "(needs ≥ 2 RPMs)"),
+            ("Without correction:",   "the raw J already contains diffusion "
+                                      "limitation — b is only meaningful where |J| ≪ |J_lim|"),
         ]):
             ttk.Label(_th_g, text=_hd, font=("TkDefaultFont", 9, "bold"),
                       anchor=tk.W).grid(row=_r, column=0, sticky=tk.W, pady=2)
@@ -3380,8 +3521,8 @@ class ORRPanel(ttk.Frame):
         _sym_g = ttk.Frame(_sym); _sym_g.pack(fill=tk.X, padx=4, pady=3)
         for _i, (_s, _d) in enumerate([
             ("J",     "current density (mA cm⁻²)"),
-            ("Jᵏ",    "kinetic J = J · J_lim / (J_lim − J)"),
-            ("J_lim", "diffusion plateau (most negative J)"),
+            ("Jᵏ",    "mass-transport-free kinetic J  (KL y-intercept)"),
+            ("ω",     "angular velocity = 2π·RPM/60  (rad s⁻¹)"),
             ("b",     "Tafel slope (mV/decade)"),
             ("E",     "electrode potential vs reference"),
         ]):
@@ -3457,7 +3598,7 @@ class ORRPanel(ttk.Frame):
         ttk.Label(ctrl, text="to").pack(side=tk.LEFT, padx=3)
         ttk.Entry(ctrl, textvariable=e_hi_var, width=6).pack(side=tk.LEFT, padx=(0, 10))
         use_jk_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(ctrl, text="Diffusion-correct J → Jᵏ",
+        ttk.Checkbutton(ctrl, text="Mass-transport-correct J → Jᵏ  (KL, multi-RPM)",
                         variable=use_jk_var).pack(side=tk.LEFT, padx=(0, 10))
         e_lo_var.trace_add("write", _schedule)
         e_hi_var.trace_add("write", _schedule)
@@ -3497,40 +3638,66 @@ class ORRPanel(ttk.Frame):
             if e_lo >= e_hi:
                 return
             ax.clear(); lines = []
-            for idx, (E_arr, J_arr, rpm, label, color, sn) in enumerate(all_curves):
-                if not _tsel_vars.get(idx, tk.BooleanVar(value=True)).get():
-                    continue
-                j_lim = float(np.min(J_arr))
-                mask = (E_arr >= e_lo) & (E_arr <= e_hi)
-                if mask.sum() < 3:
-                    lines.append(f"{label}: < 3 pts in [{e_lo},{e_hi}] V — skipped")
-                    continue
-                E_k = E_arr[mask]; J_k = J_arr[mask]
-                if use_jk_var.get() and j_lim < 0:
-                    with np.errstate(divide="ignore", invalid="ignore"):
-                        jk = J_k * j_lim / (j_lim - J_k)
-                    good = np.isfinite(jk) & (jk < 0)
-                    if good.sum() < 3:
-                        lines.append(f"{label}: Jᵏ < 3 pts — skipped")
-                        continue
-                    E_k, J_k = E_k[good], jk[good]
-                with np.errstate(divide="ignore", invalid="ignore"):
-                    log_j = np.log10(np.abs(J_k))
-                good = np.isfinite(log_j)
+
+            def _fit_and_plot(x_log_j, y_E, color, label):
+                """Least-squares Tafel fit of E vs log₁₀|J|; draws data + fit."""
+                good = np.isfinite(x_log_j) & np.isfinite(y_E)
                 if good.sum() < 3:
-                    continue
-                E_f, log_j_f = E_k[good], log_j[good]
-                coeffs = np.polyfit(log_j_f, E_f, 1)
+                    lines.append(f"{label}: < 3 usable pts — skipped")
+                    return
+                lx, ly = x_log_j[good], y_E[good]
+                coeffs = np.polyfit(lx, ly, 1)
                 b_mV = coeffs[0] * 1000.0
-                ax.plot(log_j_f, E_f, color=color, linewidth=1.5, label=label)
-                xfit = np.linspace(log_j_f.min(), log_j_f.max(), 60)
+                ax.plot(lx, ly, color=color, linewidth=1.5, label=label)
+                xfit = np.linspace(lx.min(), lx.max(), 60)
                 ax.plot(xfit, np.polyval(coeffs, xfit), color=color,
                         linestyle="--", linewidth=0.8, label="_fit")
                 lines.append(f"{label:32s}  b = {b_mV:+.1f} mV/dec")
+
+            if use_jk_var.get():
+                # One mass-transport-free Tafel line per (sample, catalyst):
+                # Jᵏ(E) comes from a KL fit across that group's RPMs at each E.
+                grp = {}; grp_order = []
+                for idx, (E_arr, J_arr, rpm, label, color, sn) in enumerate(all_curves):
+                    if not _tsel_vars.get(idx, tk.BooleanVar(value=True)).get():
+                        continue
+                    m = re.match(r'^\[([^\]]+)\]', label)
+                    cat = m.group(1) if m else ""
+                    key = (sn, cat)
+                    if key not in grp:
+                        grp[key] = []; grp_order.append(key)
+                    grp[key].append((E_arr, J_arr, rpm, color))
+                for sn_g, cat_g in grp_order:
+                    items = grp[(sn_g, cat_g)]
+                    glbl  = (f"[{cat_g}] {sn_g}" if cat_g else sn_g)
+                    color = items[0][3]
+                    E_k, jk_abs, n_rpm = _kl_kinetic_curve(
+                        [(E, J, r) for E, J, r, _ in items], e_lo, e_hi)
+                    if E_k is None:
+                        lines.append(
+                            f"{glbl}: {n_rpm} RPM — KL needs ≥ 2 distinct RPMs "
+                            f"with cathodic J in [{e_lo},{e_hi}] V")
+                        continue
+                    with np.errstate(divide="ignore", invalid="ignore"):
+                        log_jk = np.log10(jk_abs)
+                    _fit_and_plot(log_jk, E_k, color, f"{glbl}  ({n_rpm} RPMs)")
+            else:
+                for idx, (E_arr, J_arr, rpm, label, color, sn) in enumerate(all_curves):
+                    if not _tsel_vars.get(idx, tk.BooleanVar(value=True)).get():
+                        continue
+                    mask = (E_arr >= e_lo) & (E_arr <= e_hi)
+                    if mask.sum() < 3:
+                        lines.append(f"{label}: < 3 pts in [{e_lo},{e_hi}] V — skipped")
+                        continue
+                    with np.errstate(divide="ignore", invalid="ignore"):
+                        log_j = np.log10(np.abs(J_arr[mask]))
+                    _fit_and_plot(log_j, E_arr[mask], color, label)
             j_lbl = "Jᵏ" if use_jk_var.get() else "J"
             ax.set_xlabel(f"log₁₀|{j_lbl}|  (mA cm⁻² or mA)")
             ax.set_ylabel(f"E  (V vs {ref})")
-            ax.set_title("Tafel Analysis")
+            ax.set_title("Tafel Analysis — Jᵏ from Koutecky-Levich (per catalyst)"
+                         if use_jk_var.get() else
+                         "Tafel Analysis — raw J (not mass-transport corrected)")
             ax.legend(fontsize=7, frameon=True)
             cv.draw()
             res.configure(state=tk.NORMAL)
@@ -3650,7 +3817,7 @@ class ORRPanel(ttk.Frame):
         _sym_g = ttk.Frame(_sym); _sym_g.pack(fill=tk.X, padx=4, pady=3)
         for _i, (_s, _d) in enumerate([
             ("J",  "current density (mA cm⁻²)"),
-            ("Jᵏ", "kinetic J  (1/Jᵏ = KL y-intercept)"),
+            ("Jᵏ", "kinetic J  (1/|Jᵏ| = KL y-intercept at ω^-½ = 0)"),
             ("n",  "electrons per O₂  (4 = full 4e⁻,  2 = peroxide)"),
             ("ω",  "angular velocity = 2π·RPM/60  (rad s⁻¹)"),
             ("D",  "O₂ diffusion coefficient (cm² s⁻¹)"),
@@ -3790,39 +3957,40 @@ class ORRPanel(ttk.Frame):
 
                 for ei, e_val in enumerate(e_vals):
                     c_kl = _grp_shades[ei]
-                    inv_J = []; inv_sqw = []; rpm_labels = []
-                    for E_arr, J_arr, rpm, label, _ in grp_curves:
-                        if e_val < E_arr[0] or e_val > E_arr[-1]:
-                            continue
-                        j_at_e = float(np.interp(e_val, E_arr, J_arr))
-                        if j_at_e == 0 or not np.isfinite(j_at_e):
-                            continue
-                        omega = 2.0 * math.pi * rpm / 60.0
-                        inv_J.append(1.0 / j_at_e)
-                        inv_sqw.append(1.0 / math.sqrt(omega))
-                        rpm_labels.append(re.sub(r'^\[[^\]]+\]\s*', '',label))
-                    if len(inv_J) < 2:
-                        lines.append(f"  E={e_val:.3f} V: < 2 pts — skipped")
+                    fit = _kl_fit_at_E([(E, J, r) for E, J, r, _, _ in grp_curves],
+                                       e_val)
+                    if fit is None:
+                        lines.append(f"  E={e_val:.3f} V: < 2 RPMs with cathodic "
+                                     f"J in range — skipped")
                         continue
-                    x = np.array(inv_sqw); y = np.array(inv_J)
-                    coeffs = np.polyfit(x, y, 1)
-                    slope, intercept = coeffs
-                    n   = (1.0 / (abs(slope) * B_factor)) if slope != 0 else float("nan")
-                    j_k = (1.0 / intercept) if intercept != 0 else float("nan")
+                    x, y = fit["x"], fit["y"]
+                    n   = _kl_n_electrons(fit["slope"], B_factor)
+                    j_k = fit["j_k_abs"]
                     ax.scatter(x, y, color=c_kl, zorder=5, s=40, marker=grp_mk)
-                    xfit = np.linspace(x.min(), x.max(), 60)
-                    ax.plot(xfit, np.polyval(coeffs, xfit), color=c_kl,
+                    # Extrapolate the fitted line back to x = 0 so the
+                    # y-intercept (= 1/|Jᵏ|) is visible on the plot.
+                    xfit = np.linspace(0.0, float(x.max()), 60)
+                    ax.plot(xfit, fit["slope"] * xfit + fit["intercept"], color=c_kl,
                             linewidth=1.2, linestyle=grp_ls,
                             label=f"{grp_lbl}  E={e_val:.3f} V  n={n:.2f}")
-                    for xi_pt, yi_pt, rl in zip(x, y, rpm_labels):
-                        ax.annotate(rl, (xi_pt, yi_pt), fontsize=7, color=c_kl,
+                    for xi_pt, yi_pt, r_pt in zip(x, y, fit["rpms"]):
+                        ax.annotate(f"{int(round(r_pt))} rpm", (xi_pt, yi_pt),
+                                    fontsize=7, color=c_kl,
                                     xytext=(3, 3), textcoords="offset points")
-                    lines.append(
-                        f"  E={e_val:.3f} V:  n = {n:.2f}  Jᵏ = {j_k:+.3f} mA")
+                    r2_str = "—" if fit["npts"] < 3 else f"{fit['r2']:.4f}"
+                    if np.isfinite(j_k):
+                        lines.append(
+                            f"  E={e_val:.3f} V:  n = {n:.2f}   |Jᵏ| = {j_k:.4f}"
+                            f"   R² = {r2_str}   ({fit['npts']} RPMs)")
+                    else:
+                        lines.append(f"  E={e_val:.3f} V:  n = {n:.2f}   "
+                                     f"{fit['note']}")
 
             ax.set_xlabel(r"$\omega^{-1/2}$  (rad s$^{-1}$)$^{-1/2}$")
             ax.set_ylabel(r"$|J|^{-1}$  (mA cm$^{-2}$)$^{-1}$")
-            ax.set_title("Koutecky-Levich  1/|J| vs 1/√ω")
+            ax.set_title("Koutecky-Levich  1/|J| vs 1/√ω   "
+                         "(intercept at x=0  →  1/|Jᵏ|)")
+            ax.set_xlim(left=0.0)
             ax.legend(fontsize=7, frameon=True)
             cv.draw()
             res.configure(state=tk.NORMAL)
@@ -3892,7 +4060,7 @@ class ORRPanel(ttk.Frame):
                     try: ecsa = float(cc.get("ecsa", "") or 0)
                     except ValueError: ecsa = 0.0
 
-                    row_j = []; row_sa = []; row_jl = []
+                    row_j = []; row_jl = []
 
                     for rpm_t in RPMS:
                         best = None
@@ -3904,7 +4072,7 @@ class ORRPanel(ttk.Frame):
                                 best = (dist, data)
 
                         if best is None:
-                            row_j.append(""); row_sa.append(""); row_jl.append("")
+                            row_j.append(""); row_jl.append("")
                             continue
 
                         E_arr, J_arr = best[1]
@@ -3925,42 +4093,53 @@ class ORRPanel(ttk.Frame):
                         # JL (mA/cm² if area set, else mA)
                         row_jl.append(f"{j_lim:.4f}")
 
-                        # SA (mA/cm²_ECSA)
-                        if (j_at_e is not None and j_lim < 0 and j_at_e < 0
-                                and abs(j_lim - j_at_e) > 1e-12 and ecsa > 0):
-                            j_k = j_at_e * j_lim / (j_lim - j_at_e)
-                            row_sa.append(f"{abs(j_k) / ecsa:.4f}")
-                        else:
-                            row_sa.append("" if ecsa <= 0 else "N/A")
+                    # Jᵏ / SA — ONE Koutecky-Levich extrapolation per catalyst
+                    # over every RPM available for it (not per RPM: Jᵏ is what
+                    # you get by extrapolating the RPM series to ω → ∞).
+                    kl_curves = [(E, J, r) for (c, r), (E, J)
+                                 in curves_by_cat_rpm.items() if c == cat]
+                    fit = _kl_fit_at_E(kl_curves, e_tgt)
+                    n_rpm = len({r for c, r in curves_by_cat_rpm if c == cat})
+                    if fit is None:
+                        row_kin = ["N/A (< 2 RPM)", "N/A", "", str(n_rpm)]
+                    elif not np.isfinite(fit["j_k_abs"]):
+                        row_kin = ["N/A (KL int. ≤ 0)", "N/A",
+                                   "" if fit["npts"] < 3 else f"{fit['r2']:.4f}",
+                                   str(fit["npts"])]
+                    else:
+                        jk = fit["j_k_abs"]
+                        row_kin = [
+                            f"{jk:.4f}",
+                            f"{jk / ecsa:.4f}" if ecsa > 0 else "",
+                            "" if fit["npts"] < 3 else f"{fit['r2']:.4f}",
+                            str(fit["npts"]),
+                        ]
 
-                    rows.append((sn, cat, row_j, row_sa, row_jl))
+                    rows.append((sn, cat, row_j, row_jl, row_kin))
 
             e = e_tgt
             col_hdrs = (
                 ["Sample", "Catalyst"]
-                + [f"I at {e:.2f}V ({r} rpm) (mA)"         for r in RPMS]
-                + [f"SA at {e:.2f}V ({r} rpm) (mA/cm2)"    for r in RPMS]
-                + [f"JL ({r} rpm) (mA/cm2)"                  for r in RPMS]
-            )
-            keys_order = (
-                ["Sample", "Catalyst"]
-                + [f"J_{r}" for r in RPMS]
-                + [f"SA_{r}" for r in RPMS]
-                + [f"JL_{r}" for r in RPMS]
+                + [f"I at {e:.2f}V ({r} rpm) (mA)"  for r in RPMS]
+                + [f"JL ({r} rpm) (mA/cm2)"         for r in RPMS]
+                + [f"Jk at {e:.2f}V (mA/cm2, KL)",
+                   f"SA at {e:.2f}V (mA/cm2_ECSA, KL)",
+                   "KL R2",
+                   "n_RPM"]
             )
 
             # Build TSV (for Excel copy)
             tsv_lines = ["\t".join(col_hdrs)]
-            for sn, cat, row_j, row_sa, row_jl in rows:
-                tsv_lines.append("\t".join([sn, cat] + row_j + row_sa + row_jl))
+            for sn, cat, row_j, row_jl, row_kin in rows:
+                tsv_lines.append("\t".join([sn, cat] + row_j + row_jl + row_kin))
             _copy_data[0] = "\n".join(tsv_lines)
 
             # Build display (aligned columns)
             col_w = [max(len(h), 8) for h in col_hdrs]
             disp_lines = ["  ".join(h.ljust(w) for h, w in zip(col_hdrs, col_w))]
             disp_lines.append("-" * sum(w + 2 for w in col_w))
-            for sn, cat, row_j, row_sa, row_jl in rows:
-                vals = [sn, cat] + row_j + row_sa + row_jl
+            for sn, cat, row_j, row_jl, row_kin in rows:
+                vals = [sn, cat] + row_j + row_jl + row_kin
                 disp_lines.append("  ".join(v.ljust(w) for v, w in zip(vals, col_w)))
             if not rows:
                 disp_lines.append("(No visible plotted samples with data)")
@@ -3974,7 +4153,8 @@ class ORRPanel(ttk.Frame):
             side=tk.LEFT, padx=(0, 6))
         ttk.Button(ctrl, text="Copy TSV (→ Excel)", command=_copy_tsv).pack(
             side=tk.LEFT, padx=(0, 6))
-        ttk.Label(ctrl, text="(visible plotted samples only; ECSA_Hupd required for SA)",
+        ttk.Label(ctrl, text="(visible plotted samples only; Jᵏ/SA need ≥ 2 RPMs "
+                             "per catalyst — ECSA_Hupd required for SA)",
                   foreground="gray", font=("", 8)).pack(side=tk.LEFT, padx=(6, 0))
         _ev_entry.bind("<Return>", lambda e: _compute_and_fill())
 
@@ -4037,8 +4217,11 @@ class ORRPanel(ttk.Frame):
         _th.pack(fill=tk.X, padx=8, pady=(6, 0))
         _th_g = ttk.Frame(_th); _th_g.pack(fill=tk.X, padx=6, pady=3)
         for _r, (_hd, _bd) in enumerate([
-            ("Kinetic current:",  "Jᵏ = J · J_lim / (J_lim − J)   (Koutecky correction)"),
+            ("KL equation:",      "1/|J| = 1/|Jᵏ| + 1/(B·ω^½)     ω = 2π·RPM/60"),
+            ("Kinetic current:",  "|Jᵏ| = 1 / (y-intercept of 1/|J| vs ω^-½)"),
             ("Specific activity:","SA = |Jᵏ| / ECSA   [mA cm⁻²_ECSA]"),
+            ("Requires:",         "≥ 2 distinct RPMs per catalyst — Jᵏ is an "
+                                  "extrapolation to infinite rotation"),
         ]):
             ttk.Label(_th_g, text=_hd, font=("TkDefaultFont", 9, "bold"),
                       anchor=tk.W).grid(row=_r, column=0, sticky=tk.W, pady=2)
@@ -4052,9 +4235,10 @@ class ORRPanel(ttk.Frame):
         for _i, (_s, _d) in enumerate([
             ("SA",    "specific activity = |Jᵏ| / ECSA  (mA cm⁻²_ECSA)"),
             ("ECSA",  "electrochemically active surface area (cm²)"),
-            ("Jᵏ",   "kinetic J = J · J_lim / (J_lim − J)"),
-            ("J_lim", "diffusion-limited plateau (most negative J)"),
-            ("J",     "current density (mA cm⁻²)"),
+            ("Jᵏ",   "mass-transport-free kinetic J  (KL y-intercept)"),
+            ("ω",     "angular velocity = 2π·RPM/60  (rad s⁻¹)"),
+            ("J",     "measured current density (mA cm⁻²)"),
+            ("R²",    "KL fit quality  (— when only 2 RPMs)"),
         ]):
             _r, _c = _i // 2, (_i % 2) * 2
             ttk.Label(_sym_g, text=_s, font=("TkDefaultFont", 9, "bold"),
@@ -4082,8 +4266,10 @@ class ORRPanel(ttk.Frame):
                 side=tk.LEFT, padx=(0, 12))
 
         # ── Curve selector — Group label → Sample [cat] checkbox → RPM ──
+        # One KL fit is run per checked [Cat] group, over all its checked RPMs.
         _ksel_fr = ttk.LabelFrame(
-            win, text="Select curves  (☑ [Cat] = one sample = one catalyst at multiple RPMs)")
+            win, text="Select curves for the KL fit  "
+                      "(☑ [Cat] = one sample = one catalyst; ≥ 2 RPMs required)")
         _ksel_fr.pack(fill=tk.X, padx=8, pady=(4, 0))
         _sel_cv = tk.Canvas(_ksel_fr, height=80, bd=0, highlightthickness=0)
         _sel_sb = ttk.Scrollbar(_ksel_fr, orient=tk.VERTICAL, command=_sel_cv.yview)
@@ -4187,40 +4373,61 @@ class ORRPanel(ttk.Frame):
                     messagebox.showerror("SA", f"Invalid ECSA for [{cat}].", parent=win)
                     return
 
-            sel_curves = []
+            # One KL fit per (sample, catalyst) group — the multi-RPM set that
+            # a single extrapolation is defined over.
+            sel_by_grp = {}; grp_order = []
             for idx, (E_arr, J_arr, rpm, lbl, col, sn) in enumerate(all_curves):
                 if not _ssel_vars.get(idx, tk.BooleanVar(value=True)).get():
                     continue
                 m = re.match(r'^\[([^\]]+)\]', lbl)
                 cat = m.group(1) if m else ""
-                sel_curves.append((idx, E_arr, J_arr, rpm, lbl, col, cat))
+                key = (sn, cat)
+                if key not in sel_by_grp:
+                    sel_by_grp[key] = []; grp_order.append(key)
+                sel_by_grp[key].append((E_arr, J_arr, rpm, lbl))
 
             ax.clear()
-            lines = [f"{'Curve':<32}  {'E (V)':<7}  {'J':>10}  {'Jᵏ':>10}  SA"]
-            lines.append("-" * 80)
-            cat_e_sa = {}  # (cat, e_val) → [sa values]
+            lines = [f"{'Group':<30}  {'E (V)':<7}  {'nRPM':>4}  "
+                     f"{'|Jᵏ|':>10}  {'R²':>7}  SA"]
+            lines.append("-" * 84)
+            cat_e_sa = {}   # (cat, e_val) → [SA per sample-group]
+            cat_e_se = {}   # (cat, e_val) → [1σ of SA per sample-group]
             e_vals_sorted = sorted(e_vals)
 
-            for _, E_arr, J_arr, rpm, lbl, col, cat in sel_curves:
-                j_lim = float(np.min(J_arr))
+            for sn_g, cat_g in grp_order:
+                grp = sel_by_grp[(sn_g, cat_g)]
+                grp_lbl = (f"[{cat_g}] {sn_g}" if cat_g else sn_g)
+                n_rpm = len({float(r) for _, _, r, _ in grp if r and float(r) > 0})
+                if n_rpm < 2:
+                    lines.append(f"  {grp_lbl:<30}  — only {n_rpm} RPM; "
+                                 f"KL extrapolation needs ≥ 2")
+                    continue
+                ecsa = ecsa_map.get(cat_g)
                 for e_val in e_vals:
-                    if e_val < E_arr[0] or e_val > E_arr[-1]:
-                        lines.append(f"  {lbl:<32}  E={e_val:.3f}: out of range"); continue
-                    j_at_e = float(np.interp(e_val, E_arr, J_arr))
-                    if j_lim >= 0 or j_at_e >= 0 or not np.isfinite(j_at_e):
-                        lines.append(f"  {lbl:<32}  E={e_val:.3f}: no cathodic J"); continue
-                    if abs(j_lim - j_at_e) < 1e-12:
+                    fit = _kl_fit_at_E([(E, J, r) for E, J, r, _ in grp], e_val)
+                    if fit is None:
+                        lines.append(f"  {grp_lbl:<30}  {e_val:.3f}  "
+                                     f"— < 2 RPMs with cathodic J in range")
                         continue
-                    j_k = j_at_e * j_lim / (j_lim - j_at_e)
-                    ecsa = ecsa_map.get(cat)
+                    jk = fit["j_k_abs"]
+                    if not np.isfinite(jk):
+                        lines.append(f"  {grp_lbl:<30}  {e_val:.3f}  "
+                                     f"{fit['npts']:>4}  {fit['note']}")
+                        continue
+                    r2_str = "  —   " if fit["npts"] < 3 else f"{fit['r2']:.4f}"
                     if ecsa and ecsa > 0:
-                        sa = abs(j_k) / ecsa
-                        sa_str = f"{sa:.4f}"
-                        cat_e_sa.setdefault((cat, e_val), []).append(sa)
+                        sa = jk / ecsa
+                        sa_se = (fit["j_k_se"] / ecsa
+                                 if np.isfinite(fit["j_k_se"]) else float("nan"))
+                        sa_str = (f"{sa:.4f}" if not np.isfinite(sa_se)
+                                  else f"{sa:.4f} ± {sa_se:.4f}")
+                        cat_e_sa.setdefault((cat_g, e_val), []).append(sa)
+                        cat_e_se.setdefault((cat_g, e_val), []).append(sa_se)
                     else:
-                        sa_str = "N/A"
+                        sa_str = "N/A (enter ECSA)"
                     lines.append(
-                        f"  {lbl:<32}  {e_val:.3f}  {j_at_e:>+10.4f}  {j_k:>+10.4f}  {sa_str}")
+                        f"  {grp_lbl:<30}  {e_val:.3f}  {fit['npts']:>4}  "
+                        f"{jk:>10.4f}  {r2_str:>7}  {sa_str}")
 
             if cat_e_sa:
                 cats_with_sa = [c for c in _all_cats
@@ -4232,7 +4439,14 @@ class ORRPanel(ttk.Frame):
                     for e_val in e_vals_sorted:
                         vals = cat_e_sa.get((cat, e_val), [])
                         sa_means.append(float(np.mean(vals)) if vals else 0.0)
-                        sa_errs.append(float(np.std(vals)) if len(vals) > 1 else 0.0)
+                        if len(vals) > 1:
+                            # Spread across sample-groups sharing this catalyst
+                            sa_errs.append(float(np.std(vals)))
+                        else:
+                            # Single group → 1σ propagated from the KL intercept
+                            ses = [s for s in cat_e_se.get((cat, e_val), [])
+                                   if np.isfinite(s)]
+                            sa_errs.append(float(ses[0]) if ses else 0.0)
                     offset = (ci - (len(cats_with_sa)-1)/2.0) * bar_w
                     ax.bar(x_pos + offset, sa_means, bar_w * 0.9,
                            yerr=sa_errs if any(s > 0 for s in sa_errs) else None,
@@ -4243,10 +4457,13 @@ class ORRPanel(ttk.Frame):
                 ax.set_xticklabels([f"{e:.3f} V" for e in e_vals_sorted])
                 ax.set_ylabel("SA  (mA cm⁻²_ECSA)")
                 ax.set_xlabel(f"E  (V vs {ref})")
-                ax.set_title("Specific Activity")
+                ax.set_title("Specific Activity  (Jᵏ from Koutecky-Levich "
+                             "extrapolation)")
                 ax.legend(fontsize=8, frameon=True)
             else:
-                ax.text(0.5, 0.5, "No SA data (check ECSA inputs and E range)",
+                ax.text(0.5, 0.5,
+                        "No SA data.\nNeed ≥ 2 RPMs per catalyst, an ECSA value, "
+                        "and E inside the measured range.",
                         ha="center", va="center", transform=ax.transAxes)
             cv.draw()
             res.configure(state=tk.NORMAL)
@@ -4913,8 +5130,8 @@ class ORRPanel(ttk.Frame):
         _sym_g = ttk.Frame(_sym); _sym_g.pack(fill=tk.X, padx=4, pady=3)
         for _i, (_s, _d) in enumerate([
             ("|J|",   "absolute cathodic current density (mA cm⁻²)"),
-            ("Jᵏ",    "kinetic J = J·J_lim / (J_lim − J)"),
-            ("J_lim", "diffusion plateau current (mA cm⁻²)"),
+            ("Jᵏ",    "mass-transport-free kinetic J  (KL y-intercept, ≥ 2 RPMs)"),
+            ("KL",    "1/|J| = 1/|Jᵏ| + 1/(B·ω^½)  extrapolated to ω → ∞"),
             ("SA",    "|Jᵏ| / ECSA  (mA cm⁻²_ECSA)"),
             ("ECSA",  "electrochemical active surface area (cm²)"),
             ("ω",     "angular velocity = 2π·RPM/60  (rad s⁻¹)"),
@@ -4937,11 +5154,10 @@ class ORRPanel(ttk.Frame):
                 if np.isfinite(j): out.append((rpm, j))
             return sorted(out, key=lambda x: x[0])
 
-        def _best_curve(cat):
-            items = _by_cat.get(cat, [])
-            if not items: return None, None
-            best = max(items, key=lambda x: x[3])
-            return best[1], best[2]
+        def _cat_kl_curves(cat):
+            """(E, J, rpm) triples for one catalyst — the input to a KL fit."""
+            return [(E_a, J_a, rpm) for _, E_a, J_a, rpm, _, _ in _by_cat.get(cat, [])
+                    if rpm and rpm > 0]
 
         def _get_e_vals():
             try: return [float(x.strip()) for x in e_vals_var.get().split(",") if x.strip()]
@@ -5122,29 +5338,32 @@ class ORRPanel(ttk.Frame):
             ax_kl.legend(fontsize=6, frameon=True, ncol=max(1, len(_cat_order)))
             cv_kl.draw()
 
-            # Kinetic
+            # Kinetic — Jᵏ(E) per catalyst from a KL fit across its RPMs
             ax_ta.clear(); ax_sa.clear()
+            _kin_missing = []
             for ci, cat in enumerate(_cat_order):
-                E_a, J_a = _best_curve(cat)
-                if E_a is None: continue
-                j_lim = float(np.min(J_a))
-                if j_lim >= 0: continue
                 color = cat_colors[cat]; ls = _LS[ci % len(_LS)]
-                mask = (E_a >= 0.85) & (E_a <= 0.95)
-                if mask.sum() >= 3:
-                    E_k = E_a[mask]; J_k = J_a[mask]
-                    with np.errstate(divide="ignore", invalid="ignore"):
-                        jk = J_k * j_lim / (j_lim - J_k)
-                    good = np.isfinite(jk) & (jk < 0)
-                    if good.sum() >= 3:
-                        with np.errstate(divide="ignore", invalid="ignore"):
-                            log_jk = np.log10(np.abs(jk[good]))
-                        fin = np.isfinite(log_jk)
-                        ax_ta.plot(log_jk[fin], E_k[good][fin], ls,
-                                   color=color, linewidth=1.5, label=f"[{cat}]")
+                E_k, jk_abs, n_rpm = _kl_kinetic_curve(
+                    _cat_kl_curves(cat), 0.85, 0.95)
+                if E_k is None:
+                    _kin_missing.append(f"[{cat}] ({n_rpm} RPM)")
+                    continue
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    log_jk = np.log10(jk_abs)
+                fin = np.isfinite(log_jk)
+                if fin.sum() < 3:
+                    _kin_missing.append(f"[{cat}] ({n_rpm} RPM)")
+                    continue
+                ax_ta.plot(log_jk[fin], E_k[fin], ls, color=color, linewidth=1.5,
+                           label=f"[{cat}]  ({n_rpm} RPMs)")
             ax_ta.set_xlabel(r"$\log_{10}|J^k|$")
             ax_ta.set_ylabel(f"E  (V vs {ref})")
-            ax_ta.set_title("Tafel (Koutecky-corrected, 0.85–0.95 V)")
+            ax_ta.set_title("Tafel (KL mass-transport corrected, 0.85–0.95 V)")
+            if _kin_missing:
+                ax_ta.text(0.02, 0.02,
+                           "no KL fit (needs ≥ 2 RPMs): " + ", ".join(_kin_missing),
+                           transform=ax_ta.transAxes, fontsize=7, color="gray",
+                           va="bottom", ha="left")
             ax_ta.legend(fontsize=7)
 
             sa_e_list = []
@@ -5163,25 +5382,24 @@ class ORRPanel(ttk.Frame):
                 except ValueError: ecsa = None
                 if not ecsa or ecsa <= 0: continue
                 any_ecsa = True
-                E_a, J_a = _best_curve(cat)
-                if E_a is None: continue
-                j_lim = float(np.min(J_a))
-                sa_vals = []
+                kl_curves = _cat_kl_curves(cat)
+                sa_vals = []; sa_errs = []
                 for e_val in sa_e_list:
-                    if e_val < E_a[0] or e_val > E_a[-1] or j_lim >= 0:
-                        sa_vals.append(0.0); continue
-                    j = float(np.interp(e_val, E_a, J_a))
-                    if j >= 0 or abs(j_lim - j) < 1e-12:
-                        sa_vals.append(0.0); continue
-                    jk = j * j_lim / (j_lim - j)
-                    sa_vals.append(abs(jk) / ecsa)
+                    fit = _kl_fit_at_E(kl_curves, e_val)
+                    if fit is None or not np.isfinite(fit["j_k_abs"]):
+                        sa_vals.append(0.0); sa_errs.append(0.0); continue
+                    sa_vals.append(fit["j_k_abs"] / ecsa)
+                    sa_errs.append(fit["j_k_se"] / ecsa
+                                   if np.isfinite(fit["j_k_se"]) else 0.0)
                 offset = (ci - (len(_cat_order)-1)/2.0) * bw
                 ax_sa.bar(x_sa + offset, sa_vals, bw * 0.85,
+                          yerr=sa_errs if any(s > 0 for s in sa_errs) else None,
+                          capsize=3,
                           color=cat_colors[cat], alpha=0.8, label=f"[{cat}]")
             ax_sa.set_xticks(x_sa)
             ax_sa.set_xticklabels([f"{e:.2f} V" for e in sa_e_list])
             ax_sa.set_ylabel(r"SA  (mA cm$^{-2}_{ECSA}$)")
-            ax_sa.set_title("Specific Activity")
+            ax_sa.set_title("Specific Activity  (KL-extrapolated Jᵏ)")
             ax_sa.legend(fontsize=7)
             if not any_ecsa:
                 ax_sa.text(0.5, 0.5, "Enter ECSA above for SA",

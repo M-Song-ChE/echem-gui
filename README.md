@@ -376,7 +376,7 @@ The **RPM Pairs** section lists all matched N2/O2 pairs for the active sample:
 - **R_sol O2 (Ω)** — uncompensated resistance for the O2 session (applied independently).
 - **E_ref (V vs RHE)** — shared RHE offset: `E_RHE = E_corr + E_ref`.
 - **Area (cm²)** — leave blank for I (mA); enter a value for J (mA cm⁻²).
-- **ECSA_Hupd (cm²)** — electrochemical surface area from the Hupd Calc tab. Enter to enable specific activity (SA) calculation in the Extract Report window. Stored per catalyst; also auto-fills the ECSA input in the Specific Activity and Comparison windows.
+- **ECSA_Hupd (cm²)** — electrochemical surface area from the Hupd Calc tab. Enter to enable specific activity (SA) calculation in the Extract Report window. Stored per catalyst; also auto-fills the ECSA input in the Specific Activity and Comparison windows. This value is **not** carried over automatically from the Hupd Calc tab — copy it in by hand.
 
 ### 8.5 Processing Pipeline (per pair)
 1. Extract the **last cycle** from both N2 and O2.
@@ -408,18 +408,45 @@ Each sample has its own subplot. Use **Cols** to control the grid width. Double-
 Click **Extract Report** in the Analysis section to open a report window that tabulates key ORR metrics for all currently visible (plotted) samples.
 
 **Controls:**
-- **E value (V vs Ref)** — target potential for the J@E and SA@E columns (default 0.90 V). Press Enter or click Compute to update.
+- **E value (V vs Ref)** — target potential for the I@E, Jᵏ, and SA columns (default 0.90 V). Press Enter or click Compute to update.
 - **Compute** — fills the table for all visible samples at RPMs 400, 900, 1600, 2500.
 - **Copy TSV (→ Excel)** — copies the table as tab-separated values to the clipboard for direct paste into Excel.
 
-**Columns extracted (per RPM):**
+**Per-RPM columns:**
 | Column | Description |
 |--------|-------------|
 | **I at E (mA)** | Current at the target potential × electrode area (if Area is set) |
-| **SA at E (mA/cm²_ECSA)** | Kinetic current density normalised by ECSA_Hupd: `j_k = J@E × J_lim / (J_lim − J@E)`, then `SA = |j_k| / ECSA_Hupd`. Requires ECSA_Hupd to be entered in the correction panel. |
 | **JL (mA/cm²)** | Limiting (diffusion) current — minimum current density on the curve |
 
-The closest available RPM within ±50 rpm of each target is used; cells show blank or "N/A" when data or ECSA is missing.
+**Per-catalyst columns (one Koutecky-Levich fit over all of that catalyst's RPMs):**
+| Column | Description |
+|--------|-------------|
+| **Jk at E (mA/cm², KL)** | Mass-transport-free kinetic current density — the y-intercept of `1/\|J\|` vs `ω^-½` extrapolated to infinite rotation. **Not** a per-RPM number. |
+| **SA at E (mA/cm²_ECSA, KL)** | `SA = \|Jᵏ\| / ECSA_Hupd`. Requires ECSA_Hupd in the correction panel. |
+| **KL R²** | Fit quality of the KL line. Blank when only 2 RPMs (a 2-point line always has R² = 1). |
+| **n_RPM** | How many distinct rotation rates went into the fit. |
+
+The closest available RPM within ±50 rpm of each target is used for the per-RPM columns; cells show blank or "N/A" when data or ECSA is missing. Jᵏ and SA show **"N/A (< 2 RPM)"** for any catalyst measured at fewer than two rotation rates — see [§8.10](#810-kinetic-current-jᵏ-and-specific-activity-sa).
+
+### 8.10 Kinetic current (Jᵏ) and specific activity (SA)
+
+The kinetic current is the current the catalyst *would* pass if oxygen transport to the electrode were infinitely fast. It is obtained by measuring the same electrode at several rotation rates and extrapolating to infinite rotation with the Koutecky-Levich equation:
+
+```
+1/|J| = 1/|Jᵏ| + 1/(B·ω^½)          ω = 2π·RPM/60
+```
+
+Plotting `1/|J|` against `ω^-½` gives a straight line; its **y-intercept is 1/|Jᵏ|** and its slope gives the electron count `n`. The app then reports
+
+```
+SA = |Jᵏ| / ECSA_Hupd     [mA cm⁻²_ECSA]
+```
+
+This is used everywhere Jᵏ or SA appears: **SA Analysis**, **Extract Report**, **Sample Comparison → Kinetic tab**, and the Tafel window's mass-transport correction.
+
+**A minimum of two distinct RPMs per catalyst is required.** There is no single-curve substitute, so with fewer than two rotation rates the app reports "N/A (< 2 RPM)" rather than a number.
+
+> **Changed in the 2026-08 release.** Earlier versions estimated Jᵏ from a *single* curve as `Jᵏ = J·J_lim/(J_lim − J)` with `J_lim = min(J)`. That silently inherits every defect in that one curve's plateau. Against synthetic data obeying the KL equation exactly, a single 8 % noise spike in the plateau biased the old SA by **−90 % at 0.80 V** and **−16 % at 0.90 V**; a plateau tilted 15 % by film resistance biased it by **−92 % / −22 %**. The KL fit stayed within 4 % in both cases. Tafel slopes show the same thing: uncorrected, they came out RPM-dependent (−278 to −161 mV/dec for one dataset); KL-corrected they collapse onto the true −60 mV/dec. **Jᵏ and SA numbers produced by earlier versions should be recomputed.**
 
 ---
 
