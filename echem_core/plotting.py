@@ -416,6 +416,71 @@ def draw_reflines(ax, reflines):
                        linewidth=lw, alpha=0.7, label='_yref')
 
 
+def copy_text_to_clipboard(text, widget=None):
+    """Copy *text* to the Windows clipboard verbatim, via CF_UNICODETEXT.
+
+    Tk is not usable for this. `clipboard_append` rewrites every LF as CRLF on
+    Windows, including the ones inside a quoted field, so a TSV whose headers
+    span several lines comes out with no way to tell a row break from a line
+    break inside a cell — Excel then scatters one table across many rows.
+    Writing CF_UNICODETEXT ourselves preserves the exact bytes: CRLF between
+    rows, LF inside quoted cells, which is the format Excel itself produces.
+
+    Returns True on success. Falls back to the Tk clipboard (and returns False)
+    when the Win32 path is unavailable, e.g. off Windows.
+    """
+    try:
+        import ctypes
+
+        GMEM_MOVEABLE  = 0x0002
+        CF_UNICODETEXT = 13
+        kernel32 = ctypes.windll.kernel32
+        user32   = ctypes.windll.user32
+
+        # 64-bit-safe signatures — see copy_figure_to_clipboard above.
+        kernel32.GlobalAlloc.argtypes  = [ctypes.c_uint, ctypes.c_size_t]
+        kernel32.GlobalAlloc.restype   = ctypes.c_void_p
+        kernel32.GlobalLock.argtypes   = [ctypes.c_void_p]
+        kernel32.GlobalLock.restype    = ctypes.c_void_p
+        kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+        user32.OpenClipboard.argtypes  = [ctypes.c_void_p]
+        user32.SetClipboardData.argtypes = [ctypes.c_uint, ctypes.c_void_p]
+        user32.SetClipboardData.restype  = ctypes.c_void_p
+
+        buf   = ctypes.create_unicode_buffer(text)      # NUL-terminated UTF-16
+        nbyte = ctypes.sizeof(buf)
+
+        hMem = kernel32.GlobalAlloc(GMEM_MOVEABLE, nbyte)
+        if not hMem:
+            raise RuntimeError("GlobalAlloc failed")
+        pMem = kernel32.GlobalLock(hMem)
+        if not pMem:
+            raise RuntimeError("GlobalLock failed")
+        ctypes.memmove(pMem, buf, nbyte)
+        kernel32.GlobalUnlock(hMem)
+
+        if not user32.OpenClipboard(None):
+            raise RuntimeError("OpenClipboard failed")
+        try:
+            user32.EmptyClipboard()
+            # On success the system owns hMem — do not free it.
+            if not user32.SetClipboardData(CF_UNICODETEXT, ctypes.c_void_p(hMem)):
+                raise RuntimeError("SetClipboardData failed")
+        finally:
+            user32.CloseClipboard()
+        return True
+
+    except Exception:
+        if widget is not None:
+            try:
+                widget.clipboard_clear()
+                widget.clipboard_append(text)
+                widget.update()
+            except Exception:
+                pass
+        return False
+
+
 def _scale_legend_spacing(leg, ratio):
     """Scale the full visual layout of a legend's internal box tree by *ratio*.
 

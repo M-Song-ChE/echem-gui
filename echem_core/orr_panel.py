@@ -37,6 +37,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolb
 
 from .file_manager import _read_mpr, _PALETTE, _COLOR_NAMES, _COLOR_HEX
 from .plotting import (apply_grid, draw_reflines, copy_figure_to_clipboard,
+                        copy_text_to_clipboard,
                         _cycle_colors, _scale_legend_spacing,
                         attach_plot_assistant)
 from .checklist import CheckableListbox
@@ -4085,9 +4086,13 @@ class ORRPanel(ttk.Frame):
         _copy_data = [None]
 
         def _copy_tsv():
-            if _copy_data[0]:
-                win.clipboard_clear()
-                win.clipboard_append(_copy_data[0])
+            if not _copy_data[0]:
+                _compute_and_fill()      # nothing copied yet — fill first
+            if not _copy_data[0]:
+                messagebox.showinfo("Report", "Nothing to copy yet.",
+                                    parent=win)
+                return
+            copy_text_to_clipboard(_copy_data[0], widget=win)
 
         def _compute_and_fill():
             try:
@@ -4243,7 +4248,10 @@ class ORRPanel(ttk.Frame):
             for sn, cat, row_j, row_jl, row_theo, row_kin in rows:
                 vals = [sn, cat] + row_j + row_jl + row_theo + row_kin
                 tsv_lines.append("\t".join(_tsv_cell(v) for v in vals))
-            _copy_data[0] = "\n".join(tsv_lines)
+            # CRLF between rows — Excel treats a bare LF inside a quoted
+            # cell and a bare LF between rows as the same thing, so the
+            # multi-line headers break the paste unless rows use CRLF.
+            _copy_data[0] = "\r\n".join(tsv_lines)
 
             # Build display (aligned columns; headers flattened onto one line)
             disp_hdrs = [" ".join(h.split()) for h in col_hdrs]
