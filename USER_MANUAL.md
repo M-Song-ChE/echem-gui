@@ -311,24 +311,28 @@ All controls in the left panel apply to the **active sample** only. Each sample 
 - **Uncheck** a sample in the list to hide its subplot without deleting it.
 
 ### 8.9 Extract Report
-Click **Extract Report** in the Analysis section to open a report window that tabulates key ORR metrics for all currently visible (plotted) samples.
+Click **Extract Report** in the Analysis section to open a report window that tabulates key ORR metrics for all currently visible (plotted) samples. Every RPM of those samples is included — unchecking a run in the **RPM Pairs** list hides it from the plot but does not drop it from the report.
 
 **Controls:**
 - **E value (V vs Ref)** — target potential for the I@E, Jᵏ, and SA columns (default 0.90 V). Press Enter or click Compute to update.
 - **Compute** — fills the table for all visible samples at RPMs 400, 900, 1600, 2500.
-- **Copy TSV (→ Excel)** — copies the table as tab-separated values to the clipboard for direct paste into Excel.
+- **Electrolyte / n** — constants for the **%Theo** column only (default `0.1 M HClO₄`, n = 4). Jᵏ and SA do not use them: Jᵏ is the KL *intercept*, and D/ν/C only set the KL *slope*.
+- **Copy TSV (→ Excel)** — copies the table as tab-separated values to the clipboard for direct paste into Excel. Headers span three short lines per column and are quoted, so Excel lands them in one wrapped header cell each.
 
 **Per-RPM columns:**
 | Column | Description |
 |--------|-------------|
 | **I at E (mA)** | Current at the target potential × electrode area (if Area is set) |
 | **JL (mA/cm²)** | Limiting (diffusion) current — minimum current density on the curve |
+| **%Theo (%)** | Measured `|JL|` as a percentage of the Levich prediction `|JL| = 0.62·n·F·D^(2/3)·ν^(-1/6)·C·√ω` at that RPM. 100 % means the plateau matches an ideal 4-electron diffusion-limited current. Needs the electrode **Area** (theory is a current density) — blank without it. |
 
 **Per-catalyst columns** (one Koutecky-Levich fit over all of that catalyst's RPMs):
 | Column | Description |
 |--------|-------------|
 | **Jk at E (mA/cm², KL)** | Mass-transport-free kinetic current density — y-intercept of `1/\|J\|` vs `ω^-½`. Not a per-RPM number. |
 | **SA at E (mA/cm²_ECSA, KL)** | `SA = \|Jᵏ\| / ECSA_Hupd`. Requires ECSA_Hupd in the correction panel. |
+| **Jk at E error** | 1σ on `|Jᵏ|`, propagated from the KL intercept. Blank with only 2 RPMs — a line through two points leaves no residual to estimate an error from. |
+| **SA at E error** | The same 1σ divided by ECSA_Hupd. |
 | **KL R²** | KL fit quality. Blank with only 2 RPMs. |
 | **n_RPM** | Number of distinct rotation rates in the fit. |
 

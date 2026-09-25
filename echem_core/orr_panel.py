@@ -4067,6 +4067,21 @@ class ORRPanel(ttk.Frame):
         _ev_entry = ttk.Entry(ctrl, textvariable=e_var, width=6)
         _ev_entry.pack(side=tk.LEFT, padx=(2, 10))
 
+        # %Theo is measured |JL| against the Levich prediction, so unlike
+        # Jk/SA it does need the electrolyte constants and n.
+        ttk.Label(ctrl, text="Electrolyte:").pack(side=tk.LEFT)
+        _DEF_ELEC = "0.1 M HClO₄"      # aqueous — the default here
+        _elec_var = tk.StringVar(
+            value=_DEF_ELEC if _DEF_ELEC in _ELECTROLYTES
+            else list(_ELECTROLYTES)[0])
+        ttk.Combobox(ctrl, textvariable=_elec_var, state="readonly",
+                     values=list(_ELECTROLYTES.keys()), width=12).pack(
+                         side=tk.LEFT, padx=(2, 8))
+        ttk.Label(ctrl, text="n:").pack(side=tk.LEFT)
+        _n_var = tk.StringVar(value="4")
+        ttk.Entry(ctrl, textvariable=_n_var, width=4).pack(
+            side=tk.LEFT, padx=(2, 10))
+
         _copy_data = [None]
 
         def _copy_tsv():
@@ -4081,6 +4096,17 @@ class ORRPanel(ttk.Frame):
                 messagebox.showerror("Report", "Invalid E value.", parent=win)
                 return
 
+            # Levich slope for %Theo:  |JL| = B_rpm * sqrt(RPM),  mA/cm2
+            try:
+                _n_e, _D, _nu, _C = _ELECTROLYTES[_elec_var.get()]
+                if _n_var.get().strip():
+                    _n_e = float(_n_var.get())
+                B_rpm = (0.62 * _n_e * 96485.0 * (_D ** (2.0 / 3.0))
+                         * (_nu ** (-1.0 / 6.0)) * _C * 1000.0
+                         * math.sqrt(2 * math.pi / 60.0))
+            except (KeyError, ValueError):
+                B_rpm = 0.0
+
             rows = []
             for sn, sentry in self.samples.items():
                 if sentry.get("hidden", False):
@@ -4088,7 +4114,11 @@ class ORRPanel(ttk.Frame):
                 if "ax" not in sentry:
                     continue
                 cat_corrections = sentry.get("catalyst_corrections", {})
-                curves = self._get_curves_for_sample(sn)
+                # Every run, hidden on the plot or not — same rule as the
+                # other analysis windows. The report has no per-run selector,
+                # so tying it to plot visibility was the only way a run could
+                # drop out of it, silently and from the wrong control.
+                curves = self._get_curves_for_sample(sn, include_disabled=True)
                 if not curves:
                     continue
 
@@ -4109,7 +4139,7 @@ class ORRPanel(ttk.Frame):
                     try: ecsa = float(cc.get("ecsa", "") or 0)
                     except ValueError: ecsa = 0.0
 
-                    row_j = []; row_jl = []
+                    row_j = []; row_jl = []; row_theo = []
 
                     for rpm_t in RPMS:
                         best = None
@@ -4122,6 +4152,7 @@ class ORRPanel(ttk.Frame):
 
                         if best is None:
                             row_j.append(""); row_jl.append("")
+                            row_theo.append("")
                             continue
 
                         E_arr, J_arr = best[1]
@@ -4142,6 +4173,16 @@ class ORRPanel(ttk.Frame):
                         # JL (mA/cm² if area set, else mA)
                         row_jl.append(f"{j_lim:.4f}")
 
+                        # %Theo — measured |JL| vs the Levich prediction at
+                        # this RPM. Theory is a current DENSITY, so this is
+                        # only meaningful once an electrode area is set.
+                        if B_rpm > 0 and area > 0 and rpm_t > 0:
+                            jl_th = B_rpm * math.sqrt(rpm_t)
+                            row_theo.append(f"{abs(j_lim) / jl_th * 100.0:.1f}"
+                                            if jl_th > 0 else "")
+                        else:
+                            row_theo.append("")
+
                     # Jᵏ / SA — ONE Koutecky-Levich extrapolation per catalyst
                     # over every RPM available for it (not per RPM: Jᵏ is what
                     # you get by extrapolating the RPM series to ω → ∞).
@@ -4150,45 +4191,67 @@ class ORRPanel(ttk.Frame):
                     fit = _kl_fit_at_E(kl_curves, e_tgt)
                     n_rpm = len({r for c, r in curves_by_cat_rpm if c == cat})
                     if fit is None:
-                        row_kin = ["N/A (< 2 RPM)", "N/A", "", str(n_rpm)]
+                        row_kin = ["N/A (< 2 RPM)", "", "N/A", "", "",
+                                   str(n_rpm)]
                     elif not np.isfinite(fit["j_k_abs"]):
-                        row_kin = ["N/A (KL int. ≤ 0)", "N/A",
+                        row_kin = ["N/A (KL int. ≤ 0)", "", "N/A", "",
                                    "" if fit["npts"] < 3 else f"{fit['r2']:.4f}",
                                    str(fit["npts"])]
                     else:
                         jk = fit["j_k_abs"]
+                        # 1σ on |Jᵏ|, propagated from the KL intercept.
+                        # nan with only 2 points — a line through 2 points
+                        # has no residual to estimate an error from.
+                        jk_se = fit.get("j_k_se", float("nan"))
+                        has_se = bool(np.isfinite(jk_se))
                         row_kin = [
                             f"{jk:.4f}",
+                            f"{jk_se:.4f}" if has_se else "",
                             f"{jk / ecsa:.4f}" if ecsa > 0 else "",
+                            f"{jk_se / ecsa:.4f}" if (has_se and ecsa > 0) else "",
                             "" if fit["npts"] < 3 else f"{fit['r2']:.4f}",
                             str(fit["npts"]),
                         ]
 
-                    rows.append((sn, cat, row_j, row_jl, row_kin))
+                    rows.append((sn, cat, row_j, row_jl, row_theo, row_kin))
 
             e = e_tgt
+            _ev = f"{e:g}"            # 0.9, not 0.90
+            # Three short lines per header so Excel shows a compact wrapped
+            # header row instead of very wide columns.
             col_hdrs = (
                 ["Sample", "Catalyst"]
-                + [f"I at {e:.2f}V ({r} rpm) (mA)"  for r in RPMS]
-                + [f"JL ({r} rpm) (mA/cm2)"         for r in RPMS]
-                + [f"Jk at {e:.2f}V (mA/cm2, KL)",
-                   f"SA at {e:.2f}V (mA/cm2_ECSA, KL)",
+                + [f"I at {_ev}V\n({r} rpm)\n(mA)" for r in RPMS]
+                + [f"JL\n({r} rpm)\n(mA/cm2)"      for r in RPMS]
+                + [f"%Theo\n({r} rpm)\n(%)"        for r in RPMS]
+                + [f"Jk at {_ev}V\n(mA/cm2)",
+                   f"Jk at {_ev}V\nerror",
+                   f"SA at {_ev}V\n(mA/cm2)",
+                   f"SA at {_ev}V\nerror",
                    "KL R2",
                    "n_RPM"]
             )
 
+            def _tsv_cell(v):
+                """Quote a cell the way Excel expects when it spans lines."""
+                if any(ch in v for ch in ("\n", "\t", '"')):
+                    return '"' + v.replace('"', '""') + '"'
+                return v
+
             # Build TSV (for Excel copy)
-            tsv_lines = ["\t".join(col_hdrs)]
-            for sn, cat, row_j, row_jl, row_kin in rows:
-                tsv_lines.append("\t".join([sn, cat] + row_j + row_jl + row_kin))
+            tsv_lines = ["\t".join(_tsv_cell(h) for h in col_hdrs)]
+            for sn, cat, row_j, row_jl, row_theo, row_kin in rows:
+                vals = [sn, cat] + row_j + row_jl + row_theo + row_kin
+                tsv_lines.append("\t".join(_tsv_cell(v) for v in vals))
             _copy_data[0] = "\n".join(tsv_lines)
 
-            # Build display (aligned columns)
-            col_w = [max(len(h), 8) for h in col_hdrs]
-            disp_lines = ["  ".join(h.ljust(w) for h, w in zip(col_hdrs, col_w))]
+            # Build display (aligned columns; headers flattened onto one line)
+            disp_hdrs = [" ".join(h.split()) for h in col_hdrs]
+            col_w = [max(len(h), 8) for h in disp_hdrs]
+            disp_lines = ["  ".join(h.ljust(w) for h, w in zip(disp_hdrs, col_w))]
             disp_lines.append("-" * sum(w + 2 for w in col_w))
-            for sn, cat, row_j, row_jl, row_kin in rows:
-                vals = [sn, cat] + row_j + row_jl + row_kin
+            for sn, cat, row_j, row_jl, row_theo, row_kin in rows:
+                vals = [sn, cat] + row_j + row_jl + row_theo + row_kin
                 disp_lines.append("  ".join(v.ljust(w) for v, w in zip(vals, col_w)))
             if not rows:
                 disp_lines.append("(No visible plotted samples with data)")
