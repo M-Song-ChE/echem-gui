@@ -172,6 +172,7 @@ def _extract_folder_corrections(folder: str) -> dict:
     Reuses the OCV/Ru Extractor helpers:
       • OCV file  → e_ref (RHE conversion) = stable OCV (last voltage)
       • EIS1 file → r_sol_n2  (N2-background iR: Ru at |Im(Z)| min, Re(Z) > 0)
+                              an unnumbered 'EIS' counts as EIS1
       • EIS2 file → r_sol_o2  (O2-run iR)
     Returns a dict with only the keys that were successfully extracted.
     """
@@ -199,8 +200,11 @@ def _extract_folder_corrections(folder: str) -> dict:
             if v is not None:
                 out["e_ref"] = round(float(v), 5)
         elif kind == "eis":
-            m = re.search(r'eis0*(\d+)', n.lower())
-            idx = int(m.group(1)) if m else None
+            # Standalone 'EIS' token, optionally numbered: EIS / EIS1 / EIS_2.
+            # The lookbehind keeps the trailing '_NN_PEIS' technique segment
+            # from matching; an unnumbered EIS is the first one, i.e. EIS1.
+            m = re.search(r'(?<![a-z])eis[_\s-]?0*(\d?)', n.lower())
+            idx = (int(m.group(1)) if m.group(1) else 1) if m else None
             key = ("r_sol_n2" if idx == 1
                    else "r_sol_o2" if idx == 2 else None)
             if key is None or key in out:
