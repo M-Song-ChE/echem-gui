@@ -392,6 +392,146 @@ def _kl_kinetic_curve(curves, e_lo, e_hi, n_grid=60):
     return np.asarray(E_ok), np.asarray(jk_ok), n_rpm
 
 
+# ── Internal transport (film) correction ─────────────────────────────────
+#
+# Shih, Sagar & Lin, J. Phys. Chem. C 112 (2008) 124-131 correct ORR data in
+# two stages, both serial-resistance models:
+#
+#   Eq. 5   1/j_RDE     = 1/j_ED,lim + 1/j_k,app     external RDE diffusion
+#   Eq. 6   1/j_k,app   = 1/j_ID,lim + 1/j_k,true    transport inside the film
+#
+# Stage 1 is already what `_kl_fit_at_E` does: its intercept is 1/j_k,app, NOT
+# 1/j_k,true. Where the catalyst layer adds its own transport resistance the
+# reported Jk and SA are therefore apparent values, biased low.
+#
+# Stage 2 needs j_ID,lim. The paper reads it off the plateau of the apparent
+# kinetic Tafel plot (its Figure 4). `_film_limited_fit` takes the algebraic
+# shortcut instead: deep in the limiting region 1/j_k is already negligible, so
+#
+#   1/|J_L,obs| = 1/j_f + (1/B) * omega^-1/2
+#
+# and the intercept gives j_f directly. The two routes converge on the same
+# number -- checked on the CA series here, they agree to 1.5-2 % wherever the
+# plateau is well defined -- but the fit needs only the plateau current per RPM
+# rather than a K-L fit at every potential. `_open_itc_window` still draws the
+# j_k,app(E) curve, because whether a plateau exists at all is the test of
+# whether the model applies.
+
+
+def _film_limited_fit(curves):
+    """Film-limited current density from the deep limiting region.
+
+    curves : iterable of (E_arr, J_arr, rpm) -- J signed (cathodic negative),
+             normalised the same way for every curve (mA/cm2 when an electrode
+             area is set, else mA).
+
+    Fits  y = 1/|J_L,obs|  vs  x = omega^-1/2  where J_L,obs is each curve's
+    most cathodic current, and returns a dict:
+
+        j_f       1/intercept, the film-limited current density (same unit as J)
+        j_f_se    1 sigma on j_f, propagated from the intercept (nan when n < 3)
+        slope     1/B; feed to _kl_n_electrons for the apparent electron number
+        intercept 1/j_f
+        r2        straightness of the reciprocal plot -- curvature here means a
+                  constant-j_f model does not hold (report section 16, Case D)
+        npts, rpms, x, y, note
+
+    Returns None with fewer than two distinct rotation rates. `j_f` comes back
+    as nan (with `note` set) when the intercept is <= 0, which means the data
+    show no resolvable film limitation -- the correct reading is "none seen",
+    not "infinite resistance".
+    """
+    x, y, rpms = [], [], []
+    for E_arr, J_arr, rpm in curves:
+        try:
+            rpm = float(rpm)
+        except (TypeError, ValueError):
+            continue
+        if rpm <= 0 or J_arr is None or len(J_arr) < 2:
+            continue
+        j_lim = float(np.min(J_arr))          # most cathodic point
+        if not np.isfinite(j_lim) or j_lim >= 0:
+            continue
+        omega = 2.0 * math.pi * rpm / 60.0
+        if omega <= 0:
+            continue
+        x.append(omega ** -0.5)
+        y.append(1.0 / abs(j_lim))
+        rpms.append(rpm)
+
+    if len(x) < 2 or len(set(rpms)) < 2:
+        return None
+
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    slope, intercept = (float(v) for v in np.polyfit(x, y, 1))
+
+    resid = y - (slope * x + intercept)
+    ss_res = float(np.sum(resid ** 2))
+    ss_tot = float(np.sum((y - y.mean()) ** 2))
+    r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else float("nan")
+
+    n = len(x)
+    icept_se = float("nan")
+    if n >= 3:
+        sxx = float(np.sum((x - x.mean()) ** 2))
+        if sxx > 0:
+            s_err = math.sqrt(ss_res / (n - 2)) if ss_res > 0 else 0.0
+            icept_se = s_err * math.sqrt(1.0 / n + x.mean() ** 2 / sxx)
+
+    note = ""
+    if intercept <= 0:
+        j_f, j_f_se = float("nan"), float("nan")
+        note = "intercept <= 0 - no film limitation resolved"
+    else:
+        j_f = 1.0 / intercept
+        # d(1/b)/db = -1/b^2, so se(j_f) = se(b)/b^2
+        j_f_se = (icept_se / intercept ** 2) if np.isfinite(icept_se) else float("nan")
+
+    return dict(j_f=j_f, j_f_se=j_f_se, slope=slope, intercept=intercept,
+                r2=r2, npts=n, rpms=rpms, rpms_sorted=sorted(rpms),
+                x=x, y=y, note=note)
+
+
+# Above this fraction of j_f the Eq. 6 denominator is small enough that the
+# corrected current is dominated by the uncertainty in j_f. The paper makes the
+# same point qualitatively; the threshold itself is our convention, not theirs.
+_ITC_WARN_RATIO = 0.8
+
+
+def _eq6_true_kinetic(jk_app, j_f):
+    """Paper Eq. 6, solved for the transport-free kinetic current.
+
+        j_k,true = j_k,app * j_f / (j_f - j_k,app)
+
+    Both arguments must carry the SAME normalisation. Returns
+    (j_k_true, flag) where flag is one of:
+
+        "ok"          corrected normally
+        "near_limit"  j_k,app > 0.8 * j_f -- corrected, but the value is
+                      very sensitive to j_f; treat as a lower bound
+        "exceeds"     j_k,app >= j_f -- unphysical under this model, no value
+        "no_film"     j_f unusable (nan/inf/<=0); returns j_k,app unchanged
+
+    Never raises, so callers can map straight over a potential axis.
+    """
+    try:
+        jk_app = float(jk_app)
+        j_f = float(j_f)
+    except (TypeError, ValueError):
+        return float("nan"), "no_film"
+
+    if not np.isfinite(jk_app) or jk_app <= 0:
+        return float("nan"), "no_film"
+    if not np.isfinite(j_f) or j_f <= 0:
+        return jk_app, "no_film"
+    if jk_app >= j_f:
+        return float("nan"), "exceeds"
+
+    jk_true = jk_app * j_f / (j_f - jk_app)
+    flag = "near_limit" if jk_app > _ITC_WARN_RATIO * j_f else "ok"
+    return jk_true, flag
+
 def _process_pair(pair: dict, r_sol_n2: float, r_sol_o2: float,
                   e_ref: float, area: float):
     """Return (E_plot, Y_plot) for one ORR pair, or None on failure."""
@@ -1012,7 +1152,9 @@ class ORRPanel(ttk.Frame):
         _an_row3 = ttk.Frame(left)
         _an_row3.pack(fill=tk.X, padx=4, pady=(1, 2))
         ttk.Button(_an_row3, text="Extract Report",
-                   command=self._open_report_window).pack(side=tk.LEFT)
+                   command=self._open_report_window).pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Button(_an_row3, text="Internal Transport Corr.",
+                   command=self._open_itc_window).pack(side=tk.LEFT)
 
         # ══ EXPORT ══════════════════════════════════════════════════
         ttk.Separator(left, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=4, pady=6)
@@ -4050,6 +4192,380 @@ class ORRPanel(ttk.Frame):
 
         _compute()
 
+    def _open_itc_window(self):
+        """Internal transport correction — Shih et al. 2008, Eq. 5 then Eq. 6.
+
+        The report window gives the corrected numbers; this window exists to
+        show whether the model that produced them applies at all. A constant
+        internal-transport resistance predicts a straight reciprocal plot, a
+        rotation-independent j_f, and an apparent kinetic current that levels
+        off onto that same j_f. All three are drawn here, per catalyst.
+        """
+        all_curves = []   # (E_arr, J_arr, rpm, label, color, sname)
+        _sel_on    = []
+        for sn, r in self._iter_analysis_records():
+            if r["rpm"] > 0:
+                all_curves.append((r["E"], r["J"], r["rpm"],
+                                   r["label"], r["color"], sn))
+                _sel_on.append(r["enabled"])
+        if len(all_curves) < 2:
+            messagebox.showwarning(
+                "Internal Transport Correction",
+                "Need at least 2 RPM curves with numeric RPM values.")
+            return
+        all_curves = self._gradient_recolor(all_curves)
+        ref = self.ref_electrode_var.get()
+
+        win = tk.Toplevel(self)
+        win.title("Internal Transport Correction  (Shih 2008)")
+        win.geometry("1180x820")
+        try: win.state('zoomed')
+        except Exception: pass
+
+        _recompute_id = [None]
+
+        def _schedule(*_):
+            if _recompute_id[0]:
+                try: win.after_cancel(_recompute_id[0])
+                except Exception: pass
+            _recompute_id[0] = win.after(350, _compute)
+
+        # ── Theory ───────────────────────────────────────────────────
+        _th = ttk.LabelFrame(win, text="Two-stage mass-transfer correction")
+        _th.pack(fill=tk.X, padx=8, pady=(6, 0))
+        for _lbl, _eq in (
+            ("Eq. 5 (external):", "1/j_RDE = 1/j_ED,lim + 1/j_k,app"),
+            ("Eq. 6 (internal):", "1/j_k,app = 1/j_f + 1/j_k,true"),
+            ("j_f from plateau:", "1/|J_L,obs| = 1/j_f + (1/B)·ω^(-1/2)"),
+            ("valid only while:", "j_k,app < j_f   (warn above 0.8·j_f)"),
+        ):
+            _r = ttk.Frame(_th); _r.pack(fill=tk.X, padx=6, pady=0)
+            ttk.Label(_r, text=_lbl, width=17, font=("", 8, "bold")).pack(side=tk.LEFT)
+            ttk.Label(_r, text=_eq, font=("Courier", 8)).pack(side=tk.LEFT)
+        ttk.Label(_th, foreground="#555555", font=("", 7), wraplength=1100,
+                  justify=tk.LEFT,
+                  text=("j_f is an effective parameter read from the data, not a "
+                        "transport simulation. A good fit supports the serial-resistance "
+                        "picture; it does not prove internal diffusion is the cause.")
+                  ).pack(anchor=tk.W, padx=6, pady=(1, 3))
+
+        # ── Curve selector ───────────────────────────────────────────
+        _sel_fr = ttk.LabelFrame(win, text="Curves")
+        _sel_fr.pack(fill=tk.X, padx=8, pady=(6, 0))
+        _sel_cv = tk.Canvas(_sel_fr, height=74, highlightthickness=0)
+        _sel_sb = ttk.Scrollbar(_sel_fr, orient=tk.VERTICAL, command=_sel_cv.yview)
+        _sel_inner = ttk.Frame(_sel_cv)
+        _sel_inner.bind("<Configure>",
+                        lambda e: _sel_cv.configure(scrollregion=_sel_cv.bbox("all")))
+        _sel_cv.create_window((0, 0), window=_sel_inner, anchor=tk.NW)
+        _sel_cv.configure(yscrollcommand=_sel_sb.set)
+        _sel_cv.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        _sel_sb.pack(side=tk.RIGHT, fill=tk.Y)
+
+        _samp_order = []; _by_samp = {}
+        for idx, (E_a, J_a, rpm, lbl, col, sn) in enumerate(all_curves):
+            if sn not in _by_samp:
+                _by_samp[sn] = []; _samp_order.append(sn)
+            m = re.match(r'^\[([^\]]+)\]', lbl)
+            cat = m.group(1) if m else ""
+            _by_samp[sn].append((idx, E_a, J_a, rpm, lbl, col, cat))
+
+        _isel_vars = {}
+        for sn in _samp_order:
+            tk.Label(_sel_inner, text=f"  ▸ Group: {sn}",
+                     font=("TkDefaultFont", 8, "italic"), fg="#555555",
+                     anchor=tk.W).pack(fill=tk.X, anchor=tk.W, pady=(4, 0))
+            _by_cat = {}; _cat_ord = []
+            for idx, E_a, J_a, rpm, lbl, col, cat in _by_samp[sn]:
+                if cat not in _by_cat:
+                    _by_cat[cat] = []; _cat_ord.append(cat)
+                _by_cat[cat].append((idx, rpm, lbl, col))
+            for cat in _cat_ord:
+                cat_idxs = [it[0] for it in _by_cat[cat]]
+                cat_bv = tk.BooleanVar(value=True)
+                cat_row = tk.Frame(_sel_inner)
+                cat_row.pack(fill=tk.X, anchor=tk.W, padx=(18, 0), pady=1)
+                tk.Checkbutton(
+                    cat_row,
+                    text=f"[{cat}]" if cat else "(no cat)",
+                    variable=cat_bv,
+                    command=lambda idxs=cat_idxs, bv=cat_bv:
+                        [_isel_vars[i].set(bv.get()) for i in idxs],
+                    font=("TkDefaultFont", 8, "bold")
+                ).pack(side=tk.LEFT, padx=(0, 8))
+                for idx, rpm, lbl, col in _by_cat[cat]:
+                    bv = tk.BooleanVar(value=True)
+                    _isel_vars[idx] = bv
+                    display = re.sub(r'^\[[^\]]+\]\s*', '', lbl)
+                    if not _sel_on[idx]:
+                        display += " ·hidden"
+                    tk.Checkbutton(cat_row, text=display, variable=bv).pack(
+                        side=tk.LEFT, padx=3)
+                    bv.trace_add("write", _schedule)
+
+        # ── Controls ─────────────────────────────────────────────────
+        ctrl = ttk.Frame(win); ctrl.pack(fill=tk.X, padx=8, pady=(6, 0))
+        ttk.Label(ctrl, text=f"Tafel E range (V vs {ref}):").pack(side=tk.LEFT)
+        e_lo_var = tk.StringVar(value="0.55")
+        e_hi_var = tk.StringVar(value="0.90")
+        ttk.Entry(ctrl, textvariable=e_lo_var, width=6).pack(side=tk.LEFT, padx=2)
+        ttk.Label(ctrl, text="to").pack(side=tk.LEFT)
+        ttk.Entry(ctrl, textvariable=e_hi_var, width=6).pack(side=tk.LEFT, padx=2)
+
+        ttk.Label(ctrl, text="   Electrolyte:").pack(side=tk.LEFT)
+        _DEF_ELEC = "0.1 M HClO\u2084"
+        _elec_var = tk.StringVar(
+            value=_DEF_ELEC if _DEF_ELEC in _ELECTROLYTES else list(_ELECTROLYTES)[0])
+        ttk.Combobox(ctrl, textvariable=_elec_var, state="readonly",
+                     values=list(_ELECTROLYTES.keys()), width=12).pack(
+                         side=tk.LEFT, padx=(2, 8))
+        _norm_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(ctrl, text="Tafel per ECSA (SA)", variable=_norm_var).pack(
+            side=tk.LEFT, padx=(0, 8))
+        e_lo_var.trace_add("write", _schedule)
+        e_hi_var.trace_add("write", _schedule)
+        _elec_var.trace_add("write", _schedule)
+        _norm_var.trace_add("write", _schedule)
+
+        # ── Figure ───────────────────────────────────────────────────
+        fig = Figure(figsize=(11.0, 6.4), dpi=100, constrained_layout=True)
+        ax_f  = fig.add_subplot(221)     # reciprocal film fit
+        ax_ap = fig.add_subplot(222)     # j_k,app(E) vs j_f      (Fig. 4-like)
+        ax_tf = fig.add_subplot(223)     # Tafel before/after     (Fig. 5-like)
+        ax_jf = fig.add_subplot(224)     # j_f per catalyst
+        cv = FigureCanvasTkAgg(fig, master=win)
+        _tb_row = ttk.Frame(win)
+        tb = NavigationToolbar2Tk(cv, _tb_row, pack_toolbar=False)
+        tb.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        tk.Button(_tb_row, text="Copy",
+                  command=lambda f=fig: copy_figure_to_clipboard(f),
+                  relief=tk.RAISED, borderwidth=1, padx=6).pack(
+                      side=tk.LEFT, padx=(4, 2), pady=1)
+        _passist = attach_plot_assistant(win, fig, [ax_f, ax_ap, ax_tf, ax_jf], cv)
+        _passist.pack(side=tk.TOP, fill=tk.X, padx=8, pady=(2, 0))
+
+        res = tk.Text(win, height=11, state=tk.DISABLED,
+                      font=("Courier", 9), wrap=tk.NONE)
+        _res_sb = ttk.Scrollbar(win, orient=tk.HORIZONTAL, command=res.xview)
+        res.configure(xscrollcommand=_res_sb.set)
+        _res_sb.pack(side=tk.BOTTOM, fill=tk.X, padx=8)
+        res.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=(0, 2))
+        _tb_row.pack(side=tk.BOTTOM, fill=tk.X, padx=8)
+        cv.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True,
+                                padx=8, pady=(4, 0))
+
+        _copy_tsv_data = [None]
+
+        def _compute():
+            for a in (ax_f, ax_ap, ax_tf, ax_jf):
+                a.clear()
+            try:
+                e_lo = float(e_lo_var.get()); e_hi = float(e_hi_var.get())
+            except ValueError:
+                return
+            if e_hi <= e_lo:
+                return
+            try:
+                _n_e, _D, _nu, _C = _ELECTROLYTES[_elec_var.get()]
+            except KeyError:
+                _n_e, _D, _nu, _C = list(_ELECTROLYTES.values())[0]
+            B_per_e = 0.62 * 96485.0 * (_D ** (2.0 / 3.0)) * (_nu ** (-1.0 / 6.0)) \
+                      * _C * 1000.0
+
+            # group the selected curves by (sample, catalyst)
+            grp = {}; grp_order = []
+            for idx, (E_a, J_a, rpm, lbl, col, sn) in enumerate(all_curves):
+                if not _isel_vars.get(idx, tk.BooleanVar(value=True)).get():
+                    continue
+                m = re.match(r'^\[([^\]]+)\]', lbl)
+                cat = m.group(1) if m else ""
+                key = (sn, cat)
+                if key not in grp:
+                    grp[key] = []; grp_order.append(key)
+                grp[key].append((E_a, J_a, rpm, col))
+
+            lines = [f"{'Group':<26} {'nRPM':>4} {'j_f':>9} {'±':>8} {'fitR2':>7} "
+                     f"{'n_app':>6} {'jk_app':>9} {'jk_true':>9} {'gain':>6}  flag"]
+            lines.append("-" * 104)
+            tsv = [["group", "n_rpm", "j_f", "j_f_se", "film_r2", "n_app",
+                    "E", "jk_app", "jk_true", "gain", "flag"]]
+            verdicts = []
+            jf_bars = []
+
+            for key in grp_order:
+                sn_g, cat_g = key
+                items = grp[key]
+                glbl = f"[{cat_g}] {sn_g}" if cat_g else sn_g
+                color = items[0][3]
+                curves = [(E, J, r) for E, J, r, _ in items]
+
+                ffit = _film_limited_fit(curves)
+                if ffit is None:
+                    lines.append(f"{glbl[:26]:<26} {len(items):>4}  < 2 distinct RPMs")
+                    verdicts.append((glbl, "NOT SUPPORTED", "fewer than 2 RPMs"))
+                    continue
+                j_f, j_f_se, fr2 = ffit["j_f"], ffit["j_f_se"], ffit["r2"]
+                n_app = _kl_n_electrons(ffit["slope"], B_per_e)
+
+                # (1) reciprocal film fit
+                ax_f.plot(ffit["x"], ffit["y"], "o", color=color, ms=4, label=glbl)
+                xx = np.linspace(0, float(np.max(ffit["x"])) * 1.15, 40)
+                ax_f.plot(xx, ffit["slope"] * xx + ffit["intercept"],
+                          "--", color=color, lw=1.0)
+
+                # (2) apparent kinetic current vs E, against j_f
+                e_grid = np.linspace(e_lo, e_hi, 60)
+                E_ok, jk_ok = [], []
+                for ev in e_grid:
+                    f2 = _kl_fit_at_E(curves, float(ev))
+                    if f2 is None or not np.isfinite(f2["j_k_abs"]):
+                        continue
+                    E_ok.append(float(ev)); jk_ok.append(f2["j_k_abs"])
+                E_ok = np.asarray(E_ok); jk_ok = np.asarray(jk_ok)
+                if len(E_ok):
+                    ax_ap.plot(jk_ok, E_ok, "-", color=color, lw=1.4, label=glbl)
+                if np.isfinite(j_f):
+                    ax_ap.axvline(j_f, color=color, ls=":", lw=1.0, alpha=0.8)
+                    jf_bars.append((glbl, j_f, j_f_se, color))
+
+                # (3) Tafel before / after Eq. 6
+                ecsa = self._ecsa_for(sn_g, cat_g)
+                scale = (1.0 / ecsa) if (_norm_var.get() and ecsa > 0) else 1.0
+                jk_tr, flags = [], []
+                for v in jk_ok:
+                    t, fl = _eq6_true_kinetic(v, j_f)
+                    jk_tr.append(t); flags.append(fl)
+                jk_tr = np.asarray(jk_tr, dtype=float)
+                ok = np.isfinite(jk_tr) & (jk_tr > 0)
+                if len(E_ok):
+                    with np.errstate(divide="ignore", invalid="ignore"):
+                        ax_tf.plot(np.log10(jk_ok * scale), E_ok, "--",
+                                   color=color, lw=1.0, alpha=0.65,
+                                   label=f"{glbl} app")
+                        if ok.any():
+                            ax_tf.plot(np.log10(jk_tr[ok] * scale), E_ok[ok], "-",
+                                       color=color, lw=1.6,
+                                       label=f"{glbl} corrected")
+
+                # summary row at the most cathodic usable point
+                if len(E_ok):
+                    i_last = int(np.argmin(E_ok))
+                    jka = jk_ok[i_last]
+                    jkt, fl = _eq6_true_kinetic(jka, j_f)
+                    gain = (jkt / jka) if (np.isfinite(jkt) and jka > 0) else float("nan")
+                    lines.append(
+                        f"{glbl[:26]:<26} {ffit['npts']:>4} {j_f:9.3f} "
+                        f"{(j_f_se if np.isfinite(j_f_se) else float('nan')):8.3f} "
+                        f"{fr2:7.4f} {n_app:6.2f} {jka:9.4f} "
+                        f"{(jkt if np.isfinite(jkt) else float('nan')):9.4f} "
+                        f"{gain:6.2f}  {fl}")
+                    tsv.append([glbl, str(ffit["npts"]), f"{j_f:.5f}",
+                                f"{j_f_se:.5f}", f"{fr2:.5f}", f"{n_app:.3f}",
+                                f"{E_ok[i_last]:.4f}", f"{jka:.5f}",
+                                f"{jkt:.5f}", f"{gain:.4f}", fl])
+                    # Diagnosis, hardest failures first. j_k,app > j_f is not
+                    # "a poor fit" — it is the serial model contradicting
+                    # itself, since no series resistance lets the corrected
+                    # current exceed its own limit. Likewise n_app > 4.3 means
+                    # the K-L slope cannot be reconciled with a 4-electron ORR
+                    # even allowing for error in D, nu and C.
+                    n_tot  = max(len(flags), 1)
+                    n_over = sum(1 for f_ in flags if f_ == "exceeds")
+                    n_near = sum(1 for f_ in flags if f_ == "near_limit")
+                    if fr2 < 0.98:
+                        verdicts.append((glbl, "NOT SUPPORTED",
+                                         f"reciprocal plot curved (R²={fr2:.3f}) "
+                                         f"— j_f is not constant"))
+                    elif not np.isfinite(j_f):
+                        verdicts.append((glbl, "NOT SUPPORTED",
+                                         "no film limitation resolved"))
+                    elif n_over > 0.2 * n_tot:
+                        verdicts.append((glbl, "NOT SUPPORTED",
+                                         f"j_k,app exceeds j_f over "
+                                         f"{n_over / n_tot * 100:.0f}% of the range"))
+                    elif not (3.0 <= n_app <= 4.3):
+                        verdicts.append((glbl, "NOT SUPPORTED"
+                                         if n_app > 4.6 else "PARTIALLY CONSISTENT",
+                                         f"n_app={n_app:.2f} — a 4e⁻ ORR cannot "
+                                         f"exceed 4"))
+                    elif n_over:
+                        verdicts.append((glbl, "PARTIALLY CONSISTENT",
+                                         f"j_k,app exceeds j_f at {n_over} point(s)"))
+                    elif np.isfinite(j_f_se) and j_f_se > 0.25 * j_f:
+                        verdicts.append((glbl, "PARTIALLY CONSISTENT",
+                                         f"j_f uncertain (±{j_f_se / j_f * 100:.0f}%) "
+                                         f"— little film limitation to resolve"))
+                    elif n_near > 0.5 * n_tot:
+                        verdicts.append((glbl, "PARTIALLY CONSISTENT",
+                                         "most points sit above 0.8·j_f"))
+                    else:
+                        verdicts.append((glbl, "MODEL CONSISTENT", ""))
+
+            # (4) j_f per catalyst
+            if jf_bars:
+                xs = np.arange(len(jf_bars))
+                ax_jf.bar(xs, [b[1] for b in jf_bars],
+                          yerr=[(b[2] if np.isfinite(b[2]) else 0.0) for b in jf_bars],
+                          color=[b[3] for b in jf_bars], capsize=3)
+                ax_jf.set_xticks(xs)
+                ax_jf.set_xticklabels([b[0] for b in jf_bars], rotation=30,
+                                      ha="right", fontsize=7)
+
+            ax_f.set_xlabel(r"$\omega^{-1/2}$  (rad s$^{-1}$)$^{-1/2}$", fontsize=9)
+            ax_f.set_ylabel(r"$1/|J_{L,obs}|$", fontsize=9)
+            ax_f.set_title("Film fit — intercept = 1/$j_f$", fontsize=10)
+            ax_f.set_xlim(left=0)
+            if grp_order: ax_f.legend(fontsize=6)
+
+            ax_ap.set_xlabel(r"$j_{k,app}$  (mA cm$^{-2}$)", fontsize=9)
+            ax_ap.set_ylabel(f"E (V vs {ref})", fontsize=9)
+            ax_ap.set_title("Apparent kinetic current — dotted = $j_f$", fontsize=10)
+            ax_ap.set_xscale("log")
+            if grp_order: ax_ap.legend(fontsize=6)
+
+            _u = "mA cm$^{-2}_{ECSA}$" if _norm_var.get() else "mA cm$^{-2}$"
+            ax_tf.set_xlabel(rf"$\log_{{10}}$ ({_u})", fontsize=9)
+            ax_tf.set_ylabel(f"E (V vs {ref})", fontsize=9)
+            ax_tf.set_title("Tafel — dashed apparent, solid Eq. 6 corrected",
+                            fontsize=10)
+            if grp_order: ax_tf.legend(fontsize=6)
+
+            ax_jf.set_ylabel(r"$j_f$  (mA cm$^{-2}$)", fontsize=9)
+            ax_jf.set_title("Film-limited current per catalyst", fontsize=10)
+
+            if verdicts:
+                lines.append("")
+                lines.append("Model diagnosis")
+                for g, v, why in verdicts:
+                    lines.append(f"  {g[:30]:<30} {v:<22} {why}")
+                lines.append("")
+                lines.append("A good fit supports a serial transport resistance; it does "
+                             "not prove internal diffusion is its cause.")
+            _copy_tsv_data[0] = "\r\n".join("\t".join(r) for r in tsv)
+
+            res.configure(state=tk.NORMAL)
+            res.delete("1.0", tk.END)
+            res.insert(tk.END, "\n".join(lines))
+            res.configure(state=tk.DISABLED)
+            cv.draw_idle()
+
+        ttk.Button(ctrl, text="Compute", command=_compute).pack(
+            side=tk.LEFT, padx=(4, 4))
+        ttk.Button(ctrl, text="Copy TSV (→ Excel)",
+                   command=lambda: copy_text_to_clipboard(_copy_tsv_data[0] or "",
+                                                          widget=win)).pack(
+                       side=tk.LEFT)
+        _compute()
+
+    def _ecsa_for(self, sname, cat):
+        """ECSA_Hupd registered for *cat* in sample *sname*, else 0.0."""
+        sentry = self.samples.get(sname) or {}
+        cc = sentry.get("catalyst_corrections", {}).get(cat, {})
+        try:
+            return float(cc.get("ecsa", "") or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
     def _open_report_window(self):
         """Extract J@E, SA@E, JL for all visible plotted samples — copy-to-Excel TSV."""
         RPMS = [400, 900, 1600, 2500]
@@ -4195,6 +4711,28 @@ class ORRPanel(ttk.Frame):
                                  in curves_by_cat_rpm.items() if c == cat]
                     fit = _kl_fit_at_E(kl_curves, e_tgt)
                     n_rpm = len({r for c, r in curves_by_cat_rpm if c == cat})
+
+                    # Internal transport correction (Shih 2008 Eq. 6). j_f
+                    # comes from the deep limiting region of the SAME curves,
+                    # so it shares their normalisation and Eq. 6 is applied in
+                    # mA/cm2_geo; SA_true then reuses the SA convention above.
+                    ffit = _film_limited_fit(kl_curves)
+                    row_itc = ["", "", "", "", "", ""]
+                    if ffit is not None:
+                        j_f, j_f_se = ffit["j_f"], ffit["j_f_se"]
+                        row_itc[0] = f"{j_f:.4f}" if np.isfinite(j_f) else "none"
+                        row_itc[1] = f"{j_f_se:.4f}" if np.isfinite(j_f_se) else ""
+                        row_itc[4] = ("" if ffit["npts"] < 3
+                                      else f"{ffit['r2']:.4f}")
+                        if fit is not None and np.isfinite(fit["j_k_abs"]):
+                            jk_t, flag = _eq6_true_kinetic(fit["j_k_abs"], j_f)
+                            row_itc[5] = flag
+                            if np.isfinite(jk_t):
+                                row_itc[2] = f"{jk_t:.4f}"
+                                row_itc[3] = (f"{jk_t / ecsa:.4f}"
+                                              if ecsa > 0 else "")
+                        else:
+                            row_itc[5] = "no Jk"
                     if fit is None:
                         row_kin = ["N/A (< 2 RPM)", "", "N/A", "", "",
                                    str(n_rpm)]
@@ -4218,7 +4756,8 @@ class ORRPanel(ttk.Frame):
                             str(fit["npts"]),
                         ]
 
-                    rows.append((sn, cat, row_j, row_jl, row_theo, row_kin))
+                    rows.append((sn, cat, row_j, row_jl, row_theo,
+                                 row_kin, row_itc))
 
             e = e_tgt
             _ev = f"{e:g}"            # 0.9, not 0.90
@@ -4232,8 +4771,14 @@ class ORRPanel(ttk.Frame):
                 + [f"Jk at {_ev}V\n(mA/cm2)",
                    f"Jk at {_ev}V\nerror",
                    f"SA at {_ev}V\n(mA/cm2)",
-                   f"SA at {_ev}V\nerror",
-                   "KL R2",
+                   f"SA at {_ev}V\nerror"]
+                + ["j_f\n(mA/cm2)",
+                   "j_f\nerror",
+                   f"Jk_true at {_ev}V\n(mA/cm2)",
+                   f"SA_true at {_ev}V\n(mA/cm2)",
+                   "film fit\nR2",
+                   "ITC\nflag"]
+                + ["KL R2",
                    "n_RPM"]
             )
 
@@ -4245,8 +4790,9 @@ class ORRPanel(ttk.Frame):
 
             # Build TSV (for Excel copy)
             tsv_lines = ["\t".join(_tsv_cell(h) for h in col_hdrs)]
-            for sn, cat, row_j, row_jl, row_theo, row_kin in rows:
-                vals = [sn, cat] + row_j + row_jl + row_theo + row_kin
+            for sn, cat, row_j, row_jl, row_theo, row_kin, row_itc in rows:
+                vals = ([sn, cat] + row_j + row_jl + row_theo
+                        + row_kin[:4] + row_itc + row_kin[4:])
                 tsv_lines.append("\t".join(_tsv_cell(v) for v in vals))
             # CRLF between rows — Excel treats a bare LF inside a quoted
             # cell and a bare LF between rows as the same thing, so the
@@ -4258,8 +4804,9 @@ class ORRPanel(ttk.Frame):
             col_w = [max(len(h), 8) for h in disp_hdrs]
             disp_lines = ["  ".join(h.ljust(w) for h, w in zip(disp_hdrs, col_w))]
             disp_lines.append("-" * sum(w + 2 for w in col_w))
-            for sn, cat, row_j, row_jl, row_theo, row_kin in rows:
-                vals = [sn, cat] + row_j + row_jl + row_theo + row_kin
+            for sn, cat, row_j, row_jl, row_theo, row_kin, row_itc in rows:
+                vals = ([sn, cat] + row_j + row_jl + row_theo
+                        + row_kin[:4] + row_itc + row_kin[4:])
                 disp_lines.append("  ".join(v.ljust(w) for v, w in zip(vals, col_w)))
             if not rows:
                 disp_lines.append("(No visible plotted samples with data)")

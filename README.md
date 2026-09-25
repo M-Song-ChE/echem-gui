@@ -427,10 +427,79 @@ Click **Extract Report** in the Analysis section to open a report window that ta
 | **SA at E (mA/cm²_ECSA, KL)** | `SA = \|Jᵏ\| / ECSA_Hupd`. Requires ECSA_Hupd in the correction panel. |
 | **Jk at E error** | 1σ on `|Jᵏ|`, propagated from the KL intercept. Blank with only 2 RPMs — a line through two points leaves no residual to estimate an error from. |
 | **SA at E error** | The same 1σ divided by ECSA_Hupd. |
+| **j_f (mA/cm²)** | Film-limited current density from the deep-limiting fit. `none` when the intercept is ≤ 0, i.e. no film limitation resolves. |
+| **j_f error** | 1σ on `j_f`. A large relative error means there is little film limitation to measure — which also means the correction barely matters. |
+| **Jk_true at E (mA/cm²)** | `Jᵏ` after Eq. 6. Blank when `j_k,app ≥ j_f`. |
+| **SA_true at E (mA/cm²)** | `Jk_true / ECSA_Hupd`, same convention as the SA column. |
+| **film fit R²** | Straightness of `1/\|J_L\|` vs `ω^(-½)`. Below ~0.98 the constant-`j_f` model is not holding. |
+| **ITC flag** | `ok`, `near_limit` (above 0.8·j_f — treat as a lower bound), `exceeds` (no correction possible), `no_film`. |
 | **KL R²** | Fit quality of the KL line. Blank when only 2 RPMs (a 2-point line always has R² = 1). |
 | **n_RPM** | How many distinct rotation rates went into the fit. |
 
 The closest available RPM within ±50 rpm of each target is used for the per-RPM columns; cells show blank or "N/A" when data or ECSA is missing. Jᵏ and SA show **"N/A (< 2 RPM)"** for any catalyst measured at fewer than two rotation rates — see [§8.10](#810-kinetic-current-jᵏ-and-specific-activity-sa).
+
+### 8.11 Internal Transport Correction (Shih 2008)
+
+Click **Internal Transport Corr.** in the Analysis section. Use this when a porous or
+film-covered catalyst layer adds its own oxygen-transport resistance on top of the RDE
+boundary layer — the giveaway is a **%Theo that falls as RPM rises**.
+
+The correction is the two-stage serial-resistance model of Shih, Sagar & Lin,
+*J. Phys. Chem. C* **112** (2008) 124-131:
+
+```
+Eq. 5   1/j_RDE    = 1/j_ED,lim + 1/j_k,app      external RDE diffusion
+Eq. 6   1/j_k,app  = 1/j_f      + 1/j_k,true     transport inside the layer
+```
+
+**Stage 1 was already being applied.** The Koutecky-Levich intercept the app has always
+reported as `Jᵏ` is `j_k,app`, not the intrinsic current — where a film resistance exists
+it contains `1/j_f` as well, so `Jᵏ` and `SA` were apparent values biased low.
+
+`j_f` comes from the deep limiting region, where `1/j_k` is already negligible:
+
+```
+1/|J_L,obs| = 1/j_f + (1/B)·ω^(-½)        intercept = 1/j_f,  slope = 1/B
+```
+
+This is the algebraic shortcut to the paper's procedure (it reads the same quantity off
+the plateau of its Figure 4). On the CA reference series the two agree to 1.5-2 % wherever
+a plateau is actually resolved.
+
+> **The correction is small at 0.9 V and large below it.** At 0.9 V the ORR is kinetically
+> controlled, so `j_k,app ≪ j_f` and `Jᵏ_true ≈ Jᵏ` — often a fraction of a percent. What
+> the correction changes is the *shape of the Tafel curve* at higher overpotential, which
+> is where the paper's own comparison (0.85 → 0.55 V) lives. Do not expect corrected and
+> uncorrected SA at 0.9 V to differ much.
+
+**Panels:**
+
+| Panel | Shows |
+|-------|-------|
+| **Film fit** | `1/\|J_L,obs\|` vs `ω^(-½)` per catalyst. Parallel lines whose intercepts rise = a transport resistance that grows without the electron number changing. Curvature here means `j_f` is not constant and the model does not apply. |
+| **Apparent kinetic current** | `j_k,app(E)` with `j_f` as a dotted vertical. The curve should level off onto that line — that levelling-off *is* the internal limit. |
+| **Tafel** | Dashed = apparent, solid = Eq. 6 corrected, optionally per ECSA. |
+| **Film-limited current** | `j_f` per catalyst with its 1σ. |
+
+**Model diagnosis** is printed per catalyst and is the point of the window:
+
+- **MODEL CONSISTENT** — straight reciprocal plot, `n_app` near 4, `j_f` well determined.
+- **PARTIALLY CONSISTENT** — usable but qualified: `j_f` uncertain, or most points sitting
+  above `0.8·j_f` where the correction is numerically fragile.
+- **NOT SUPPORTED** — the reciprocal plot is curved, no film limitation resolves, `n_app`
+  cannot be reconciled with a 4-electron ORR, or `j_k,app` exceeds `j_f` (which no series
+  resistance permits).
+
+`j_k,app ≥ j_f` is never corrected — it is reported as a flag instead. Above `0.8·j_f` the
+value is flagged `near_limit`: the Eq. 6 denominator is small there, so the number is
+dominated by the uncertainty in `j_f` and should be read as a lower bound.
+
+> A good fit supports the serial-resistance description. It does **not** prove internal
+> diffusion is the cause — surface poisoning, an ECSA that over-counts ORR-active area, and
+> distributed reaction-diffusion all produce a similar loss. Equally, if the correction
+> fails to collapse the loading or CA dependence, that *is* strong evidence against a simple
+> serial internal-diffusion picture.
+
 
 ### 8.10 Kinetic current (Jᵏ) and specific activity (SA)
 
