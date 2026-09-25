@@ -3384,7 +3384,7 @@ class ORRPanel(ttk.Frame):
                 out[i][color_idx] = shades[j]
         return [tuple(c) for c in out]
 
-    def _build_curve_records(self, sname):
+    def _build_curve_records(self, sname, include_disabled=False):
         """Return the fully-processed, background-subtracted curves for a sample.
 
         Single source of truth shared by the plot (`_get_curves_for_sample`) and
@@ -3400,6 +3400,14 @@ class ORRPanel(ttk.Frame):
             catalyst                  (catalyst_id)
             r_n2, r_o2, e_ref, area   float  (corrections actually applied)
             ecsa                      (ECSA_Hupd, raw string/'' if unset)
+            enabled       bool        (the pair's plot checkbox state)
+
+        *include_disabled* keeps pairs whose plot checkbox is off, flagged by
+        `enabled=False`. The plot and the Excel export leave it False so an
+        unchecked run stays out of both. The analysis windows set it True: a run
+        hidden on the plot must still appear in their own curve selectors, where
+        it is pre-unchecked but can be checked back on. Hiding a curve and
+        excluding it from a fit are separate decisions.
         """
         sentry = self.samples.get(sname)
         if sentry is None:
@@ -3412,7 +3420,7 @@ class ORRPanel(ttk.Frame):
         for pair in sentry.get("pairs", []):
             if not pair.get("n2_short") or not pair.get("o2_short"):
                 continue
-            if not pair.get("enabled", True):
+            if not pair.get("enabled", True) and not include_disabled:
                 continue
             cat = pair.get("catalyst_id", "")
             if cat not in _cat_order:
@@ -3461,14 +3469,28 @@ class ORRPanel(ttk.Frame):
                     "E": E_arr, "J": J_arr, "rpm": rpm, "rpm_v": rpm_v,
                     "label": label, "color": cat_colors[j], "catalyst": cat,
                     "r_n2": r_n2, "r_o2": r_o2, "e_ref": e_ref, "area": area,
-                    "ecsa": ecsa,
+                    "ecsa": ecsa, "enabled": pair.get("enabled", True),
                 })
         return records
 
-    def _get_curves_for_sample(self, sname):
+    def _get_curves_for_sample(self, sname, include_disabled=False):
         """Return list of (E_arr, J_arr, rpm_float, label, color) for a named sample."""
         return [(r["E"], r["J"], r["rpm"], r["label"], r["color"])
-                for r in self._build_curve_records(sname)]
+                for r in self._build_curve_records(sname, include_disabled)]
+
+    def _iter_analysis_records(self):
+        """Yield (sname, record) for every pair in every sample, hidden included.
+
+        The source for all analysis windows. Each keeps its own filtering (some
+        want rpm > 0) and builds its own tuple shape, but every one of them sees
+        the full set and seeds its curve selector from `record["enabled"]`, so a
+        run hidden on the plot is pre-unchecked rather than absent.
+        `_gradient_recolor` preserves list order, so a selector list built
+        alongside stays index-aligned with the curve list.
+        """
+        for sn in self.samples:
+            for r in self._build_curve_records(sn, include_disabled=True):
+                yield sn, r
 
     def _get_active_curves(self):
         """Return list of (E_arr, J_arr, rpm_float, label, color) for the active sample."""
@@ -3480,9 +3502,11 @@ class ORRPanel(ttk.Frame):
         # Gather from ALL loaded samples
         # (curves recoloured to share base colour per sample/catalyst group)
         all_curves = []  # (E_arr, J_arr, rpm, label, color, sname)
-        for sn in self.samples:
-            for E, J, rpm, lbl, col in self._get_curves_for_sample(sn):
-                all_curves.append((E, J, rpm, lbl, col, sn))
+        _sel_on    = []  # plot-checkbox state, index-aligned with all_curves
+        for sn, r in self._iter_analysis_records():
+            all_curves.append((r["E"], r["J"], r["rpm"],
+                               r["label"], r["color"], sn))
+            _sel_on.append(r["enabled"])
         if not all_curves:
             messagebox.showwarning("Tafel", "No processed curves in any sample.")
             return
@@ -3590,6 +3614,8 @@ class ORRPanel(ttk.Frame):
                     bv = tk.BooleanVar(value=True)
                     _tsel_vars[idx] = bv
                     display = re.sub(r'^\[[^\]]+\]\s*', '',lbl)
+                    if not _sel_on[idx]:
+                        display += " ·hidden"
                     tk.Checkbutton(cat_row, text=display, variable=bv).pack(
                         side=tk.LEFT, padx=3)
                     bv.trace_add("write", _schedule)
@@ -3609,6 +3635,9 @@ class ORRPanel(ttk.Frame):
         e_lo_var.trace_add("write", _schedule)
         e_hi_var.trace_add("write", _schedule)
         use_jk_var.trace_add("write", _schedule)
+        ttk.Label(win, text="ℹ " + 'Jᵏ is the KL intercept — independent of D / ν / C, so there is no electrolyte to pick here (those set the KL slope, which only Levich / KL report).',
+                  foreground="#555555", font=("", 7), wraplength=900,
+                  justify=tk.LEFT).pack(anchor=tk.W, padx=8, pady=(2, 0))
 
         # ── Figure — pack bottom items first ──────────────────────────
         fig = Figure(figsize=(7.0, 4.0), dpi=100, constrained_layout=True)
@@ -3726,10 +3755,12 @@ class ORRPanel(ttk.Frame):
     def _open_kl_window(self):
         # Gather curves from ALL loaded samples (not just active)
         all_valid = []  # (E_arr, J_arr, rpm, label, color, sname)
-        for sn in self.samples:
-            for E, J, rpm, lbl, col in self._get_curves_for_sample(sn):
-                if rpm > 0:
-                    all_valid.append((E, J, rpm, lbl, col, sn))
+        _sel_on   = []  # plot-checkbox state, index-aligned with all_valid
+        for sn, r in self._iter_analysis_records():
+            if r["rpm"] > 0:
+                all_valid.append((r["E"], r["J"], r["rpm"],
+                                  r["label"], r["color"], sn))
+                _sel_on.append(r["enabled"])
 
         if len(all_valid) < 2:
             messagebox.showwarning(
@@ -3809,6 +3840,8 @@ class ORRPanel(ttk.Frame):
                     bv = tk.BooleanVar(value=True)
                     _ksel_vars[idx] = bv
                     display = re.sub(r'^\[[^\]]+\]\s*', '',lbl)
+                    if not _sel_on[idx]:
+                        display += " ·hidden"
                     tk.Checkbutton(cat_row, text=display, variable=bv).pack(
                         side=tk.LEFT, padx=3)
                     bv.trace_add("write", _schedule)
@@ -4189,9 +4222,11 @@ class ORRPanel(ttk.Frame):
     def _open_sa_window(self):
         """ECSA-normalised specific activity — all samples, sample-grouped selector."""
         all_curves = []  # (E_arr, J_arr, rpm, label, color, sname)
-        for sn in self.samples:
-            for E, J, rpm, lbl, col in self._get_curves_for_sample(sn):
-                all_curves.append((E, J, rpm, lbl, col, sn))
+        _sel_on    = []  # plot-checkbox state, index-aligned with all_curves
+        for sn, r in self._iter_analysis_records():
+            all_curves.append((r["E"], r["J"], r["rpm"],
+                               r["label"], r["color"], sn))
+            _sel_on.append(r["enabled"])
         if not all_curves:
             messagebox.showwarning("SA Analysis", "No processed curves in any sample.")
             return
@@ -4335,8 +4370,11 @@ class ORRPanel(ttk.Frame):
                     bv = tk.BooleanVar(value=True)
                     _ssel_vars[idx] = bv
                     display = re.sub(r'^\[[^\]]+\]\s*', '',lbl)
+                    if not _sel_on[idx]:
+                        display += " ·hidden"
                     tk.Checkbutton(cat_row, text=display, variable=bv).pack(
                         side=tk.LEFT, padx=3)
+                    bv.trace_add("write", _schedule)
 
         # ── E-value controls ─────────────────────────────────────────
         ectrl = ttk.Frame(win); ectrl.pack(fill=tk.X, padx=8, pady=(4, 0))
@@ -4344,6 +4382,9 @@ class ORRPanel(ttk.Frame):
         e_vals_var = tk.StringVar(value="0.80, 0.85, 0.90")
         ttk.Entry(ectrl, textvariable=e_vals_var, width=26).pack(side=tk.LEFT, padx=(4, 10))
         ttk.Button(ectrl, text="Compute SA", command=lambda: _compute()).pack(side=tk.LEFT)
+        ttk.Label(win, text="ℹ " + 'Jᵏ is the KL intercept — independent of D / ν / C, so there is no electrolyte to pick here (those set the KL slope, which only Levich / KL report).',
+                  foreground="#555555", font=("", 7), wraplength=900,
+                  justify=tk.LEFT).pack(anchor=tk.W, padx=8, pady=(2, 0))
 
         # ── Figure — pack bottom items first ──────────────────────────
         fig = Figure(figsize=(7.5, 3.8), dpi=100, constrained_layout=True)
@@ -4492,10 +4533,12 @@ class ORRPanel(ttk.Frame):
     def _open_levich_window(self):
         """Standalone Levich plot: |J| vs √RPM — all samples, sample-grouped selector."""
         all_curves = []  # (E_arr, J_arr, rpm, label, color, sname)
-        for sn in self.samples:
-            for E, J, rpm, lbl, col in self._get_curves_for_sample(sn):
-                if rpm > 0:
-                    all_curves.append((E, J, rpm, lbl, col, sn))
+        _sel_on    = []  # plot-checkbox state, index-aligned with all_curves
+        for sn, r in self._iter_analysis_records():
+            if r["rpm"] > 0:
+                all_curves.append((r["E"], r["J"], r["rpm"],
+                                   r["label"], r["color"], sn))
+                _sel_on.append(r["enabled"])
         if not all_curves:
             messagebox.showwarning("Levich Plot",
                                    "No curves with valid RPM values in any sample.")
@@ -4605,6 +4648,8 @@ class ORRPanel(ttk.Frame):
                     bv = tk.BooleanVar(value=True)
                     _lsel_vars[idx] = bv
                     display = re.sub(r'^\[[^\]]+\]\s*', '',lbl)
+                    if not _sel_on[idx]:
+                        display += " ·hidden"
                     tk.Checkbutton(cat_row, text=display, variable=bv).pack(
                         side=tk.LEFT, padx=3)
                     bv.trace_add("write", _schedule)
@@ -4719,12 +4764,15 @@ class ORRPanel(ttk.Frame):
     def _open_lc_comparison_window(self):
         """Plot |J_lim| vs √RPM for each sample/catalyst with Levich theory baseline."""
         all_valid = []   # (sname, label, color, rpm, sqrt_rpm, j_lim)
-        for sn in self.samples:
-            for E, J, rpm, lbl, col in self._get_curves_for_sample(sn):
-                if rpm > 0 and len(J) > 0:
-                    j_lim    = float(np.min(J))
-                    sqrt_rpm = math.sqrt(rpm)
-                    all_valid.append((sn, lbl, col, rpm, sqrt_rpm, j_lim))
+        _sel_on   = []   # plot-checkbox state, index-aligned with all_valid
+        for sn, r in self._iter_analysis_records():
+            J, rpm = r["J"], r["rpm"]
+            if rpm > 0 and len(J) > 0:
+                j_lim    = float(np.min(J))
+                sqrt_rpm = math.sqrt(rpm)
+                all_valid.append((sn, r["label"], r["color"],
+                                  rpm, sqrt_rpm, j_lim))
+                _sel_on.append(r["enabled"])
 
         if len(all_valid) < 2:
             messagebox.showwarning(
@@ -4858,7 +4906,10 @@ class ORRPanel(ttk.Frame):
                         for _i in idxs:
                             _lsel_vars[_i].set(bv.get())
                         _schedule()
-                    tk.Checkbutton(cat_row, text=f"    [{cat}]", variable=cat_bv,
+                    _n_hid = sum(1 for i in cat_idxs if not _sel_on[i])
+                    _cat_txt = (f"    [{cat}]" if not _n_hid
+                                else f"    [{cat}]  ·{_n_hid} hidden on plot")
+                    tk.Checkbutton(cat_row, text=_cat_txt, variable=cat_bv,
                                    font=("TkDefaultFont", 8),
                                    command=_toggle_cat).pack(side=tk.LEFT)
 
